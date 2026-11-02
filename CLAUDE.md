@@ -7,7 +7,7 @@ Rules for AI agents working in this repo.
 galaxy-collision simulations, scoring and optimization) as an installable, reproducible package.
 
 - `working_research` holds the old code and is still used for research until `modern` reaches parity.
-  Port code from it one module at a time; don't copy whole folders.
+  It can be read for reference, but new code is defined as it's written rather than ported file by file.
 - Any science change committed to `working_research` after this branch was created must be ported here too.
 
 ## Rules
