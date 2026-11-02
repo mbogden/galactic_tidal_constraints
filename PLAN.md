@@ -16,7 +16,7 @@ This file records what has been decided. Items are added one at a time as they a
   ```
   galactic_tidal_constraints/
   ├── pyproject.toml, uv.lock, README.md, PLAN.md, CLAUDE.md
-  ├── src/galactic_tidal_constraints/   ← the package (incl. spam/, the Fortran source)
+  ├── src/galactic_tidal_constraints/   ← the package
   ├── tests/
   ├── docs/
   ├── docker/
@@ -32,6 +32,18 @@ This file records what has been decided. Items are added one at a time as they a
   constants). It never runs code: no SPAM or MPI initialization, no logging setup, no file
   reads, no `sys.path` changes. That work happens in functions, called from an entry point.
   Avoid module-level mutable state; pass values in as arguments.
+- **SPAM lives in its own repo:** a fork of `jfwallin/JSPAM`, for now (it can move to a branch
+  in that repo later). Start from a fresh copy of the original and reimplement only the changes
+  needed. This repo depends on the fork at a pinned commit. Fortran only for now; JSPAM's other
+  language versions are not used.
+- **SPAM build:** `meson-python`, with `f2py` generating the Python interface. The package is
+  named `jspam`. Work happens on `simr-branch`; the fork's `master` stays as the original code.
+- **Install:** JSPAM is a normal dependency installed from git at a pinned commit, not nested in
+  this repo. Users run `uv sync`; clusters use the container. Local development keeps the repos
+  side by side.
+- **Separation of storage:** stages and the pipeline take and return data, and never read or
+  write run or target folders. Disk access lives only in application wrappers, which handle
+  saving, resuming and folder layouts. `info_module` is not ported as a whole.
 - **Type hints** on function signatures (arguments and return values), checked by the editor
   (VS Code / Pylance). No strict type checker for now. Array shapes go in the docstring.
 - **`ruff`** for linting (`ruff check`) and formatting (`ruff format`), configured in
