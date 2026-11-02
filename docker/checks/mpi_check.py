@@ -1,6 +1,6 @@
 """MPI check: ranks talk to each other, using the image's OpenMPI.
 
-Run with 2+ ranks, e.g. `mpirun -n 2 python mpi_check.py` or `srun --mpi=pmix -n 2 ...`.
+Run with 2+ ranks, e.g. `mpirun -n 2 python mpi_check.py`.
 Rank 0 prints PASS/FAIL; exits non-zero on failure.
 """
 import socket

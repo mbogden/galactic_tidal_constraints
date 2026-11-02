@@ -8,8 +8,8 @@
 #        SIF=~/galStuff/images/<image>-<tag>.sif sbatch run_node.slurm ...
 # Example: sbatch run_node.slurm python /opt/gtc/checks/mpi_check.py
 #
-# Why host mpirun and not srun: Babbage's Slurm has no pmix plugin and Ubuntu's OpenMPI has no
-# PMI2 support (ENV-1, 2026-10-28). The image's OpenMPI (4.1.6) must match the host's.
+# Why host mpirun and not srun: host mpirun works on Babbage and srun can't start this image's
+# MPI (ENV-1, 2026-10-28). The image's OpenMPI (4.1.6) must match the host's.
 #SBATCH --job-name=gtc-run
 #SBATCH --partition=research-cpu
 #SBATCH --nodes=1

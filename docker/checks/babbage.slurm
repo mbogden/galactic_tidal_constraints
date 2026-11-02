@@ -1,7 +1,7 @@
 #!/bin/bash
 # gtc-base-image checks on Babbage: Fortran, then MPI with 2 ranks via host mpirun.
-# srun can't start this image's MPI on Babbage: Slurm 23.11 has no pmix plugin, and Ubuntu's
-# OpenMPI has no PMI2 support (tested 2026-10-28). The admin's example also uses host mpiexec.
+# Host mpirun works on Babbage; srun can't start this image's MPI (tested 2026-10-28).
+# The admin's example also uses host mpiexec.
 # Usage: sbatch babbage.slurm               (SIF defaults to ~/galStuff/images/gtc-base-image-v1.sif)
 #        SIF=/path/to/img.sif sbatch babbage.slurm
 #        sbatch --nodes=2 --ntasks-per-node=1 babbage.slurm    (MPI across 2 nodes)
