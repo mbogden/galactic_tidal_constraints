@@ -8,6 +8,8 @@ This file records what has been decided. Items are added one at a time as they a
 - Start by building around TNG → SPAM: simulate and optimize, for the TNG vs SPAM paper.
 - Port only what that paper needs. The scope grows with the code. Image creation and
   machine scoring come later.
+- New code is defined as it is written, starting with MDRN-1. It isn't based on an audit of the
+  old code's use cases, or compared against the old code.
 
 ## Decided
 - **Name:** `galactic_tidal_constraints` for the GitHub repo, the local folder and the Python
@@ -44,6 +46,8 @@ This file records what has been decided. Items are added one at a time as they a
 - **Separation of storage:** stages and the pipeline take and return data, and never read or
   write run or target folders. Disk access lives only in application wrappers, which handle
   saving, resuming and folder layouts. `info_module` is not ported as a whole.
+- **One door to SPAM:** only one module imports `jspam`. Each run's saved config records the commit
+  of both repos and whether either has uncommitted changes.
 - **Type hints** on function signatures (arguments and return values), checked by the editor
   (VS Code / Pylance). No strict type checker for now. Array shapes go in the docstring.
 - **`ruff`** for linting (`ruff check`) and formatting (`ruff format`), configured in
