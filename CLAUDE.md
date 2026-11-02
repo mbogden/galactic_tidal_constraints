@@ -15,4 +15,6 @@ galaxy-collision simulations, scoring and optimization) as an installable, repro
 - Never commit data or large outputs. Data lives outside the repo (`../data/` in the workspace).
 - Keep commits small, with one change each, and explain why in the message.
 - Add a dependency only when code needs it.
+- SPAM's Fortran lives in the JSPAM fork (`mbogden/JSPAM`, branch `simr-branch`), not here. Change it
+  there and push, then update the pinned commit in `pyproject.toml` and `uv.lock`.
 - Follow the decisions in `PLAN.md`. Don't add tools or structure that aren't listed there without asking.
