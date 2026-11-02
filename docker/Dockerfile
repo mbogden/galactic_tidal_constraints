@@ -1,12 +1,13 @@
-# gtc-base-image: CPU-only base image (Ubuntu 24.04, Python 3.12, gfortran, OpenMPI 4.1.6).
-# Build:  docker build -t gtc-base-image:v1 docker
-# Check:  docker run --rm gtc-base-image:v1 bash /opt/gtc/checks/run_all.sh
+# gtc-base-image: CPU-only base image (Ubuntu 24.04, Python 3.12, gfortran, OpenMPI 4.1.6, git).
+# v2 adds git, which uv needs to install jspam from GitHub.
+# Build:  docker build -t gtc-base-image:v2 docker
+# Check:  docker run --rm gtc-base-image:v2 bash /opt/gtc/checks/run_all.sh
 FROM ubuntu:24.04
 
 # System packages. Ubuntu 24.04's OpenMPI is 4.1.6, matching Babbage (openmpi4/4.1.6).
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      ca-certificates \
+      ca-certificates git \
       build-essential gfortran pkg-config \
       python3 python3-dev \
       openmpi-bin libopenmpi-dev \
