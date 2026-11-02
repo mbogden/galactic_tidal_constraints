@@ -1,0 +1,18 @@
+[project]
+name = "galactic_tidal_constraints"
+version = "0.1.0"
+description = "Galaxy collision simulation, scoring and optimization around SPAM"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.uv]
+package = false  # there's no package to install until src/galactic_tidal_constraints/ exists
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = ["slow: long tests; skip them with -m 'not slow'"]

@@ -13,6 +13,8 @@ gscript
 *pycache*
 testing_environment
 test*
+!/tests/
+!/tests/**
 target_images
 target_html_table_generator
 target_images-working
