@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Galaxy collision simulation, scoring and optimization around SPAM"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "jspam @ git+https://github.com/mbogden/JSPAM.git@1068172771c7d4d65e54422a3aca76fffe45bc0f",
+]
 
 [dependency-groups]
 dev = ["pytest"]
