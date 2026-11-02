@@ -7,9 +7,6 @@ is in [JSPAM](https://github.com/mbogden/JSPAM), a fork of
 There are two ways to run it: from Python, by installing the `jspam` package, or as the plain Fortran
 program from the command line. This project will use the Python package.
 
-## What you need
-- [Docker](https://www.docker.com/), which provides the compiler through this project's base image.
-
 ## Run it from Python
 Install it directly from GitHub. You need Python 3.12 or newer, git, `gfortran` and a C compiler:
 ```bash
@@ -17,15 +14,17 @@ pip install git+https://github.com/mbogden/JSPAM.git@simr-branch
 ```
 The fork's [README](https://github.com/mbogden/JSPAM/tree/simr-branch#use) has a short example.
 
-The base image has the compiler but not git, so to use the image, install from a clone on the
-`simr-branch` branch instead. Start the container as in step 2 below, then run:
+This project's base image has everything needed, so you can use it instead:
 ```bash
-cp -r /src /tmp/jspam && uv pip install --python /opt/venv/bin/python /tmp/jspam
+docker run --rm -it ogdenm12/gtc-base-image:v2 bash
+uv pip install git+https://github.com/mbogden/JSPAM.git@simr-branch
 ```
+The second command runs inside the container.
 
 ## Check the original code
-To confirm the original code works on your machine, clone JSPAM (step 1) and run this from this
-repo's root, using bash (Git Bash on Windows):
+To confirm the original code works on your machine, install git and
+[Docker](https://www.docker.com/), clone JSPAM (step 1) and run this from this repo's root, using
+bash (Git Bash on Windows):
 ```bash
 bash examples/spam/check_original_jspam.sh
 ```
@@ -33,6 +32,7 @@ It does steps 2–5 below for you, on Wallin's original commit, and exits with a
 is wrong.
 
 ## Run the Fortran program by hand
+You need [Docker](https://www.docker.com/), which provides the compiler through the base image.
 
 ### 1. Get the code
 Clone JSPAM next to this repo:
@@ -48,7 +48,7 @@ git clone https://github.com/mbogden/JSPAM.git
 ### 2. Start the container
 From the folder that contains `JSPAM/` (this command works in bash and PowerShell):
 ```bash
-docker run --rm -it -v "${PWD}/JSPAM:/src:ro" ogdenm12/gtc-base-image:v1 bash
+docker run --rm -it -v "${PWD}/JSPAM:/src:ro" ogdenm12/gtc-base-image:v2 bash
 ```
 `JSPAM/` is mounted read-only, so the build stays out of your clone. Anything in `/tmp/spam` is
 lost when you exit the container.

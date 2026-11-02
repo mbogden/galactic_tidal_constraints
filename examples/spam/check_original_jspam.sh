@@ -8,7 +8,7 @@
 set -euo pipefail
 
 commit=d6a61dbacc884e140b97eb4b191446bb4239a00f   # latest commit of jfwallin/JSPAM
-image=ogdenm12/gtc-base-image:v1
+image=ogdenm12/gtc-base-image:v2
 
 here=$(dirname "$(realpath "$0")")
 jspam=${1:-$here/../../../JSPAM}
