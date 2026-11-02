@@ -4,22 +4,37 @@ How to compile and run SPAM, the galaxy collision simulator this project depends
 is in [JSPAM](https://github.com/mbogden/JSPAM), a fork of
 [John Wallin's original](https://github.com/jfwallin/JSPAM). We use its Fortran version.
 
-This runs the unmodified Fortran from the command line. It can't be installed as a Python package
-yet; this page will change when it can.
+There are two ways to run it: from Python, by installing the `jspam` package, or as the plain Fortran
+program from the command line. This project will use the Python package.
 
 ## What you need
 - [Docker](https://www.docker.com/), which provides the compiler through this project's base image.
 
-## Quick check
+## Run it from Python
+Install it directly from GitHub. You need Python 3.12 or newer, git, `gfortran` and a C compiler:
+```bash
+pip install git+https://github.com/mbogden/JSPAM.git@simr-branch
+```
+The fork's [README](https://github.com/mbogden/JSPAM/tree/simr-branch#use) has a short example.
+
+The base image has the compiler but not git, so to use the image, install from a clone on the
+`simr-branch` branch instead. Start the container as in step 2 below, then run:
+```bash
+cp -r /src /tmp/jspam && uv pip install --python /opt/venv/bin/python /tmp/jspam
+```
+
+## Check the original code
 To confirm the original code works on your machine, clone JSPAM (step 1) and run this from this
 repo's root, using bash (Git Bash on Windows):
 ```bash
 bash examples/spam/check_original_jspam.sh
 ```
 It does steps 2–5 below for you, on Wallin's original commit, and exits with an error if the result
-is wrong. Follow the steps below to do it by hand.
+is wrong.
 
-## 1. Get the code
+## Run the Fortran program by hand
+
+### 1. Get the code
 Clone JSPAM next to this repo:
 ```
 galStuff/
@@ -30,7 +45,7 @@ galStuff/
 git clone https://github.com/mbogden/JSPAM.git
 ```
 
-## 2. Start the container
+### 2. Start the container
 From the folder that contains `JSPAM/` (this command works in bash and PowerShell):
 ```bash
 docker run --rm -it -v "${PWD}/JSPAM:/src:ro" ogdenm12/gtc-base-image:v1 bash
@@ -38,7 +53,7 @@ docker run --rm -it -v "${PWD}/JSPAM:/src:ro" ogdenm12/gtc-base-image:v1 bash
 `JSPAM/` is mounted read-only, so the build stays out of your clone. Anything in `/tmp/spam` is
 lost when you exit the container.
 
-## 3. Compile
+### 3. Compile
 Run these inside the container:
 ```bash
 mkdir /tmp/spam && cp /src/fortran/*.f90 /tmp/spam && cd /tmp/spam
@@ -51,14 +66,14 @@ gfortran -O3 -o basic_run *.o
 - `-std=legacy` silences warnings about older Fortran syntax.
 - `-O3` matters for speed. Without an optimization flag, `gfortran` builds unoptimized code.
 
-## 4. Run
+### 4. Run
 ```bash
 ./basic_run > run.log
 ```
 With no arguments, this runs a built-in test collision of 1000 + 500 particles, using the
 point-mass gravity model. It should take about a second.
 
-## 5. Check the result
+### 5. Check the result
 The final particle positions and velocities are in `a.101`, one row per particle:
 ```bash
 wc -l a.101
