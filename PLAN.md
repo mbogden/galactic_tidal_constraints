@@ -101,8 +101,9 @@ This file records what has been decided. Items are added one at a time as they a
   old history is still reachable.
 - `working_research`: stays in use for research until `modern` reaches parity.
 - Old branches (`Master`, `old_master`) are kept as archive tags. Deleting them is not required.
-- **Side branches:** each piece of work gets a short branch off `modern`, merged back when
-  tested, then deleted. Name: `<what>-branch`, lowercase with `-` (e.g. `env-2-branch`,
+- **Small edits** can be committed directly to `modern`.
+- **Side branches:** large changes in code or experiments get a short branch off `modern`, merged
+  back when tested, then deleted. Name: `<what>-branch`, lowercase with `-` (e.g. `env-2-branch`,
   `packaging-branch`). Older branches (e.g. `exp/e1-base-image`) keep their names.
 - **At parity:** `modern` becomes `main`, `working_research` becomes `legacy`, and the GitHub
   default branch becomes `main`.
