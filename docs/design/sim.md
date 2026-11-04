@@ -82,9 +82,10 @@ All of this is in Wallin's original code, and is unchanged.
 ## Open questions
 These change results, so they're left for a decision. See the experiment notes for measurements.
 1. Which defaults should `normalization` and `heat_mode` have?
-2. Should the force keep falling past r = 10 (about 150 kpc)?
-3. Should `r_scale` also rescale the force? Changing it alters the force by more than a change of length
-   scale would.
+2. Should the force keep falling past r = 10 (about 150 kpc)? Measured: it's constant from there out, so
+   at r = 20 it's about 4 times what it would be if it kept falling.
+3. Should `r_scale` only change the halo's shape? Measured: outside the core it also multiplies the force
+   by (10 / `r_scale`)^2, so `r_scale` = 5 gives about 4 times the force.
 4. `new_rho`, used by dynamical friction, divides enclosed mass (not shell mass) by the shell's volume.
    Is that intended?
 
