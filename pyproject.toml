@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "galactic_tidal_constraints"
 version = "0.1.0"
@@ -5,16 +9,31 @@ description = "Galaxy collision simulation, scoring and optimization around SPAM
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "jspam @ git+https://github.com/mbogden/JSPAM.git@1068172771c7d4d65e54422a3aca76fffe45bc0f",
+    "jspam @ git+https://github.com/mbogden/JSPAM.git@347e8b05715eba11000a4791420d1d59820d4995",
+    "numpy",
 ]
 
 [dependency-groups]
-dev = ["pytest"]
+dev = ["pytest", "ruff"]
+mpi = ["mpi4py"]  # uv sync --group mpi
 
 [tool.uv]
-package = false  # there's no package to install until src/galactic_tidal_constraints/ exists
+no-binary-package = ["mpi4py"]  # built from source, so it links to the image's OpenMPI
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/galactic_tidal_constraints"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers"
 markers = ["slow: long tests; skip them with -m 'not slow'"]
+
+[tool.ruff]
+line-length = 110
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "G", "PLE12"]
