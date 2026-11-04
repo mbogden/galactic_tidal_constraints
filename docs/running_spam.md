@@ -10,14 +10,14 @@ program from the command line. This project will use the Python package.
 ## Run it from Python
 Install it directly from GitHub. You need Python 3.12 or newer, git, `gfortran` and a C compiler:
 ```bash
-pip install git+https://github.com/mbogden/JSPAM.git@simr-branch
+pip install git+https://github.com/mbogden/JSPAM.git@sim-branch
 ```
-The fork's [README](https://github.com/mbogden/JSPAM/tree/simr-branch#use) has a short example.
+The fork's [README](https://github.com/mbogden/JSPAM/tree/sim-branch#use) has a short example.
 
 This project's base image has everything needed, so you can use it instead:
 ```bash
 docker run --rm -it ogdenm12/gtc-base-image:v2 bash
-uv pip install git+https://github.com/mbogden/JSPAM.git@simr-branch
+uv pip install git+https://github.com/mbogden/JSPAM.git@sim-branch
 ```
 The second command runs inside the container.
 

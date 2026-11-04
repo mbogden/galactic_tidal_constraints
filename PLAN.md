@@ -8,8 +8,8 @@ This file records what has been decided. Items are added one at a time as they a
 - Start by building around TNG → SPAM: simulate and optimize, for the TNG vs SPAM paper.
 - Port only what that paper needs. The scope grows with the code. Image creation and
   machine scoring come later.
-- New code is defined as it is written, starting with MDRN-1. It isn't based on an audit of the
-  old code's use cases, or compared against the old code.
+- New code is defined as it is written, starting with MDRN-1. It isn't compared against the old code.
+  `sim` and `simr` are designed with the old code's use of SPAM's parameters in mind.
 
 ## Structure
 How these fit together is described in [docs/architecture.md](docs/architecture.md).
@@ -23,6 +23,11 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
 - **Failures:** a failed model returns `NaN` and writes the error to the log.
 - **One door to SPAM:** only one module imports `jspam`. Each run's saved config records the commit
   of both repos and whether either has uncommitted changes.
+- **SIMR package:** `simr`, `sim`, `img` and `fit` live together in `src/galactic_tidal_constraints/simr/`.
+- **Physics options:** a fix that changes SPAM's physics is an option, with Wallin's behavior as the
+  default until a decision is made.
+- **Many endings:** a particle run can save at any list of end times, in fractions of the run, Gyr, SPAM
+  time or steps. See [docs/design/sim.md](docs/design/sim.md).
 
 ## Configuration
 One config tree for everything that can change a result, plus a few runtime flags.
@@ -133,8 +138,8 @@ One Docker image, run with Apptainer on the cluster.
 ### Testing
 `pytest`, with tests in `tests/`.
 - Compare numbers with `numpy.testing.assert_allclose`, not `==`.
-- Golden tests: save reference outputs once, compare later runs against them. Orbits match
-  exactly; particle runs only statistically until the Fortran RNG takes a seed.
+- Golden tests: save reference outputs once, compare later runs against them. With a seed, particle
+  runs match exactly on the same build and machine; across builds or CPUs, compare with a tolerance.
 - Mark long tests `@pytest.mark.slow` so quick runs can skip them.
 - Parallel code is tested in solo mode (built-in `map`); one small test checks the MPI pool
   under `mpiexec`.

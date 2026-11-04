@@ -22,7 +22,15 @@ on your machine (use bash; Git Bash on Windows):
 ```bash
 bash examples/spam/check_original_jspam.sh
 ```
-This repo doesn't call SPAM from its own code yet.
+
+## Run simulations
+In the base image (see [docs/running_spam.md](docs/running_spam.md)):
+```bash
+uv sync
+uv run python -m galactic_tidal_constraints.simr --config examples/simr/config.json --output out
+```
+[docs/configuration.md](docs/configuration.md) lists the settings, and
+[docs/design/simr.md](docs/design/simr.md) covers saved files and running with MPI.
 
 ## License
 Licensed under the Academic Free License version 3.0. See [LICENSE](LICENSE). This project's use of
