@@ -16,6 +16,7 @@ dependencies = [
 [dependency-groups]
 dev = ["pytest", "ruff"]
 mpi = ["mpi4py"]  # uv sync --group mpi
+notebook = ["jupyterlab", "matplotlib"]  # uv sync --group notebook
 
 [tool.uv]
 no-binary-package = ["mpi4py"]  # built from source, so it links to the image's OpenMPI
