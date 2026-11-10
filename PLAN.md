@@ -23,6 +23,10 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
 - **Failures:** a failed model returns `NaN` and writes the error to the log.
 - **One door to SPAM:** only one module imports `jspam`. Each run's saved config records the commit
   of both repos and whether either has uncommitted changes.
+- **Physics fixes:** a fix that changes SPAM's physics is an option, and Wallin's behavior stays
+  available. `jspam`'s defaults reproduce the original program; `sim` chooses ours.
+  - Disk heat: `"centered"` by default in `sim` (Wallin's kicks are always positive, so heated
+    disks drift).
 
 ## Configuration
 One config tree for everything that can change a result, plus a few runtime flags.

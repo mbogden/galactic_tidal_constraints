@@ -46,6 +46,7 @@ def simulate(
     seed: int | None = None,
     heat1: float = 0.0,
     heat2: float = 0.0,
+    heat_mode: str = "centered",
 ) -> np.ndarray:
     """Run one SPAM simulation and return every particle at the end.
 
@@ -54,8 +55,10 @@ def simulate(
         n1, n2: number of particles in the primary's and secondary's disks.
         seed: sets where the disk particles start; the same seed gives the same particles. None
             gives different particles every run, as in Wallin's original.
-        heat1, heat2: random motion added to each disk's particle velocities. Wallin's version adds
-            a value between 0 and heat to each of vx, vy and vz, so a heated disk also drifts.
+        heat1, heat2: random motion added to each disk's particle velocities (0: none).
+        heat_mode: "centered" (the default) adds a value in [-heat/2, heat/2) to each of vx, vy and vz.
+            "wallin" (the original) adds a value in [0, heat): the same spread, but always positive, so a
+            heated disk also drifts toward +x, +y, +z.
 
     Returns:
         x, y, z, vx, vy, vz of each particle, shape (n1 + n2 + 1, 6). Rows 0 to n1 - 1 are the
@@ -63,7 +66,9 @@ def simulate(
         The primary's center stays at the origin.
     """
     # jspam checks there are 22 values
-    return jspam.run_collision(params, n1=n1, n2=n2, seed=seed, heat1=heat1, heat2=heat2)
+    return jspam.run_collision(
+        params, n1=n1, n2=n2, seed=seed, heat1=heat1, heat2=heat2, heat_mode=heat_mode
+    )
 
 
 def initial_state(
@@ -73,10 +78,13 @@ def initial_state(
     seed: int | None = None,
     heat1: float = 0.0,
     heat2: float = 0.0,
+    heat_mode: str = "centered",
 ) -> np.ndarray:
     """Every particle at the start of the run, before SPAM takes a step.
 
     Takes the same arguments as `simulate` and returns the same shape. With the same seed, it's exactly
     the state `simulate` starts from. Useful for checking how the disks are set up.
     """
-    return jspam.initial_state(params, n1=n1, n2=n2, seed=seed, heat1=heat1, heat2=heat2)
+    return jspam.initial_state(
+        params, n1=n1, n2=n2, seed=seed, heat1=heat1, heat2=heat2, heat_mode=heat_mode
+    )
