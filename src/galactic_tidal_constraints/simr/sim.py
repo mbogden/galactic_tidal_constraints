@@ -4,7 +4,11 @@ This is the only module that imports `jspam`. It doesn't touch the disk, know ab
 keep state between calls.
 
 A model is a plain array of SPAM's 22 collision parameters, shape (22,), or (n_models, 22) for many.
+How it's simulated is set by a `SimulatorConfig`. Runs always use SPAM's extended potential (halo, disk
+and bulge).
 """
+
+from dataclasses import dataclass
 
 import jspam
 import numpy as np
@@ -27,6 +31,37 @@ PARAM_NAMES = (
 PARAM_INDEX = {name: i for i, name in enumerate(PARAM_NAMES)}
 
 
+@dataclass(frozen=True)
+class SimulatorConfig:
+    """Everything that sets a simulation's result, apart from the 22 parameters and the seed.
+
+    Attributes:
+        n1, n2: particles in the primary's and secondary's disks.
+        heat1, heat2: random motion added to each disk's particle velocities (0: none).
+        heat_mode: "centered" (the default) adds a value in [-heat/2, heat/2) to each of vx, vy and vz.
+            "wallin" (the original) adds a value in [0, heat): the same spread, but always positive, so a
+            heated disk also drifts toward +x, +y, +z.
+    """
+
+    n1: int = 1000
+    n2: int = 1000
+    heat1: float = 0.0
+    heat2: float = 0.0
+    heat_mode: str = "centered"
+
+    def __post_init__(self) -> None:
+        """Check the values when the config is made, so mistakes show up before any run."""
+        for name in ("n1", "n2"):
+            value = getattr(self, name)
+            if not isinstance(value, (int, np.integer)) or value < 1:
+                raise ValueError(f"{name} must be a whole number of at least 1: {value!r}")
+        for name in ("heat1", "heat2"):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} can't be negative: {getattr(self, name)!r}")
+        if self.heat_mode not in jspam.HEAT_MODES:
+            raise ValueError(f"heat_mode must be one of {list(jspam.HEAT_MODES)}: {self.heat_mode!r}")
+
+
 def parse_model_string(model: str) -> np.ndarray:
     """Read a comma-separated SPAM model string into an array, shape (22,).
 
@@ -40,51 +75,41 @@ def parse_model_string(model: str) -> np.ndarray:
 
 
 def simulate(
-    params: np.ndarray | list[float],
-    n1: int = 1000,
-    n2: int = 1000,
-    seed: int | None = None,
-    heat1: float = 0.0,
-    heat2: float = 0.0,
-    heat_mode: str = "centered",
+    params: np.ndarray | list[float], config: SimulatorConfig = SimulatorConfig(), seed: int | None = None
 ) -> np.ndarray:
     """Run one SPAM simulation and return every particle at the end.
 
     Args:
         params: the 22 collision parameters, in SPAM's order (`PARAM_NAMES`), shape (22,).
-        n1, n2: number of particles in the primary's and secondary's disks.
+        config: how to simulate. The default is `SimulatorConfig()`.
         seed: sets where the disk particles start; the same seed gives the same particles. None
             gives different particles every run, as in Wallin's original.
-        heat1, heat2: random motion added to each disk's particle velocities (0: none).
-        heat_mode: "centered" (the default) adds a value in [-heat/2, heat/2) to each of vx, vy and vz.
-            "wallin" (the original) adds a value in [0, heat): the same spread, but always positive, so a
-            heated disk also drifts toward +x, +y, +z.
 
     Returns:
         x, y, z, vx, vy, vz of each particle, shape (n1 + n2 + 1, 6). Rows 0 to n1 - 1 are the
         primary's disk, the next n2 the secondary's, and the last row is the secondary's center.
         The primary's center stays at the origin.
     """
-    # jspam checks there are 22 values
-    return jspam.run_collision(
-        params, n1=n1, n2=n2, seed=seed, heat1=heat1, heat2=heat2, heat_mode=heat_mode
-    )
+    return jspam.run_collision(params, seed=seed, **_jspam_args(config))  # jspam checks there are 22 values
 
 
 def initial_state(
-    params: np.ndarray | list[float],
-    n1: int = 1000,
-    n2: int = 1000,
-    seed: int | None = None,
-    heat1: float = 0.0,
-    heat2: float = 0.0,
-    heat_mode: str = "centered",
+    params: np.ndarray | list[float], config: SimulatorConfig = SimulatorConfig(), seed: int | None = None
 ) -> np.ndarray:
     """Every particle at the start of the run, before SPAM takes a step.
 
     Takes the same arguments as `simulate` and returns the same shape. With the same seed, it's exactly
     the state `simulate` starts from. Useful for checking how the disks are set up.
     """
-    return jspam.initial_state(
-        params, n1=n1, n2=n2, seed=seed, heat1=heat1, heat2=heat2, heat_mode=heat_mode
-    )
+    return jspam.initial_state(params, seed=seed, **_jspam_args(config))
+
+
+def _jspam_args(config: SimulatorConfig) -> dict:
+    """The config as jspam's keyword arguments."""
+    return {
+        "n1": config.n1,
+        "n2": config.n2,
+        "heat1": config.heat1,
+        "heat2": config.heat2,
+        "heat_mode": config.heat_mode,
+    }
