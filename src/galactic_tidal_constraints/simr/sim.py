@@ -40,7 +40,12 @@ def parse_model_string(model: str) -> np.ndarray:
 
 
 def simulate(
-    params: np.ndarray | list[float], n1: int = 1000, n2: int = 1000, seed: int | None = None
+    params: np.ndarray | list[float],
+    n1: int = 1000,
+    n2: int = 1000,
+    seed: int | None = None,
+    heat1: float = 0.0,
+    heat2: float = 0.0,
 ) -> np.ndarray:
     """Run one SPAM simulation and return every particle at the end.
 
@@ -49,10 +54,29 @@ def simulate(
         n1, n2: number of particles in the primary's and secondary's disks.
         seed: sets where the disk particles start; the same seed gives the same particles. None
             gives different particles every run, as in Wallin's original.
+        heat1, heat2: random motion added to each disk's particle velocities. Wallin's version adds
+            a value between 0 and heat to each of vx, vy and vz, so a heated disk also drifts.
 
     Returns:
         x, y, z, vx, vy, vz of each particle, shape (n1 + n2 + 1, 6). Rows 0 to n1 - 1 are the
         primary's disk, the next n2 the secondary's, and the last row is the secondary's center.
         The primary's center stays at the origin.
     """
-    return jspam.run_collision(params, n1=n1, n2=n2, seed=seed)  # checks there are 22 values
+    # jspam checks there are 22 values
+    return jspam.run_collision(params, n1=n1, n2=n2, seed=seed, heat1=heat1, heat2=heat2)
+
+
+def initial_state(
+    params: np.ndarray | list[float],
+    n1: int = 1000,
+    n2: int = 1000,
+    seed: int | None = None,
+    heat1: float = 0.0,
+    heat2: float = 0.0,
+) -> np.ndarray:
+    """Every particle at the start of the run, before SPAM takes a step.
+
+    Takes the same arguments as `simulate` and returns the same shape. With the same seed, it's exactly
+    the state `simulate` starts from. Useful for checking how the disks are set up.
+    """
+    return jspam.initial_state(params, n1=n1, n2=n2, seed=seed, heat1=heat1, heat2=heat2)
