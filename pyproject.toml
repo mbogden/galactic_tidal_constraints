@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "galactic_tidal_constraints"
 version = "0.1.0"
@@ -6,13 +10,18 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "jspam @ git+https://github.com/mbogden/JSPAM.git@1068172771c7d4d65e54422a3aca76fffe45bc0f",
+    "numpy",
 ]
 
 [dependency-groups]
 dev = ["pytest"]
+notebook = ["jupyterlab", "matplotlib"]  # uv sync --group notebook
 
-[tool.uv]
-package = false  # there's no package to install until src/galactic_tidal_constraints/ exists
+[tool.hatch.metadata]
+allow-direct-references = true  # lets the jspam dependency point at a git commit
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/galactic_tidal_constraints"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
