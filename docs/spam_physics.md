@@ -112,6 +112,12 @@ A run then takes `int(−t_start / 0.001) + 2` steps, ending 1 to 2 steps past n
 same potential, mass model and dynamical friction as the particles, and doesn't depend on them, so
 `simulate_orbit`'s last row is exactly where `simulate_particles` leaves the secondary.
 
+**Unperturbed galaxies (`sim.unperturbed_particles`):** the setup only, with `t_start` = 0. Placement steps
+the secondary back while `t_start < t`, so at 0 it takes no steps: the disks are built around today's
+centers (the secondary exactly at the model's position) and returned before any step. With the same seed
+they're the same disks a run starts with. Positions depend only on the 14 parameters and the seed; heat
+and the mass model change only the starting velocities.
+
 **Physics:** the lead is meant to give the secondary about 10 disk radii to approach. Measured on the
 SDSS model 587722984435351614 (default config): closest approach at t = −2.91, distance 5.4, speed 7.4,
 so the lead is 4.0 and the run starts at −6.91.

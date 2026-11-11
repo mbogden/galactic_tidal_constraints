@@ -164,6 +164,20 @@ def initial_state(
     return jspam.initial_state(_spam_params(params), seed=seed, **_jspam_args(params, config))
 
 
+def unperturbed_particles(
+    params: np.ndarray | list[float], config: SimulatorConfig = SimulatorConfig(), seed: int | None = None
+) -> np.ndarray:
+    """The two galaxies as they'd look now if they had never interacted.
+
+    The same disks a run starts with (same seed, heat and mass model), placed around the galaxies' current
+    centers (the primary at the origin, the secondary where `params` puts it) without any steps. Takes the
+    same arguments as `simulate_particles` and returns the same shape, so both line up with no translating.
+    The start settings don't matter, and no start-time search runs, so it costs about as much as
+    `initial_state`.
+    """
+    return jspam.initial_state(_spam_params(params), seed=seed, **_jspam_args(params, config, t_start=0.0))
+
+
 def get_timing(params: np.ndarray | list[float], config: SimulatorConfig = SimulatorConfig()) -> dict:
     """When a run starts and how many steps it takes, without running it.
 
@@ -307,10 +321,11 @@ def _spam_params(params: np.ndarray | list[float]) -> np.ndarray:
     return np.concatenate([params, UNUSED_PARAMS])
 
 
-def _jspam_args(params: np.ndarray | list[float], config: SimulatorConfig) -> dict:
-    """The config as jspam's keyword arguments, with the start time it gives for these parameters."""
+def _jspam_args(params: np.ndarray | list[float], config: SimulatorConfig, t_start: float | None = None) -> dict:
+    """The config as jspam's keyword arguments, with the start time it gives for these parameters (or
+    `t_start` when it's given, without choosing one)."""
     return {
-        "t_start": _choose_start(params, config)[0],
+        "t_start": _choose_start(params, config)[0] if t_start is None else t_start,
         "n1": config.n1,
         "n2": config.n2,
         "heat1": config.heat1,

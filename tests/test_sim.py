@@ -487,3 +487,30 @@ def test_start_settings_survive_a_json_round_trip():
 
     for config in [SimulatorConfig(start=-8.5), SimulatorConfig(start_pass=2), WALLIN_START, ERROR]:
         assert SimulatorConfig(**json.loads(json.dumps(asdict(config)))) == config
+
+
+# --- Step 7a: unperturbed particles ------------------------------------------------------------------
+
+
+def test_unperturbed_are_the_starting_disks_placed_now():
+    start = sim.initial_state(PARAMS, SMALL, seed=4)
+    now = sim.unperturbed_particles(PARAMS, SMALL, seed=4)
+    assert now.shape == start.shape
+    np.testing.assert_array_equal(now[-1], PARAMS[:6])  # the secondary's center, where the model puts it
+    n1 = SMALL.n1
+    np.testing.assert_array_equal(now[:n1], start[:n1])  # the primary's disk, unchanged
+    # The secondary's disk is the same draw, moved with its center
+    np.testing.assert_allclose(now[n1:-1] - now[-1], start[n1:-1] - start[-1], rtol=1e-12, atol=1e-12)
+
+
+def test_unperturbed_ignores_the_start_settings():
+    expected = sim.unperturbed_particles(PARAMS, SMALL, seed=4)
+    for change in [{"start": -8.0}, {"start": "wallin"}, {"start_pass": 5, "no_pass": "error"}]:
+        np.testing.assert_array_equal(sim.unperturbed_particles(PARAMS, replace(SMALL, **change), seed=4), expected)
+
+
+def test_unperturbed_and_a_run_share_centers():
+    run = sim.simulate_particles(PARAMS, SMALL, seed=4)
+    now = sim.unperturbed_particles(PARAMS, SMALL, seed=4)
+    # A run ends 1 to 2 steps past now, so its secondary is close to, not exactly at, the model's position
+    np.testing.assert_allclose(run[-1, :3], now[-1, :3], atol=0.02)

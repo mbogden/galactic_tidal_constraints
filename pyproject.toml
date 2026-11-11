@@ -9,7 +9,7 @@ description = "Galaxy collision simulation, scoring and optimization around SPAM
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "jspam @ git+https://github.com/mbogden/JSPAM.git@c58dda42b59fbc2d4da845c63cdef6b6f91aa53a",
+    "jspam @ git+https://github.com/mbogden/JSPAM.git@9b11eae44be38204510ed6af4d5111b3f564446f",
     "numpy",
 ]
 
