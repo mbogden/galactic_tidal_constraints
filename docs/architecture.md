@@ -80,7 +80,7 @@ parallelization.
 For example, with field names that aren't final:
 ```json
 {
-  "models":    [ [22 values], [22 values] ],
+  "models":    [ [14 values], [14 values] ],
   "simulator": [ {...} ],
   "image":     [ {...}, {...} ],
   "fitness":   [ {...}, {...} ]

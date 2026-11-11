@@ -3,8 +3,9 @@
 This is the only module that imports `jspam`. It doesn't touch the disk, know about pools or MPI, or
 keep state between calls.
 
-A model is a plain array of SPAM's 22 collision parameters, shape (22,), or (n_models, 22) for many.
-How it's simulated is set by a `SimulatorConfig`. Runs always use SPAM's extended potential (halo, disk
+A model is a plain array of the 14 collision parameters that matter, shape (14,). SPAM takes 22; the
+last 8 (`epsilon1/2` and six `rscale`) do nothing in the extended potential, so `sim` appends fixed
+values for them (`UNUSED_PARAMS`) when it calls `jspam`. How it's simulated is set by a `SimulatorConfig`. Runs always use SPAM's extended potential (halo, disk
 and bulge).
 """
 
@@ -13,27 +14,29 @@ from dataclasses import dataclass
 import jspam
 import numpy as np
 
-# The 22 parameters in SPAM's order, named as in its Fortran parser (`parse_state_info_string`).
-# Galaxy 1 is the primary, which sits at the origin; galaxy 2 is the secondary.
+# A model's 14 parameters: SPAM's first 14, in its order, named as in its Fortran parser
+# (`parse_state_info_string`). Galaxy 1 is the primary, which sits at the origin; galaxy 2 is the secondary.
 #   x, y, z, vx, vy, vz:    the secondary's position and velocity relative to the primary
 #   mass1, mass2:           the two masses
-#   rout1, rout2:           the two disk radii
+#   rout1, rout2:           how far out each disk's particles are placed
 #   phi1, phi2, theta1, theta2: the two disks' orientations, in degrees
-#   epsilon1, epsilon2:     softening for gravity between the two centers
-#   rscale1_*, rscale2_*:   three scale values per galaxy (usually all 0)
 PARAM_NAMES = (
     "x", "y", "z", "vx", "vy", "vz",
     "mass1", "mass2", "rout1", "rout2",
     "phi1", "phi2", "theta1", "theta2",
-    "epsilon1", "epsilon2",
-    "rscale1_1", "rscale1_2", "rscale1_3", "rscale2_1", "rscale2_2", "rscale2_3",
 )  # fmt: skip
 PARAM_INDEX = {name: i for i, name in enumerate(PARAM_NAMES)}
+
+# SPAM's last 8 parameters, appended to every model before it goes to jspam. The extended potential never
+# reads them, so any values give the same run (docs/spam_physics.md, "Parameters that do nothing").
+#   epsilon1, epsilon2: softening, used only by the point-mass and MOND potentials
+#   rscale1_1..3, rscale2_1..3: disk profile shapes, switched off by SPAM's fixed disk option
+UNUSED_PARAMS = (0.3, 0.3, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0)
 
 
 @dataclass(frozen=True)
 class SimulatorConfig:
-    """Everything that sets a simulation's result, apart from the 22 parameters and the seed.
+    """Everything that sets a simulation's result, apart from the 14 parameters and the seed.
 
     Attributes:
         n1, n2: particles in the primary's and secondary's disks.
@@ -42,7 +45,7 @@ class SimulatorConfig:
             "wallin" (the original) adds a value in [0, heat): the same spread, but always positive, so a
             heated disk also drifts toward +x, +y, +z.
         lnl, r_scale, m_halo, m_bulge, h_bulge, h_disk: the unit galaxy both galaxies are built from,
-            scaled by their masses in the 22 parameters. Defaults are Wallin's.
+            scaled by their masses in the parameters. Defaults are Wallin's.
             lnl: strength of dynamical friction (Coulomb logarithm).
             r_scale: the halo's core radius. It also sets the radius grid of the galaxy's tables, so it
                 stretches every component, while SPAM still reads the tables at fixed distances.
@@ -89,10 +92,10 @@ class SimulatorConfig:
 
 
 def parse_model_string(model: str) -> np.ndarray:
-    """Read a comma-separated SPAM model string into an array, shape (22,).
+    """Read a comma-separated SPAM model string into a model, shape (14,).
 
-    Like SPAM, it reads the first 22 values and ignores the rest, so longer strings (such as the
-    34-value lines in JSPAM's `archive/data.txt`) work too.
+    Reads the first 14 values and ignores the rest, so SPAM's 22-value strings and the 34-value lines in
+    JSPAM's `archive/data.txt` both work.
     """
     values = model.strip().split(",")
     if len(values) < len(PARAM_NAMES):
@@ -106,7 +109,7 @@ def simulate(
     """Run one SPAM simulation and return every particle at the end.
 
     Args:
-        params: the 22 collision parameters, in SPAM's order (`PARAM_NAMES`), shape (22,).
+        params: the 14 collision parameters, in `PARAM_NAMES` order, shape (14,).
         config: how to simulate. The default is `SimulatorConfig()`.
         seed: sets where the disk particles start; the same seed gives the same particles. None
             gives different particles every run, as in Wallin's original.
@@ -116,7 +119,7 @@ def simulate(
         primary's disk, the next n2 the secondary's, and the last row is the secondary's center.
         The primary's center stays at the origin.
     """
-    return jspam.run_collision(params, seed=seed, **_jspam_args(config))  # jspam checks there are 22 values
+    return jspam.run_collision(_spam_params(params), seed=seed, **_jspam_args(config))
 
 
 def initial_state(
@@ -127,7 +130,18 @@ def initial_state(
     Takes the same arguments as `simulate` and returns the same shape. With the same seed, it's exactly
     the state `simulate` starts from. Useful for checking how the disks are set up.
     """
-    return jspam.initial_state(params, seed=seed, **_jspam_args(config))
+    return jspam.initial_state(_spam_params(params), seed=seed, **_jspam_args(config))
+
+
+def _spam_params(params: np.ndarray | list[float]) -> np.ndarray:
+    """A 14-value model as SPAM's 22 parameters: the model, then `UNUSED_PARAMS`."""
+    params = np.asarray(params, dtype=float)
+    if params.shape != (len(PARAM_NAMES),):
+        raise ValueError(
+            f"a model is {len(PARAM_NAMES)} values, shape ({len(PARAM_NAMES)},), got shape {params.shape}"
+            " (for a SPAM model string, use parse_model_string)"
+        )
+    return np.concatenate([params, UNUSED_PARAMS])
 
 
 def _jspam_args(config: SimulatorConfig) -> dict:
@@ -148,7 +162,7 @@ def mass_profile(config: SimulatorConfig = SimulatorConfig()) -> dict[str, np.nd
 
     Returns:
         Arrays of shape (10000,): "radius" (SPAM distance units), the enclosed mass of "halo", "disk",
-        "bulge" and "total" for a galaxy of mass 1 in the 22 parameters, and "force", the acceleration
+        "bulge" and "total" for a galaxy of mass 1 in the parameters, and "force", the acceleration
         a particle feels at that radius. Multiply masses and force by mass1 or mass2 for a real galaxy.
     """
     return jspam.mass_profile(_mass_model(config), config.normalization)

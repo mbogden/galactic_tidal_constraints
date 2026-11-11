@@ -6,7 +6,7 @@ import pytest
 
 # Skipped where the dependencies aren't installed, such as native Windows.
 np = pytest.importorskip("numpy")
-pytest.importorskip("jspam")
+jspam = pytest.importorskip("jspam")
 
 from galactic_tidal_constraints.simr import sim  # noqa: E402
 from galactic_tidal_constraints.simr.sim import SimulatorConfig  # noqa: E402
@@ -16,7 +16,7 @@ MODEL_STRING = (
     "-9.93853,-4.5805,15.43348,-1.54025,-2.97899,4.69234,34.41671,29.49607,2.97913,4.2501,301.0,35.5,"
     "310.80745,321.98757,0.3,0.3,0.0,0.0,0.0,0.0,0.0,0.0,1.0,0,0,0.24008,-2.41999,5.62715,0.0,1.0,0.0,1.0,0.0,0.0"
 )
-PARAMS = np.array(MODEL_STRING.split(",")[:22], dtype=float)
+PARAMS = np.array(MODEL_STRING.split(",")[:14], dtype=float)
 
 # Last row of a.101 from the original `basic_run "<model string>"`: the secondary's center at the end.
 EXPECTED_SECONDARY = [-9.9400701, -4.5834789, 15.438172, -1.5399158, -2.9788359, 4.6918210]
@@ -46,30 +46,31 @@ def test_simulate_accepts_a_list():
 
 def test_simulate_rejects_wrong_number_of_parameters():
     with pytest.raises(ValueError):
-        sim.simulate(PARAMS[:21], SMALL)
+        sim.simulate(PARAMS[:13], SMALL)
 
 
 # --- Step 2: parameter names and model strings -------------------------------------------------------
 
 
 def test_param_names_match_spam_order():
-    assert len(sim.PARAM_NAMES) == 22
-    assert len(set(sim.PARAM_NAMES)) == 22
+    assert len(sim.PARAM_NAMES) == 14
+    assert len(set(sim.PARAM_NAMES)) == 14
     assert sim.PARAM_NAMES[:8] == ("x", "y", "z", "vx", "vy", "vz", "mass1", "mass2")
     assert sim.PARAM_INDEX["mass1"] == 6
-    assert sim.PARAM_INDEX["epsilon2"] == 15
+    assert sim.PARAM_INDEX["theta2"] == 13
     assert all(sim.PARAM_NAMES[i] == name for name, i in sim.PARAM_INDEX.items())
 
 
-def test_parse_model_string_reads_first_22_values():
+def test_parse_model_string_reads_first_14_values():
     params = sim.parse_model_string(MODEL_STRING)
-    assert params.shape == (22,)
+    assert params.shape == (14,)
     np.testing.assert_array_equal(params, PARAMS)
 
 
-def test_parse_model_string_exactly_22_and_whitespace():
-    exact = ",".join(MODEL_STRING.split(",")[:22])
-    np.testing.assert_array_equal(sim.parse_model_string(f"  {exact}\n"), PARAMS)
+def test_parse_model_string_exactly_14_or_22_and_whitespace():
+    for n in (14, 22):
+        exact = ",".join(MODEL_STRING.split(",")[:n])
+        np.testing.assert_array_equal(sim.parse_model_string(f"  {exact}\n"), PARAMS)
 
 
 def test_parse_model_string_rejects_too_few_values():
@@ -221,7 +222,7 @@ WALLIN_NORM = 7.13333
 CLOSE_PARAMS = np.array(
     [
         1.08119, -1.66798, -2.06826, -0.18438, -0.39693, -0.02919, 0.51654, 0.36192, 0.94043, 0.43877, 12.97415,
-        135.11902, 97.54035, 305.01225, 0.3, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        135.11902, 97.54035, 305.01225,
     ]
 )  # fmt: skip
 
@@ -274,3 +275,32 @@ def test_normalization_changes_the_run_slightly():
     wallin = sim.simulate(PARAMS, replace(SMALL, normalization="wallin"), seed=1)
     assert not np.array_equal(total[-1], wallin[-1])
     np.testing.assert_allclose(total[-1], wallin[-1], rtol=0.05)
+
+
+# --- Step 5c: 14-value models ------------------------------------------------------------------------
+
+
+def test_simulate_appends_the_unused_parameters():
+    """A 14-value model gives exactly the run of the original 22-value line (whose last 8 differ)."""
+    original = np.array(MODEL_STRING.split(",")[:22], dtype=float)
+    assert not np.array_equal(original[14:], sim.UNUSED_PARAMS)  # so the test means something
+    ours = sim.simulate(PARAMS, SMALL, seed=1)
+    spam = jspam.run_collision(original, seed=1, **sim._jspam_args(SMALL))
+    np.testing.assert_array_equal(ours, spam)
+
+
+@pytest.mark.parametrize("index", range(14, 22))
+def test_last_8_parameters_do_nothing(index):
+    """Each of SPAM's last 8 parameters, changed on its own, leaves the run bit-identical."""
+    full = np.concatenate([PARAMS, sim.UNUSED_PARAMS])
+    changed = full.copy()
+    changed[index] = 7.5
+    args = sim._jspam_args(SMALL)
+    np.testing.assert_array_equal(
+        jspam.run_collision(full, seed=1, **args), jspam.run_collision(changed, seed=1, **args)
+    )
+
+
+def test_simulate_rejects_22_values():
+    with pytest.raises(ValueError, match="parse_model_string"):
+        sim.simulate(np.concatenate([PARAMS, sim.UNUSED_PARAMS]), SMALL)

@@ -29,7 +29,8 @@ so internal radius = 10 × r. `r_scale`, `h_bulge` and `h_disk` are in internal 
 - **We run the `EXTENDED` potential.** Each galaxy is the same tabulated **unit galaxy** (halo, disk,
   bulge), scaled by its mass. [More](#the-extended-potential-what-we-run)
 - **Only 14 of the 22 parameters do anything** in it: `epsilon1/2` and the six `rscale` values are
-  never read. [More](#parameters-that-do-nothing)
+  never read. So a model in `sim` is 14 values, and `sim` appends fixed ones for SPAM.
+  [More](#parameters-that-do-nothing)
 - **Every galaxy has the same size**, whatever its mass. `rout` only sets how far out particles are
   placed. A per-galaxy unit galaxy is planned (sim-v2 step 5b).
 - **Wallin's mass normalization makes the mass-model values change a galaxy's total mass.** `sim` uses
@@ -89,7 +90,7 @@ the extended and point-mass potentials agree.
   interpolation. Rows are 0.001 apart, so this is fine.
 
 ## The settings we expose (`SimulatorConfig`)
-Everything `sim.SimulatorConfig` can change, apart from the 22 parameters, plus the seed. For each, what
+Everything `sim.SimulatorConfig` can change, apart from the parameters, plus the seed. For each, what
 it does in the code and what it means physically. `sim` passes each value through `jspam`, which sets it
 in the Fortran before every run, so nothing carries over between runs.
 
@@ -213,8 +214,10 @@ In SPAM's model-string order. Galaxy 1 is the primary, at the origin; galaxy 2 i
 
 ### Parameters that do nothing
 With `EXTENDED`, **`epsilon1`, `epsilon2` and all six `rscale` values have no effect**: changing them
-leaves the output unchanged. They have to be in the 22-value model, but they shouldn't be optimized; set
-them to any fixed value. That leaves 14 parameters that matter.
+leaves the output bit-identical (tested for each, `tests/test_sim.py`). SPAM still needs all 22, so a
+model in `sim` is the first 14 (`sim.PARAM_NAMES`), and `sim` appends `sim.UNUSED_PARAMS`
+(ε = 0.3, 0.3; rscale = 3.0 × 6) before calling `jspam`. `sim.parse_model_string` reads the first 14 of
+any longer string.
 
 #### epsilon: softening, used only by the point-mass and MOND potentials
 In those potentials, each galaxy pulls with `a = M / (r² + ε²)`. ε sets the size of the galaxy's core:
