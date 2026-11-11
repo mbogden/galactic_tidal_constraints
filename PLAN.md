@@ -27,6 +27,8 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
   available. `jspam`'s defaults reproduce the original program; `sim` chooses ours.
   - Disk heat: `"centered"` by default in `sim` (Wallin's kicks are always positive, so heated
     disks drift).
+  - Mass normalization: `"total"` by default in `sim` (divide the unit galaxy by its actual total
+    mass, so it's always 1; Wallin's fixed 7.13333 makes the mass-model values change the total).
 
 ## Configuration
 One config tree for everything that can change a result, plus a few runtime flags.
@@ -43,6 +45,9 @@ One config tree for everything that can change a result, plus a few runtime flag
 ### Models and stage lists
 - Encounter parameters are the one hard input every run needs, and they're their own list. Each
   stage can have one entry or a list, directly under the stage.
+- A model is SPAM's first 14 parameters (`x` to `theta2`). We only use the extended potential, which
+  never reads the last 8 (`epsilon1/2`, the six `rscale`), so they aren't tracked anywhere. `sim`
+  appends fixed values for them when it calls `jspam`. Why: [docs/spam_physics.md](docs/spam_physics.md).
 - SIMR and the workflow always return a 4D array, with no automatic reduction:
   `scores[model, simulator, image, fitness]`.
 
