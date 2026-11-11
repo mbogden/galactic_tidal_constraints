@@ -29,6 +29,12 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
     disks drift).
   - Mass normalization: `"total"` by default in `sim` (divide the unit galaxy by its actual total
     mass, so it's always 1; Wallin's fixed 7.13333 makes the mass-model values change the total).
+  - Start time: `"pass"` by default in `sim`: start SPAM's lead (10 × `rout1` / speed) before the most
+    recent close pass, with older passes as options and a fixed start time allowed. SPAM's search picks
+    the closest pass back to −30, which on a repeating orbit is decided by rounding, then replaces a
+    start before −12 with −5. With no such pass back to −30, start at −5 (reported as a fallback), so the
+    model still gets a score.
+  - Dynamical friction: `lnl` = 0.1 by default in `sim` (Wallin's 0.001 makes it almost nothing).
 
 ## Configuration
 One config tree for everything that can change a result, plus a few runtime flags.

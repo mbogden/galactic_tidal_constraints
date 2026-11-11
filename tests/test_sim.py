@@ -35,7 +35,8 @@ def test_simulate_shape_and_finite():
 
 
 def test_simulate_matches_original_program():
-    final = sim.simulate_particles(PARAMS, replace(SMALL, normalization="wallin"), seed=1)  # the original's physics
+    original = replace(SMALL, normalization="wallin", start="wallin")  # the original's physics and start time
+    final = sim.simulate_particles(PARAMS, original, seed=1)
     np.testing.assert_allclose(final[-1], EXPECTED_SECONDARY, rtol=1e-5, atol=1e-6)
 
 
@@ -169,8 +170,8 @@ def test_config_defaults():
     config = SimulatorConfig()
     assert asdict(config) == {
         "n1": 1000, "n2": 1000, "heat1": 0.0, "heat2": 0.0, "heat_mode": "centered",
-        "lnl": 0.001, "r_scale": 10.0, "m_halo": 5.8, "m_bulge": 0.3333, "h_bulge": 0.2, "h_disk": 1.0,
-        "normalization": "total",
+        "lnl": 0.1, "r_scale": 10.0, "m_halo": 5.8, "m_bulge": 0.3333, "h_bulge": 0.2, "h_disk": 1.0,
+        "normalization": "total", "start": "pass", "start_pass": 1, "no_pass": -5.0,
     }  # fmt: skip
 
 
@@ -285,7 +286,7 @@ def test_simulate_appends_the_unused_parameters():
     original = np.array(MODEL_STRING.split(",")[:22], dtype=float)
     assert not np.array_equal(original[14:], sim.UNUSED_PARAMS)  # so the test means something
     ours = sim.simulate_particles(PARAMS, SMALL, seed=1)
-    spam = jspam.run_collision(original, seed=1, **sim._jspam_args(SMALL))
+    spam = jspam.run_collision(original, seed=1, **sim._jspam_args(PARAMS, SMALL))
     np.testing.assert_array_equal(ours, spam)
 
 
@@ -295,7 +296,7 @@ def test_last_8_parameters_do_nothing(index):
     full = np.concatenate([PARAMS, sim.UNUSED_PARAMS])
     changed = full.copy()
     changed[index] = 7.5
-    args = sim._jspam_args(SMALL)
+    args = sim._jspam_args(PARAMS, SMALL)
     np.testing.assert_array_equal(
         jspam.run_collision(full, seed=1, **args), jspam.run_collision(changed, seed=1, **args)
     )
@@ -308,12 +309,16 @@ def test_simulate_rejects_22_values():
 
 # --- Step 6a: timing and orbits ----------------------------------------------------------------------
 
+WALLIN_START = SimulatorConfig(start="wallin")
+
 
 def test_get_timing():
-    timing = sim.get_timing(PARAMS)
+    timing = sim.get_timing(PARAMS, WALLIN_START)
     assert set(timing) == {
         "t_start", "n_steps", "start_fallback", "t_start_found", "t_closest", "closest_distance", "closest_speed",
+        "start", "start_pass", "fallback_reason",
     }  # fmt: skip
+    assert timing["start"] == "wallin"
     assert timing["t_start"] < timing["t_closest"] < 0
     assert timing["n_steps"] == int(-timing["t_start"] / 0.001) + 2
     assert not timing["start_fallback"]
@@ -332,8 +337,8 @@ def test_orbit_starts_and_ends_with_a_particle_run():
 
 
 def test_orbit_closest_approach_matches_timing():
-    timing = sim.get_timing(PARAMS)
-    orbit = sim.simulate_orbit(PARAMS)
+    timing = sim.get_timing(PARAMS, WALLIN_START)
+    orbit = sim.simulate_orbit(PARAMS, WALLIN_START)
     separation = np.linalg.norm(orbit[:, :3], axis=1)
     closest = separation.argmin()
     np.testing.assert_allclose(separation[closest], timing["closest_distance"], rtol=1e-6)
@@ -352,9 +357,9 @@ def test_orbit_ignores_particles_and_heat_but_not_the_mass_model():
 
 
 def test_search_can_pick_an_older_closest_approach():
-    """A slightly stronger force (r_scale 9) makes the backward search find an older, closer pass."""
-    default = sim.get_timing(PARAMS)
-    stronger = sim.get_timing(PARAMS, SimulatorConfig(r_scale=9.0))
+    """With r_scale 9, SPAM's search picks an older pass (at the same distance as the recent one)."""
+    default = sim.get_timing(PARAMS, WALLIN_START)
+    stronger = sim.get_timing(PARAMS, replace(WALLIN_START, r_scale=9.0))
     assert default["t_closest"] > -4
     assert stronger["t_closest"] < -20
     assert stronger["start_fallback"]
@@ -362,8 +367,123 @@ def test_search_can_pick_an_older_closest_approach():
 
 def test_start_fallback_can_start_after_the_encounter():
     """With r_scale = 5 the search's start is before -12, so SPAM starts at -5, after the closest approach."""
-    timing = sim.get_timing(PARAMS, SimulatorConfig(r_scale=5.0))
+    timing = sim.get_timing(PARAMS, replace(WALLIN_START, r_scale=5.0))
     assert timing["start_fallback"]
     assert timing["t_start"] == -5.0
     assert timing["t_start_found"] < -12
     assert timing["t_closest"] < timing["t_start"]
+
+
+# --- Step 6b: choosing the start ---------------------------------------------------------------------
+
+
+def test_search_orbit_runs_back_from_now():
+    path = sim.search_orbit(PARAMS)
+    assert abs(len(path) - 30001) <= 2
+    np.testing.assert_allclose(path[0, :6], PARAMS[:6])
+    assert path[0, 6] == 0.0 and path[-1, 6] < -29.99
+
+
+def test_find_passes():
+    passes = sim.find_passes(PARAMS)
+    assert [p["pass"] for p in passes] == list(range(1, len(passes) + 1))
+    assert all(a["t"] > b["t"] for a, b in zip(passes, passes[1:]))  # most recent first
+    np.testing.assert_allclose(passes[0]["t"], -2.914, atol=0.002)
+    distance = np.linalg.norm(sim.search_orbit(PARAMS)[:, :3], axis=1)
+    np.testing.assert_allclose(passes[0]["distance"], distance.min(), rtol=1e-6)
+
+
+def test_pass_start_uses_spams_lead_on_the_chosen_pass():
+    timing = sim.get_timing(PARAMS)  # start="pass", start_pass=1 are the defaults
+    assert timing["start"] == "pass" and timing["start_pass"] == 1
+    lead = sim.LEAD_FACTOR * PARAMS[sim.PARAM_INDEX["rout1"]] / timing["closest_speed"]
+    assert timing["t_start"] == timing["t_closest"] - lead
+    # Where SPAM's search finds the same pass, the two starts agree to about a step
+    np.testing.assert_allclose(timing["t_start"], sim.get_timing(PARAMS, WALLIN_START)["t_start"], atol=0.002)
+
+
+def test_pass_start_fixes_spams_older_pass():
+    """With r_scale 9, SPAM falls back to -5; pass 1 is the recent pass, and pass 2 the older one SPAM found."""
+    config = SimulatorConfig(r_scale=9.0)
+    recent = sim.get_timing(PARAMS, config)
+    older = sim.get_timing(PARAMS, replace(config, start_pass=2))
+    spam = sim.get_timing(PARAMS, replace(config, start="wallin"))
+    assert recent["t_closest"] > -4 and recent["t_start"] < recent["t_closest"]
+    np.testing.assert_allclose(older["t_closest"], spam["t_closest"], atol=0.002)
+    assert older["t_start"] < older["t_closest"] < -20
+    assert spam["t_start"] == -5.0
+
+
+FIRST_APPROACH = PARAMS.copy()  # reversed, faster velocities: approaching now, unbound, no pass before now
+FIRST_APPROACH[3:6] *= -3
+OLD_PASS = PARAMS.copy()  # a light, slow, distant pair: separating now, but its pass was before t = -30
+OLD_PASS[:3] *= 4
+OLD_PASS[3:6] *= 0.2
+OLD_PASS[6:8] *= 0.1
+ERROR = SimulatorConfig(no_pass="error")
+
+
+def test_missing_pass_falls_back_to_minus_5():
+    for params in (FIRST_APPROACH, OLD_PASS):
+        timing = sim.get_timing(params)
+        assert timing["start"] == "fallback" and timing["start_fallback"]
+        assert timing["t_start"] == -5.0 and timing["n_steps"] == 5002
+        assert np.isnan(timing["t_closest"]) and "0 close passes" in timing["fallback_reason"]
+    orbit = sim.simulate_orbit(FIRST_APPROACH, SMALL)
+    assert orbit[0, 6] == -5.0
+    np.testing.assert_array_equal(orbit[-1, :6], sim.simulate_particles(FIRST_APPROACH, SMALL, seed=1)[-1])
+    assert sim.get_timing(FIRST_APPROACH, SimulatorConfig(no_pass=-4.0))["t_start"] == -4.0
+    found = sim.get_timing(PARAMS)
+    assert found["fallback_reason"] is None and not found["start_fallback"]
+
+
+def test_missing_pass_is_an_error_when_asked():
+    count = len(sim.find_passes(PARAMS))
+    with pytest.raises(ValueError, match=f"start_pass={count + 1}, but the centers make {count} close passes back"):
+        sim.get_timing(PARAMS, replace(ERROR, start_pass=count + 1))
+
+
+def test_first_approach_reason():
+    assert FIRST_APPROACH[:3] @ FIRST_APPROACH[3:6] < 0  # approaching
+    with pytest.raises(ValueError, match="0 close passes .* approaching now, with no earlier pass"):
+        sim.simulate_particles(FIRST_APPROACH, replace(ERROR, n1=20, n2=10), seed=1)  # fails before any particles
+
+
+def test_pass_older_than_the_window_reason():
+    assert OLD_PASS[:3] @ OLD_PASS[3:6] > 0  # separating
+    with pytest.raises(ValueError, match="0 close passes .* still shrinking at t = -30, so an older pass"):
+        sim.get_timing(OLD_PASS, ERROR)
+    sim.get_timing(OLD_PASS, SimulatorConfig(start="wallin"))  # SPAM's search still picks something
+
+
+def test_fixed_start():
+    config = replace(SMALL, start=-8.0)
+    timing = sim.get_timing(PARAMS, config)
+    assert timing["start"] == "fixed" and timing["t_start"] == -8.0 and timing["n_steps"] == 8002
+    orbit = sim.simulate_orbit(PARAMS, config)
+    assert orbit[0, 6] == -8.0
+    np.testing.assert_array_equal(orbit[-1, :6], sim.simulate_particles(PARAMS, config, seed=1)[-1])
+    np.testing.assert_allclose(orbit[0, :6], sim.search_orbit(PARAMS)[8000, :6], rtol=1e-9, atol=1e-9)
+
+
+def test_every_start_lies_on_the_search_path():
+    # r_scale 9, pass 2: the older pass, starting at -27.1 (within the path, which ends at -30)
+    for config in [SimulatorConfig(), WALLIN_START, SimulatorConfig(r_scale=9.0, start_pass=2)]:
+        path = sim.search_orbit(PARAMS, config)
+        start = sim.simulate_orbit(PARAMS, config)[0]
+        row = int(np.ceil(-start[6] / 0.001 - 1e-9))  # placement steps back while t_start < t
+        np.testing.assert_allclose(start[:6], path[row, :6], rtol=1e-9, atol=1e-9)
+
+
+@pytest.mark.parametrize("bad", [{"start": "later"}, {"start": 0.5}, {"start": 0}, {"start_pass": 0}, {"start_pass": 1.5},
+                                 {"no_pass": "skip"}, {"no_pass": 1.0}])
+def test_start_settings_are_checked(bad):
+    with pytest.raises(ValueError):
+        SimulatorConfig(**bad)
+
+
+def test_start_settings_survive_a_json_round_trip():
+    import json
+
+    for config in [SimulatorConfig(start=-8.5), SimulatorConfig(start_pass=2), WALLIN_START, ERROR]:
+        assert SimulatorConfig(**json.loads(json.dumps(asdict(config)))) == config

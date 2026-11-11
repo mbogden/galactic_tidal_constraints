@@ -37,16 +37,17 @@ so internal radius = 10 × r. `r_scale`, `h_bulge` and `h_disk` are in internal 
   `"total"` instead, so `mass1` and `mass2` are true totals. [More](#normalization-what-the-unit-galaxy-is-divided-by)
 - **`r_scale` resizes the whole galaxy** and, outside the core, scales the force by
   (10 / `r_scale`)². [More](#r_scale-the-halos-core-radius-and-the-size-of-everything)
-- **Dynamical friction is nearly off** (`lnl` = 0.001), and it only acts inside r = 2.
+- **Dynamical friction only acts inside r = 2.** Wallin's `lnl` = 0.001 makes it nearly nothing;
+  `sim` uses 0.1.
   [More](#lnl-dynamical-friction)
 - **The force stops falling at r = 10**, where the tables end.
 - **Wallin's disk heat drifts** every heated disk toward +x, +y, +z. `sim` centers it.
   [More](#heat1-heat2-heat_mode-random-motion-in-each-disk)
 - **Results are reliable up to about the first close pass** and the tails it makes.
   [More](#limits-shared-by-all-potentials)
-- **The start time is chosen by a search that can miss the encounter.** It keeps the closest pass
-  anywhere back to t = −30, and silently starts at −5 when its answer is earlier than −12, which can be
-  after the closest pass. [More](#the-start-time)
+- **SPAM's start-time search can miss the encounter.** It keeps the closest pass anywhere back to
+  t = −30, and silently starts at −5 when its answer is earlier than −12, which can be after the pass.
+  `sim` starts before the most recent pass instead (`start="pass"`). [More](#the-start-time)
 
 ## The extended potential (what we run)
 `potential_type` 1, "NBI" (`diffeq_nbi`). Each galaxy has the same tabulated mass model, scaled by its
@@ -94,8 +95,10 @@ the extended and point-mass potentials agree.
 
 ## The start time
 A run starts from the pair **now** (t = 0) and has to begin before their encounter, so the disks are
-undisturbed when it happens. `sim.get_timing` reports what SPAM chose, and `sim.simulate_orbit` returns
-the secondary's whole path from that start. One time unit is about 87 Myr.
+undisturbed when it happens. `sim.get_timing` reports the start, `sim.simulate_orbit` returns the
+secondary's path from it, and `sim.search_orbit` and `sim.find_passes` show the path back to −30 and
+every close pass on it. One time unit is about 87 Myr. How `sim` chooses the start is under
+[`start`, `start_pass`](#start-start_pass-when-the-run-starts); this section is SPAM's own way.
 
 **Code:** `getTStart` (setup_module.f90), called from `create_collision` (init_module.f90):
 1. Runs only the two centers **backward** from now in steps of 0.001, out to t = −30 (the window), and
@@ -116,13 +119,15 @@ so the lead is 4.0 and the run starts at −6.91.
 **Quirks:**
 - **The lead is short.** It uses the speed at closest approach, the fastest point of the orbit, so the
   secondary starts nearer than 10 × `rout1` (a candidate for why TNG runs didn't start early enough).
-- **The search can pick an older pass.** It keeps the closest point in the whole window, not the most
-  recent one. For the SDSS model, `r_scale` = 9 (force × 1.23) makes it find a pass at t = −23.4 instead
-  of the one near −3; its start is then before −12, so the run starts at −5.
-- **The −5 fallback can start after the encounter.** With `r_scale` = 5 the closest approach is at
-  −20.5 and the run starts at −5, so the run never shows that pass.
-- **The window, the −12 cap, the −5 fallback and the 10 are fixed in the Fortran.** Exposing them is
-  sim-v2 step 6b.
+- **The search can pick an older pass, almost at random.** It keeps the closest point in the whole
+  window, not the most recent one. With dynamical friction this weak (and none outside r = 2), a bound
+  orbit repeats: every pass has the same distance, to rounding. Which one wins comes down to rounding.
+  For the SDSS model, the default finds the pass near −3 (another, equally close, is at −27.0), but
+  `r_scale` = 9 makes it pick one at −23.4, and `r_scale` = 5 (four equal passes) one at −20.5.
+- **The −5 fallback can start after the encounter.** Both of those starts are before −12, so the run
+  starts at −5: after the pass the search chose, and too late to show it.
+- **The window, the −12 cap, the −5 fallback and the 10 are fixed in the Fortran.** `sim` keeps the
+  window and the 10 (`sim.LEAD_FACTOR`) and has no cap or fallback.
 
 ## The settings we expose (`SimulatorConfig`)
 Everything `sim.SimulatorConfig` can change, apart from the parameters, plus the seed. For each, what
@@ -130,7 +135,7 @@ it does in the code and what it means physically. `sim` passes each value throug
 in the Fortran before every run, so nothing carries over between runs.
 
 `jspam`'s defaults reproduce Wallin's program. `sim`'s defaults are ours: they differ only where a fix
-was chosen (`normalization`, `heat_mode`).
+was chosen (`normalization`, `heat_mode`, `start`) or a value changed (`lnl`).
 
 | Setting | `sim` default | Wallin's |
 |---|---|---|
@@ -138,10 +143,11 @@ was chosen (`normalization`, `heat_mode`).
 | `r_scale` | 10 | 10 |
 | `m_halo`, `m_bulge` | 5.8, 0.3333 | 5.8, 0.3333 |
 | `h_disk`, `h_bulge` | 1.0, 0.2 | 1.0, 0.2 |
-| `lnl` | 0.001 | 0.001 |
+| `lnl` | 0.1 | 0.001 |
 | `heat1`, `heat2` | 0, 0 | 0, 0 |
 | `heat_mode` | `"centered"` | `"wallin"` |
 | `n1`, `n2` | 1000, 1000 | 1000, 500 (`basic_run`) |
+| `start`, `start_pass`, `no_pass` | `"pass"`, 1, −5 | `"wallin"` (SPAM's search) |
 | `seed` | none (set by `simr` later) | none: random every run |
 
 ### The mass model
@@ -200,9 +206,36 @@ These shape the unit galaxy, so they change every force in the run.
   disk moves with it. The primary isn't slowed.
 - **Physics:** a massive body moving through a halo pulls a wake behind it, which drags on it, so orbits
   shrink and galaxies eventually merge. Real values of ln Λ are around 2 to 10. Wallin's 0.001 makes
-  friction about 0.1% of gravity; over a run it changes the orbit speed by roughly 1%.
+  friction about 0.1% of gravity; over a run it changes the orbit speed by roughly 1%. `sim` uses 0.1,
+  100 times stronger (and the value the old Python code set in `set_spam_parameters`).
 - **Quirk:** the density table is 0 past r = 2, so friction only acts while the secondary is inside
   r = 2. For wide encounters `lnl` has no effect at all.
+
+### The start
+#### `start`, `start_pass`, `no_pass`: when the run starts
+- **Code:** with `"pass"`, `sim.find_passes` takes `search_orbit` (the path SPAM's search integrates,
+  now back to −30, one row per step) and lists every local minimum of the distance between the centers,
+  most recent first. `start_pass` picks one (1 = most recent), and the run starts
+  `LEAD_FACTOR × rout1 / speed` before it (`LEAD_FACTOR` = 10, SPAM's own lead), passed to `jspam` as
+  `t_start`. The Fortran then skips `getTStart`: `setup_run` sets the start and `perturber_position_vec`
+  steps the secondary back to it along the same path. `"wallin"` runs SPAM's
+  search ([The start time](#the-start-time)). A negative number starts exactly then.
+- **Physics:** the disks should be built undisturbed, before the encounter that made the tails, so the
+  run starts a little before the pass that matters, normally the most recent one. Older passes (2, 3)
+  are there to try: the restricted three-body model is only reliable to about the first close pass, so
+  a run starting before pass 2 shows two passes with that caveat. For pass 1 the start matches SPAM's
+  when SPAM finds the same pass (within a step, −6.915 against −6.914 for the SDSS model).
+- **Quirks:** the lead keeps SPAM's short-lead issue (it uses the pass's speed, the fastest point); a
+  distance-based lead is a planned option. A start can be before −30 (pass 2 at −27 plus a lead of 4):
+  that works, since placement doesn't need the search path, but `search_orbit` won't reach it. A pair
+  still approaching now has no recent pass, so pass 1 is an older one, or there is none.
+- **No pass (`no_pass`):** when the chosen pass doesn't exist back to −30 (a first approach, a pass older
+  than −30, or fewer passes than `start_pass`), the run starts at `no_pass`, −5 by default, close to what
+  SPAM ends up doing. `get_timing` reports `start` = `"fallback"` and the reason. So such a model still
+  gets a run and a score instead of failing, which gives an optimizer something to rank. For a first
+  approach that run is physically right (the last few hundred Myr of the approach); for a pass older than
+  −30 it misses the encounter, and should score badly. `no_pass="error"` raises a `ValueError` with the
+  reason instead, before any particles are made.
 
 ### The disk particles
 These change how the disks are sampled, not the forces.
