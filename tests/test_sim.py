@@ -29,24 +29,24 @@ MEDIUM = SimulatorConfig(n1=50, n2=50)
 
 
 def test_simulate_shape_and_finite():
-    final = sim.simulate(PARAMS, SMALL, seed=1)
+    final = sim.simulate_particles(PARAMS, SMALL, seed=1)
     assert final.shape == (31, 6)
     assert np.isfinite(final).all()
 
 
 def test_simulate_matches_original_program():
-    final = sim.simulate(PARAMS, replace(SMALL, normalization="wallin"), seed=1)  # the original's physics
+    final = sim.simulate_particles(PARAMS, replace(SMALL, normalization="wallin"), seed=1)  # the original's physics
     np.testing.assert_allclose(final[-1], EXPECTED_SECONDARY, rtol=1e-5, atol=1e-6)
 
 
 def test_simulate_accepts_a_list():
-    final = sim.simulate(list(PARAMS), SMALL, seed=1)
+    final = sim.simulate_particles(list(PARAMS), SMALL, seed=1)
     assert final.shape == (31, 6)
 
 
 def test_simulate_rejects_wrong_number_of_parameters():
     with pytest.raises(ValueError):
-        sim.simulate(PARAMS[:13], SMALL)
+        sim.simulate_particles(PARAMS[:13], SMALL)
 
 
 # --- Step 2: parameter names and model strings -------------------------------------------------------
@@ -82,21 +82,21 @@ def test_parse_model_string_rejects_too_few_values():
 
 
 def test_same_seed_gives_identical_particles():
-    first = sim.simulate(PARAMS, MEDIUM, seed=7)
-    second = sim.simulate(PARAMS, MEDIUM, seed=7)
+    first = sim.simulate_particles(PARAMS, MEDIUM, seed=7)
+    second = sim.simulate_particles(PARAMS, MEDIUM, seed=7)
     np.testing.assert_array_equal(first, second)
 
 
 def test_different_seeds_change_particles_not_orbit():
-    first = sim.simulate(PARAMS, MEDIUM, seed=7)
-    second = sim.simulate(PARAMS, MEDIUM, seed=8)
+    first = sim.simulate_particles(PARAMS, MEDIUM, seed=7)
+    second = sim.simulate_particles(PARAMS, MEDIUM, seed=8)
     assert not np.allclose(first[:-1], second[:-1])
     np.testing.assert_allclose(first[-1], second[-1], rtol=1e-12)
 
 
 def test_no_seed_differs_each_run():
-    first = sim.simulate(PARAMS, MEDIUM)
-    second = sim.simulate(PARAMS, MEDIUM)
+    first = sim.simulate_particles(PARAMS, MEDIUM)
+    second = sim.simulate_particles(PARAMS, MEDIUM)
     assert not np.allclose(first[:-1], second[:-1])
 
 
@@ -105,7 +105,7 @@ def test_no_seed_differs_each_run():
 
 def test_initial_state_shape_and_differs_from_end():
     start = sim.initial_state(PARAMS, SMALL, seed=3)
-    end = sim.simulate(PARAMS, SMALL, seed=3)
+    end = sim.simulate_particles(PARAMS, SMALL, seed=3)
     assert start.shape == end.shape == (31, 6)
     assert not np.allclose(start, end)
 
@@ -157,8 +157,8 @@ def test_heat_modes_differ_only_by_the_drift():
 
 
 def test_no_heat_gives_the_same_run_in_both_modes():
-    wallin = sim.simulate(PARAMS, replace(SMALL, heat_mode="wallin"), seed=5)
-    centered = sim.simulate(PARAMS, replace(SMALL, heat_mode="centered"), seed=5)
+    wallin = sim.simulate_particles(PARAMS, replace(SMALL, heat_mode="wallin"), seed=5)
+    centered = sim.simulate_particles(PARAMS, replace(SMALL, heat_mode="centered"), seed=5)
     np.testing.assert_array_equal(wallin, centered)
 
 
@@ -264,15 +264,15 @@ def test_each_config_mass_value_reaches_its_component():
 
 def test_lnl_changes_a_close_encounter():
     config = SimulatorConfig(n1=5, n2=5)
-    base = sim.simulate(CLOSE_PARAMS, replace(config, lnl=0.0), seed=1)
-    friction = sim.simulate(CLOSE_PARAMS, replace(config, lnl=0.5), seed=1)
+    base = sim.simulate_particles(CLOSE_PARAMS, replace(config, lnl=0.0), seed=1)
+    friction = sim.simulate_particles(CLOSE_PARAMS, replace(config, lnl=0.5), seed=1)
     assert np.abs(base[-1, :3] - friction[-1, :3]).max() > 1e-3
 
 
 def test_normalization_changes_the_run_slightly():
     """At the default masses the two differ by 0.45% in force (0.9955 vs 1), so the orbit moves a little."""
-    total = sim.simulate(PARAMS, SMALL, seed=1)
-    wallin = sim.simulate(PARAMS, replace(SMALL, normalization="wallin"), seed=1)
+    total = sim.simulate_particles(PARAMS, SMALL, seed=1)
+    wallin = sim.simulate_particles(PARAMS, replace(SMALL, normalization="wallin"), seed=1)
     assert not np.array_equal(total[-1], wallin[-1])
     np.testing.assert_allclose(total[-1], wallin[-1], rtol=0.05)
 
@@ -284,7 +284,7 @@ def test_simulate_appends_the_unused_parameters():
     """A 14-value model gives exactly the run of the original 22-value line (whose last 8 differ)."""
     original = np.array(MODEL_STRING.split(",")[:22], dtype=float)
     assert not np.array_equal(original[14:], sim.UNUSED_PARAMS)  # so the test means something
-    ours = sim.simulate(PARAMS, SMALL, seed=1)
+    ours = sim.simulate_particles(PARAMS, SMALL, seed=1)
     spam = jspam.run_collision(original, seed=1, **sim._jspam_args(SMALL))
     np.testing.assert_array_equal(ours, spam)
 
@@ -303,4 +303,67 @@ def test_last_8_parameters_do_nothing(index):
 
 def test_simulate_rejects_22_values():
     with pytest.raises(ValueError, match="parse_model_string"):
-        sim.simulate(np.concatenate([PARAMS, sim.UNUSED_PARAMS]), SMALL)
+        sim.simulate_particles(np.concatenate([PARAMS, sim.UNUSED_PARAMS]), SMALL)
+
+
+# --- Step 6a: timing and orbits ----------------------------------------------------------------------
+
+
+def test_get_timing():
+    timing = sim.get_timing(PARAMS)
+    assert set(timing) == {
+        "t_start", "n_steps", "start_fallback", "t_start_found", "t_closest", "closest_distance", "closest_speed",
+    }  # fmt: skip
+    assert timing["t_start"] < timing["t_closest"] < 0
+    assert timing["n_steps"] == int(-timing["t_start"] / 0.001) + 2
+    assert not timing["start_fallback"]
+    # Not bound here, so the start is the closest approach minus 10 x rout1 / speed
+    lead = 10 * PARAMS[sim.PARAM_INDEX["rout1"]] / timing["closest_speed"]
+    np.testing.assert_allclose(timing["t_start"], timing["t_closest"] - lead, atol=0.002)
+
+
+def test_orbit_starts_and_ends_with_a_particle_run():
+    timing = sim.get_timing(PARAMS)
+    orbit = sim.simulate_orbit(PARAMS)
+    assert orbit.shape == (timing["n_steps"] + 1, 7)
+    np.testing.assert_allclose(orbit[0, 6], timing["t_start"])
+    np.testing.assert_array_equal(orbit[0, :6], sim.initial_state(PARAMS, SMALL, seed=1)[-1])
+    np.testing.assert_array_equal(orbit[-1, :6], sim.simulate_particles(PARAMS, SMALL, seed=1)[-1])
+
+
+def test_orbit_closest_approach_matches_timing():
+    timing = sim.get_timing(PARAMS)
+    orbit = sim.simulate_orbit(PARAMS)
+    separation = np.linalg.norm(orbit[:, :3], axis=1)
+    closest = separation.argmin()
+    np.testing.assert_allclose(separation[closest], timing["closest_distance"], rtol=1e-6)
+    np.testing.assert_allclose(orbit[closest, 6], timing["t_closest"], atol=0.002)
+
+
+def test_orbit_ignores_particles_and_heat_but_not_the_mass_model():
+    orbit = sim.simulate_orbit(PARAMS)
+    hot = SimulatorConfig(n1=5, n2=7, heat1=0.5, heat2=0.5)
+    np.testing.assert_array_equal(sim.simulate_orbit(PARAMS, hot), orbit)
+    # Every run ends at the observed position, so a weaker force changes where (and when) the orbit starts
+    weaker = sim.simulate_orbit(PARAMS, SimulatorConfig(r_scale=12.0))
+    np.testing.assert_allclose(weaker[-1, :3], orbit[-1, :3], atol=0.01)
+    assert weaker[0, 6] < orbit[0, 6]
+    assert not np.allclose(weaker[0, :3], orbit[0, :3], atol=0.5)
+
+
+def test_search_can_pick_an_older_closest_approach():
+    """A slightly stronger force (r_scale 9) makes the backward search find an older, closer pass."""
+    default = sim.get_timing(PARAMS)
+    stronger = sim.get_timing(PARAMS, SimulatorConfig(r_scale=9.0))
+    assert default["t_closest"] > -4
+    assert stronger["t_closest"] < -20
+    assert stronger["start_fallback"]
+
+
+def test_start_fallback_can_start_after_the_encounter():
+    """With r_scale = 5 the search's start is before -12, so SPAM starts at -5, after the closest approach."""
+    timing = sim.get_timing(PARAMS, SimulatorConfig(r_scale=5.0))
+    assert timing["start_fallback"]
+    assert timing["t_start"] == -5.0
+    assert timing["t_start_found"] < -12
+    assert timing["t_closest"] < timing["t_start"]

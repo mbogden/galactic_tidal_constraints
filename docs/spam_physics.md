@@ -44,6 +44,9 @@ so internal radius = 10 × r. `r_scale`, `h_bulge` and `h_disk` are in internal 
   [More](#heat1-heat2-heat_mode-random-motion-in-each-disk)
 - **Results are reliable up to about the first close pass** and the tails it makes.
   [More](#limits-shared-by-all-potentials)
+- **The start time is chosen by a search that can miss the encounter.** It keeps the closest pass
+  anywhere back to t = −30, and silently starts at −5 when its answer is earlier than −12, which can be
+  after the closest pass. [More](#the-start-time)
 
 ## The extended potential (what we run)
 `potential_type` 1, "NBI" (`diffeq_nbi`). Each galaxy has the same tabulated mass model, scaled by its
@@ -88,6 +91,38 @@ the extended and point-mass potentials agree.
   and the density is 0.
 - **The disk is spherical in the potential,** and forces come from the nearest table row with no
   interpolation. Rows are 0.001 apart, so this is fine.
+
+## The start time
+A run starts from the pair **now** (t = 0) and has to begin before their encounter, so the disks are
+undisturbed when it happens. `sim.get_timing` reports what SPAM chose, and `sim.simulate_orbit` returns
+the secondary's whole path from that start. One time unit is about 87 Myr.
+
+**Code:** `getTStart` (setup_module.f90), called from `create_collision` (init_module.f90):
+1. Runs only the two centers **backward** from now in steps of 0.001, out to t = −30 (the window), and
+   keeps the point where they were closest, over the whole window.
+2. Picks a start: for a bound orbit, near the last apocenter it found (if any); otherwise the closest
+   approach's time minus a **lead** of `10 × rout1 / speed at closest approach`.
+3. `create_collision` overrides it: a start earlier than **−12**, or within one step of 0, becomes **−5**
+   (reported as `start_fallback`).
+
+A run then takes `int(−t_start / 0.001) + 2` steps, ending 1 to 2 steps past now. The orbit uses the
+same potential, mass model and dynamical friction as the particles, and doesn't depend on them, so
+`simulate_orbit`'s last row is exactly where `simulate_particles` leaves the secondary.
+
+**Physics:** the lead is meant to give the secondary about 10 disk radii to approach. Measured on the
+SDSS model 587722984435351614 (default config): closest approach at t = −2.91, distance 5.4, speed 7.4,
+so the lead is 4.0 and the run starts at −6.91.
+
+**Quirks:**
+- **The lead is short.** It uses the speed at closest approach, the fastest point of the orbit, so the
+  secondary starts nearer than 10 × `rout1` (a candidate for why TNG runs didn't start early enough).
+- **The search can pick an older pass.** It keeps the closest point in the whole window, not the most
+  recent one. For the SDSS model, `r_scale` = 9 (force × 1.23) makes it find a pass at t = −23.4 instead
+  of the one near −3; its start is then before −12, so the run starts at −5.
+- **The −5 fallback can start after the encounter.** With `r_scale` = 5 the closest approach is at
+  −20.5 and the run starts at −5, so the run never shows that pass.
+- **The window, the −12 cap, the −5 fallback and the 10 are fixed in the Fortran.** Exposing them is
+  sim-v2 step 6b.
 
 ## The settings we expose (`SimulatorConfig`)
 Everything `sim.SimulatorConfig` can change, apart from the parameters, plus the seed. For each, what

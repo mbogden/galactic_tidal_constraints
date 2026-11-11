@@ -103,7 +103,7 @@ def parse_model_string(model: str) -> np.ndarray:
     return np.array(values[: len(PARAM_NAMES)], dtype=float)
 
 
-def simulate(
+def simulate_particles(
     params: np.ndarray | list[float], config: SimulatorConfig = SimulatorConfig(), seed: int | None = None
 ) -> np.ndarray:
     """Run one SPAM simulation and return every particle at the end.
@@ -127,10 +127,44 @@ def initial_state(
 ) -> np.ndarray:
     """Every particle at the start of the run, before SPAM takes a step.
 
-    Takes the same arguments as `simulate` and returns the same shape. With the same seed, it's exactly
-    the state `simulate` starts from. Useful for checking how the disks are set up.
+    Takes the same arguments as `simulate_particles` and returns the same shape. With the same seed, it's
+    exactly the state `simulate_particles` starts from. Useful for checking how the disks are set up.
     """
     return jspam.initial_state(_spam_params(params), seed=seed, **_jspam_args(config))
+
+
+def get_timing(params: np.ndarray | list[float], config: SimulatorConfig = SimulatorConfig()) -> dict:
+    """When a run starts and how many steps it takes, without running it.
+
+    SPAM runs the two galaxy centers backward from now (t = 0) to t = -30, finds their closest approach,
+    and starts the run before it: near the last apocenter for a bound orbit, otherwise a lead of
+    10 x rout1 / (speed at closest approach) earlier. A start earlier than -12, or within one step of 0,
+    is replaced by -5. Time is in SPAM units (about 87 Myr).
+
+    Only the mass model and normalization in `config` matter here; particles and heat don't.
+
+    Returns:
+        "t_start": the start time a run uses.
+        "n_steps": steps from t_start to the end of a run, 1 to 2 steps past now.
+        "start_fallback": True when t_start is the -5 fallback.
+        "t_start_found": the search's start, before the fallback.
+        "t_closest", "closest_distance", "closest_speed": the closest approach the search found.
+    """
+    return jspam.timing(_spam_params(params), **_orbit_args(config))
+
+
+def simulate_orbit(params: np.ndarray | list[float], config: SimulatorConfig = SimulatorConfig()) -> np.ndarray:
+    """The secondary galaxy's center at every step of a run, with no particles (about 0.05 s).
+
+    The primary's center stays at the origin, so this is the whole orbit. The centers' motion doesn't
+    depend on the particles or the seed, so the last row is exactly where `simulate_particles` leaves the
+    secondary's center.
+
+    Returns:
+        x, y, z, vx, vy, vz, t at the start and after each step, shape (n_steps + 1, 7), with n_steps
+        from `get_timing`.
+    """
+    return jspam.run_orbit(_spam_params(params), **_orbit_args(config))
 
 
 def _spam_params(params: np.ndarray | list[float]) -> np.ndarray:
@@ -155,6 +189,11 @@ def _jspam_args(config: SimulatorConfig) -> dict:
         "mass_model": _mass_model(config),
         "normalization": config.normalization,
     }
+
+
+def _orbit_args(config: SimulatorConfig) -> dict:
+    """The parts of the config that move the galaxy centers, as jspam's keyword arguments."""
+    return {"mass_model": _mass_model(config), "normalization": config.normalization}
 
 
 def mass_profile(config: SimulatorConfig = SimulatorConfig()) -> dict[str, np.ndarray]:
