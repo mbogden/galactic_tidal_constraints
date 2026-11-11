@@ -35,7 +35,7 @@ def test_simulate_shape_and_finite():
 
 
 def test_simulate_matches_original_program():
-    final = sim.simulate(PARAMS, SMALL, seed=1)
+    final = sim.simulate(PARAMS, replace(SMALL, normalization="wallin"), seed=1)  # the original's physics
     np.testing.assert_allclose(final[-1], EXPECTED_SECONDARY, rtol=1e-5, atol=1e-6)
 
 
@@ -166,7 +166,11 @@ def test_no_heat_gives_the_same_run_in_both_modes():
 
 def test_config_defaults():
     config = SimulatorConfig()
-    assert asdict(config) == {"n1": 1000, "n2": 1000, "heat1": 0.0, "heat2": 0.0, "heat_mode": "centered"}
+    assert asdict(config) == {
+        "n1": 1000, "n2": 1000, "heat1": 0.0, "heat2": 0.0, "heat_mode": "centered",
+        "lnl": 0.001, "r_scale": 10.0, "m_halo": 5.8, "m_bulge": 0.3333, "h_bulge": 0.2, "h_disk": 1.0,
+        "normalization": "total",
+    }  # fmt: skip
 
 
 def test_simulate_uses_default_config():
@@ -192,7 +196,11 @@ def test_config_accepts_numpy_integers():
 
 @pytest.mark.parametrize(
     "bad",
-    [{"n1": 0}, {"n2": -5}, {"n1": 10.5}, {"heat1": -0.1}, {"heat2": -1}, {"heat_mode": "centred"}],
+    [
+        {"n1": 0}, {"n2": -5}, {"n1": 10.5}, {"heat1": -0.1}, {"heat2": -1}, {"heat_mode": "centred"},
+        {"lnl": -0.1}, {"r_scale": 0}, {"m_halo": -1}, {"m_bulge": 0}, {"h_bulge": -0.2}, {"h_disk": 0},
+        {"normalization": "unit"},
+    ],  # fmt: skip
 )
 def test_config_rejects_bad_values(bad):
     with pytest.raises(ValueError):
@@ -202,3 +210,67 @@ def test_config_rejects_bad_values(bad):
 def test_config_rejects_unknown_fields():
     with pytest.raises(TypeError):
         SimulatorConfig(potential="point_mass")
+
+
+# --- Step 5a: the mass model -------------------------------------------------------------------------
+
+WALLIN = SimulatorConfig(normalization="wallin")
+WALLIN_NORM = 7.13333
+
+# Line 3 of JSPAM's archive/data.txt: the secondary passes close enough for dynamical friction to matter.
+CLOSE_PARAMS = np.array(
+    [
+        1.08119, -1.66798, -2.06826, -0.18438, -0.39693, -0.02919, 0.51654, 0.36192, 0.94043, 0.43877, 12.97415,
+        135.11902, 97.54035, 305.01225, 0.3, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    ]
+)  # fmt: skip
+
+
+def test_mass_profile_shape_and_total_normalization():
+    profile = sim.mass_profile()
+    assert set(profile) == {"radius", "halo", "disk", "bulge", "total", "force"}
+    assert all(values.shape == (10000,) for values in profile.values())
+    np.testing.assert_allclose(profile["total"][-1], 1.0, rtol=1e-12)  # "total" is the default
+
+
+def test_wallin_normalization_gives_0_9955():
+    np.testing.assert_allclose(sim.mass_profile(WALLIN)["total"][-1], 0.99549, rtol=1e-4)
+
+
+def test_total_normalization_keeps_mass_one_when_masses_change():
+    profile = sim.mass_profile(SimulatorConfig(m_halo=11.6, m_bulge=1.0))
+    np.testing.assert_allclose(profile["total"][-1], 1.0, rtol=1e-12)
+
+
+def test_components_sum_to_total():
+    profile = sim.mass_profile()
+    np.testing.assert_allclose(profile["halo"] + profile["disk"] + profile["bulge"], profile["total"], rtol=1e-12)
+
+
+def test_each_config_mass_value_reaches_its_component():
+    """Each field changes the part of the galaxy it names, so a swap between them would fail here."""
+    base = sim.mass_profile(WALLIN)
+    np.testing.assert_allclose(sim.mass_profile(replace(WALLIN, m_bulge=0.6))["bulge"][-1], 0.6 / WALLIN_NORM, rtol=1e-6)
+    np.testing.assert_allclose(sim.mass_profile(replace(WALLIN, m_halo=11.6))["halo"], 2 * base["halo"], rtol=1e-12)
+    np.testing.assert_allclose(sim.mass_profile(replace(WALLIN, h_disk=2.0))["disk"][-1], 2.0 / WALLIN_NORM, rtol=1e-2)
+    wide_bulge = sim.mass_profile(replace(WALLIN, h_bulge=0.5))
+    np.testing.assert_allclose(wide_bulge["bulge"][-1], base["bulge"][-1], rtol=1e-6)
+    assert wide_bulge["bulge"][100] < base["bulge"][100]
+    stretched = sim.mass_profile(replace(WALLIN, r_scale=5.0))
+    for component in ("halo", "disk", "bulge"):
+        assert not np.allclose(stretched[component], base[component])
+
+
+def test_lnl_changes_a_close_encounter():
+    config = SimulatorConfig(n1=5, n2=5)
+    base = sim.simulate(CLOSE_PARAMS, replace(config, lnl=0.0), seed=1)
+    friction = sim.simulate(CLOSE_PARAMS, replace(config, lnl=0.5), seed=1)
+    assert np.abs(base[-1, :3] - friction[-1, :3]).max() > 1e-3
+
+
+def test_normalization_changes_the_run_slightly():
+    """At the default masses the two differ by 0.45% in force (0.9955 vs 1), so the orbit moves a little."""
+    total = sim.simulate(PARAMS, SMALL, seed=1)
+    wallin = sim.simulate(PARAMS, replace(SMALL, normalization="wallin"), seed=1)
+    assert not np.array_equal(total[-1], wallin[-1])
+    np.testing.assert_allclose(total[-1], wallin[-1], rtol=0.05)

@@ -41,6 +41,16 @@ class SimulatorConfig:
         heat_mode: "centered" (the default) adds a value in [-heat/2, heat/2) to each of vx, vy and vz.
             "wallin" (the original) adds a value in [0, heat): the same spread, but always positive, so a
             heated disk also drifts toward +x, +y, +z.
+        lnl, r_scale, m_halo, m_bulge, h_bulge, h_disk: the unit galaxy both galaxies are built from,
+            scaled by their masses in the 22 parameters. Defaults are Wallin's.
+            lnl: strength of dynamical friction (Coulomb logarithm).
+            r_scale: the halo's core radius. It also sets the radius grid of the galaxy's tables, so it
+                stretches every component, while SPAM still reads the tables at fixed distances.
+            m_halo, m_bulge: halo and bulge masses. h_bulge: bulge scale length.
+            h_disk: disk scale length, which also sets the disk's mass.
+        normalization: "total" (the default) divides the galaxy by its actual total mass, so it's always 1
+            and the six values only change how the mass is distributed. "wallin" (the original) divides by
+            a fixed 7.13333, so changing a mass changes the galaxy's total (and the defaults give 0.9955).
     """
 
     n1: int = 1000
@@ -48,6 +58,13 @@ class SimulatorConfig:
     heat1: float = 0.0
     heat2: float = 0.0
     heat_mode: str = "centered"
+    lnl: float = 0.001
+    r_scale: float = 10.0
+    m_halo: float = 5.8
+    m_bulge: float = 0.3333
+    h_bulge: float = 0.2
+    h_disk: float = 1.0
+    normalization: str = "total"
 
     def __post_init__(self) -> None:
         """Check the values when the config is made, so mistakes show up before any run."""
@@ -60,6 +77,15 @@ class SimulatorConfig:
                 raise ValueError(f"{name} can't be negative: {getattr(self, name)!r}")
         if self.heat_mode not in jspam.HEAT_MODES:
             raise ValueError(f"heat_mode must be one of {list(jspam.HEAT_MODES)}: {self.heat_mode!r}")
+        if self.lnl < 0:
+            raise ValueError(f"lnl can't be negative: {self.lnl!r}")
+        for name in ("r_scale", "m_halo", "m_bulge", "h_bulge", "h_disk"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be positive: {getattr(self, name)!r}")
+        if self.normalization not in jspam.NORMALIZATIONS:
+            raise ValueError(
+                f"normalization must be one of {list(jspam.NORMALIZATIONS)}: {self.normalization!r}"
+            )
 
 
 def parse_model_string(model: str) -> np.ndarray:
@@ -112,4 +138,22 @@ def _jspam_args(config: SimulatorConfig) -> dict:
         "heat1": config.heat1,
         "heat2": config.heat2,
         "heat_mode": config.heat_mode,
+        "mass_model": _mass_model(config),
+        "normalization": config.normalization,
     }
+
+
+def mass_profile(config: SimulatorConfig = SimulatorConfig()) -> dict[str, np.ndarray]:
+    """The unit galaxy's tables for this config, as SPAM reads them.
+
+    Returns:
+        Arrays of shape (10000,): "radius" (SPAM distance units), the enclosed mass of "halo", "disk",
+        "bulge" and "total" for a galaxy of mass 1 in the 22 parameters, and "force", the acceleration
+        a particle feels at that radius. Multiply masses and force by mass1 or mass2 for a real galaxy.
+    """
+    return jspam.mass_profile(_mass_model(config), config.normalization)
+
+
+def _mass_model(config: SimulatorConfig) -> dict[str, float]:
+    """The config's mass model, as jspam names it."""
+    return {name: getattr(config, name) for name in ("lnl", "r_scale", "m_halo", "m_bulge", "h_bulge", "h_disk")}

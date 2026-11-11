@@ -638,7 +638,7 @@ notebook = [
 
 [package.metadata]
 requires-dist = [
-    { name = "jspam", git = "https://github.com/mbogden/JSPAM.git?rev=5383fff88f930602b8b11dc0597c5134cac5733c" },
+    { name = "jspam", git = "https://github.com/mbogden/JSPAM.git?rev=640e0f08fcb1fdf5602290993f0703cd83fa9718" },
     { name = "numpy" },
 ]
 
@@ -857,7 +857,7 @@ wheels = [
 [[package]]
 name = "jspam"
 version = "0.1.0"
-source = { git = "https://github.com/mbogden/JSPAM.git?rev=5383fff88f930602b8b11dc0597c5134cac5733c#5383fff88f930602b8b11dc0597c5134cac5733c" }
+source = { git = "https://github.com/mbogden/JSPAM.git?rev=640e0f08fcb1fdf5602290993f0703cd83fa9718#640e0f08fcb1fdf5602290993f0703cd83fa9718" }
 dependencies = [
     { name = "numpy" },
 ]
