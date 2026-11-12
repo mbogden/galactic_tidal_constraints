@@ -615,3 +615,77 @@ def test_tasks_and_the_worker_can_be_sent_to_other_processes(tmp_path):
     task = pickle.loads(pickle.dumps(calls[0]))
     assert task.model_id == "000000" and task.folder == tmp_path / "model_000000"
     assert pickle.loads(pickle.dumps(simr._run_model)) is simr._run_model
+
+
+# --- Step 12b: local pools, catalog writes while running, a worker that dies ---------------------------
+
+
+def test_a_local_pool_gives_the_same_results_as_one_process(tmp_path):
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    req = save_request(["sim.particles"], returned=["sim.particles", "sim.timing"], simulator=[SMALL, {**SMALL, "seed": 1}])
+    solo = simr.run(MODELS, req, output=tmp_path / "solo")
+    with ProcessPoolExecutor(max_workers=2, mp_context=multiprocessing.get_context("spawn")) as pool:
+        pooled = simr.run(MODELS, req, output=tmp_path / "pool", map=pool.map)
+    for m in range(len(MODELS)):
+        for s in range(2):
+            np.testing.assert_array_equal(pooled.data["sim.particles"][m, s], solo.data["sim.particles"][m, s])
+            np.testing.assert_array_equal(
+                simr.load_simulation(tmp_path / "pool" / f"model_{pooled.ids[m]}", f"sim_{s:02d}")["sim.particles"],
+                solo.data["sim.particles"][m, s])
+    assert pooled.status["sim"].tolist() == solo.status["sim"].tolist()
+    assert simr.load_catalog(tmp_path / "pool")["runs"][0]["finished"] is not None
+
+
+def test_statuses_are_written_while_results_arrive(tmp_path, monkeypatch):
+    monkeypatch.setattr(simr, "CATALOG_WRITE_SECONDS", 0.0)  # write after every model
+    seen = []
+
+    def peeking_map(function, tasks):
+        for task in tasks:
+            yield function(task)
+            seen.append(simr.load_catalog(tmp_path)["runs"][0]["status"]["sim"])
+
+    simr.run(MODELS, request(["sim.timing"]), output=tmp_path, map=peeking_map)
+    # The catalog was written after model 0 (seen once model 1 is handed out), with model 1 not yet run.
+    assert seen[0] == [["ran"], [None]]
+
+
+def test_a_broken_pool_records_what_finished_and_raises(tmp_path, caplog):
+    from concurrent.futures.process import BrokenProcessPool
+
+    def dying_map(function, tasks):
+        tasks = iter(tasks)
+        yield function(next(tasks))
+        raise BrokenProcessPool("a worker died")
+
+    with pytest.raises(simr.SimrRunError, match="1 models unfinished"):
+        simr.run(MODELS, save_request(["sim.orbit"]), output=tmp_path, map=dying_map)
+    assert "1 of 2 models unfinished: ['000001']" in caplog.text
+    [record] = simr.load_catalog(tmp_path)["runs"]
+    assert record["finished"] is None
+    assert record["status"] == {"sim": [["ran"], [None]]}
+    again = simr.run(MODELS, save_request(["sim.orbit"]), output=tmp_path)  # a rerun resumes
+    assert again.status["sim"][:, 0].tolist() == ["reused", "ran"]
+
+
+def _exit_hard(params, config):
+    import os
+
+    os._exit(1)  # what a segfault in SPAM's Fortran does to a worker
+
+
+def test_a_worker_that_really_dies(tmp_path, monkeypatch):
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    monkeypatch.setitem(simr.SIM_DATA, "sim.orbit", _exit_hard)  # "fork" workers inherit this
+    with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("fork")) as pool:
+        with pytest.raises(simr.SimrRunError, match="a worker died"):
+            simr.run(MODELS, save_request(["sim.orbit"]), output=tmp_path, map=pool.map)
+    assert simr.load_catalog(tmp_path)["runs"][0]["finished"] is None
+
+
+def test_available_cpus():
+    assert simr.available_cpus() >= 1

@@ -112,6 +112,26 @@ With built-in `map`, models run one after another in this process. A pool's `map
 `simr`. Results don't depend on the `map`: each simulator entry's seed comes from its config. Returned
 data travels back to the calling process and stays in its memory, so at scale, save instead.
 
+```python
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
+
+with ProcessPoolExecutor(max_workers=simr.available_cpus(), mp_context=multiprocessing.get_context("spawn"),
+                         initializer=simr.configure_logging) as pool:
+    result = simr.run(models, request, output="runs", map=pool.map)
+```
+
+- **While results arrive**, the statuses so far are written to the catalog at most once a minute
+  (`simr.CATALOG_WRITE_SECONDS`) and again at the end; cells not yet run are `null`.
+- **A worker that dies** (a broken pool, e.g. a crash in SPAM's Fortran, which Python can't catch)
+  stops the run: the unfinished models are logged, the catalog keeps the statuses so far with
+  `"finished": null`, and `simr.SimrRunError` is raised. Everything already saved is reused by a rerun.
+- `simr.available_cpus()` is the CPUs this process may use (under Slurm, the job's, not the
+  machine's). `simr.configure_logging(level)` sets up logging with the process name in each line, for
+  the main process and, as the pool's initializer, each worker.
+- "spawn" starts workers fresh, as MPI does. A script that uses it needs the usual
+  `if __name__ == "__main__":` guard.
+
 ## Failures and status
 A simulation (one model on one simulator entry) **fails as a whole** when computing any requested item
 raises an error, or when any simulated array holds NaN or inf. `sim.timing` isn't checked: it
@@ -226,7 +246,7 @@ A run without `save` writes only the catalog: its models and its record, no mode
 
 ## The command line
 ```bash
-python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--config config.json] [--log-level INFO]
+python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--config config.json]     [--mode solo|local] [--workers N] [--log-level INFO]
 ```
 
 | Flag | |
@@ -234,6 +254,8 @@ python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--
 | `--models` | Required. The models file (below) |
 | `--output` | Required: a folder or a `.json` catalog file, so every run is recorded |
 | `--config` | Optional. The request as JSON, listing only what differs from the defaults; without it, one default simulator entry. `run.return` is ignored with a warning (nothing comes back in memory), so one config works in a notebook and here |
+| `--mode` | `solo` (the default): one process. `local`: a pool of processes on this machine |
+| `--workers` | With `--mode local`: how many processes (default: the CPUs this job may use) |
 | `--log-level` | `DEBUG`, `INFO` (the default), `WARNING` or `ERROR` |
 
 **The models file:** one model per line; the first 14 comma-separated values on the line are the
@@ -246,7 +268,7 @@ isn't a number, is an error naming the line. `simr.read_models(path)` reads one 
 | Code | Meaning |
 |---|---|
 | 0 | The run ran, even if some simulations failed (they're in the catalog and the log) |
-| 1 | It couldn't run: a bad models file, config or output (a short message, no traceback) |
+| 1 | It couldn't run or finish: a bad models file, config or output, or a worker that died (a short message, no traceback) |
 | 2 | It ran, but every simulation failed: almost always a setup mistake |
 
 Until fitness exists, a run computes only what `run.save` asks for, so a command-line run without

@@ -62,6 +62,7 @@ import subprocess
 import time
 import types
 import typing
+from concurrent.futures import BrokenExecutor
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -101,6 +102,9 @@ SIM_DATA = {
     "sim.orbit": _orbit,
     "sim.timing": _timing,
 }
+
+# While a run collects results, its statuses are written to the catalog at most this often (and at the end).
+CATALOG_WRITE_SECONDS = 60.0
 
 REQUEST_KEYS = ("run", "simulator")
 RUN_KEYS = ("return", "save")
@@ -153,7 +157,10 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
         map: how the models' work is spread out: built-in `map` (the default) runs one model after
             another in this process; a pool's `map` (e.g. `ProcessPoolExecutor().map`) runs them in
             parallel. Each call handles one model with all its simulator entries, and the same model twice
-            is run once. Only this process touches the catalog.
+            is run once. Only this process touches the catalog, writing the statuses so far at most once
+            a minute while results arrive. If a worker dies (a broken pool, e.g. a crash in SPAM's
+            Fortran), the unfinished models are logged, the catalog keeps the statuses so far with
+            "finished" None, and `SimrRunError` is raised; a rerun reuses what was saved.
 
     Returns:
         A `SimrResult`; see its docstring.
@@ -203,27 +210,68 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
                    saved=saved, folder=root / f"model_{ids[r[0]]}" if root is not None else None, versions=versions)
         for r in rows
     ]
-    for task_rows, outcome in zip(rows, map(_run_model, tasks)):
-        for m in task_rows:
-            for item in returned:
-                data[item][m, :] = outcome["data"][item]
-            status["sim"][m, :] = outcome["status"]
-            seconds["sim"][m, :] = outcome["seconds"]
-            errors["sim"][m, :] = outcome["errors"]
+    last_write = time.monotonic()
+    done = 0
+    try:
+        for task_rows, outcome in zip(rows, map(_run_model, tasks)):
+            for m in task_rows:
+                for item in returned:
+                    data[item][m, :] = outcome["data"][item]
+                status["sim"][m, :] = outcome["status"]
+                seconds["sim"][m, :] = outcome["seconds"]
+                errors["sim"][m, :] = outcome["errors"]
+            done += 1
+            if catalog is not None and time.monotonic() - last_write >= CATALOG_WRITE_SECONDS:
+                _record_status(catalog_file, catalog, run_record, status, seconds, errors)
+                last_write = time.monotonic()
+    except BrokenExecutor as error:  # a worker died: nothing more can come back from the pool
+        unfinished = [ids[r[0]] if ids[r[0]] is not None else r[0] for r in rows[done:]]
+        logger.error("a worker died (%s); %d of %d models unfinished: %s", error, len(unfinished), len(rows),
+                     unfinished)
+        if catalog is not None:
+            _record_status(catalog_file, catalog, run_record, status, seconds, errors)
+        raise SimrRunError(f"a worker died with {len(unfinished)} models unfinished; rerun to resume") from error
 
     counts = {word: int((status["sim"] == word).sum()) for word in ("ran", "reused", "failed", "empty")}
     logger.info("simr: %d simulations: %d ran, %d reused, %d failed, %d empty (nothing requested)",
                 status["sim"].size, *counts.values())
     if catalog is not None:
-        run_record.update(
-            status={"sim": status["sim"].tolist()},
-            seconds={"sim": seconds["sim"].tolist()},
-            errors={"sim": errors["sim"].tolist()},
-            finished=_now(),
-        )
-        _write_catalog(catalog_file, catalog)
+        run_record["finished"] = _now()
+        _record_status(catalog_file, catalog, run_record, status, seconds, errors)
     return SimrResult(models=models, simulators=configs, data=data, ids=ids,
                       status=status, seconds=seconds, errors=errors)
+
+
+LOG_FORMAT = "%(asctime)s %(levelname)s [%(processName)s] %(name)s: %(message)s"
+
+
+def configure_logging(level: str | int = "INFO") -> None:
+    """Set up logging for an application: once in the main process, and once in each worker a pool starts
+    (as its initializer). The process name in every line tells interleaved workers apart. simr itself never
+    calls this."""
+    logging.basicConfig(level=level, format=LOG_FORMAT)
+
+
+def available_cpus() -> int:
+    """The CPUs this process may use: under Slurm, the ones the job was given, not the whole machine."""
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:  # not Linux
+        return os.cpu_count() or 1
+
+
+class SimrRunError(RuntimeError):
+    """The run couldn't finish: a worker died. What finished is saved and recorded; rerun to resume."""
+
+
+def _record_status(catalog_file, catalog, run_record, status, seconds, errors) -> None:
+    """Write the statuses so far into the run's record (cells not yet run are None) and the catalog."""
+    run_record.update(
+        status={"sim": status["sim"].tolist()},
+        seconds={"sim": seconds["sim"].tolist()},
+        errors={"sim": errors["sim"].tolist()},
+    )
+    _write_catalog(catalog_file, catalog)
 
 
 @dataclass

@@ -122,3 +122,23 @@ def test_python_dash_m(tmp_path, files):
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert "the run is recorded in" in result.stderr
+
+
+def test_local_mode(tmp_path, files, caplog):
+    config = {"run": {"save": ["sim.orbit"]}, "simulator": [SMALL, {**SMALL, "lnl": 0.01}]}
+    with caplog.at_level("INFO"):
+        assert main(files(models=(MODEL, FIRST_APPROACH), config=config) + ["--mode", "local", "--workers", "2"]) == 0
+    assert "local mode: 2 workers" in caplog.text
+    [record] = simr.load_catalog(tmp_path / "runs")["runs"]
+    assert record["status"] == {"sim": [["ran", "ran"], ["ran", "ran"]]}
+    solo = tmp_path / "solo"
+    main(files(models=(MODEL, FIRST_APPROACH), config=config, output="solo"))
+    np.testing.assert_array_equal(simr.load_simulation(tmp_path / "runs" / "model_000001", "sim_01")["sim.orbit"],
+                                  simr.load_simulation(solo / "model_000001", "sim_01")["sim.orbit"])
+
+
+def test_workers_needs_local_mode(files, capsys):
+    with pytest.raises(SystemExit) as stop:
+        main(files() + ["--workers", "2"])
+    assert stop.value.code == 2
+    assert "--workers is for --mode local" in capsys.readouterr().err

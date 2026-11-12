@@ -1,16 +1,19 @@
 """The command line for SIMR.
 
     python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--config config.json]
-        [--log-level INFO]
+        [--mode solo|local] [--workers N] [--log-level INFO]
 
 Exit codes: 0 when the run ran (even if some simulations failed: they're in the catalog and the log), 1 when
-it couldn't run (a bad models file, config or output), 2 when it ran but every simulation failed.
+it couldn't run or finish (a bad models file, config or output, or a worker that died), 2 when it ran but
+every simulation failed.
 """
 
 import argparse
 import json
 import logging
+import multiprocessing
 import sys
+from concurrent.futures import ProcessPoolExecutor
 
 from galactic_tidal_constraints.simr import simr
 
@@ -21,13 +24,19 @@ RAN, COULD_NOT_RUN, ALL_FAILED = 0, 1, 2
 
 def main(argv: list[str] | None = None) -> int:
     """Run SIMR from command-line arguments (`sys.argv` by default). Returns the exit code."""
-    args = _parser().parse_args(argv)
-    logging.basicConfig(level=args.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.workers is not None and args.mode != "local":
+        parser.error("--workers is for --mode local")
+    simr.configure_logging(args.log_level)
     try:
         models = simr.read_models(args.models)
         request = _read_config(args.config)
-        result = simr.run(models, request, output=args.output)
-    except (OSError, ValueError) as error:  # a bad input: a short message, no traceback
+        if args.mode == "local":
+            result = _run_local(models, request, args)
+        else:
+            result = simr.run(models, request, output=args.output)
+    except (OSError, ValueError, simr.SimrRunError) as error:  # a short message, no traceback
         logger.error("%s", error)
         return COULD_NOT_RUN
 
@@ -37,6 +46,16 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("every simulation failed; see the errors above or in the catalog")
         return ALL_FAILED
     return RAN
+
+
+def _run_local(models, request, args) -> simr.SimrResult:
+    """The run on a pool of processes on this machine, created once and closed at the end. Workers are
+    started fresh ("spawn"), as MPI's are, and set up their logging as they start."""
+    workers = args.workers or simr.available_cpus()
+    logger.info("local mode: %d workers", workers)
+    with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
+                             initializer=simr.configure_logging, initargs=(args.log_level,)) as pool:
+        return simr.run(models, request, output=args.output, map=pool.map)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -49,6 +68,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True,
                         help="a folder (catalog.json, plus model folders for run.save) or a .json catalog file")
     parser.add_argument("--config", help="JSON request, listing only what differs from the defaults")
+    parser.add_argument("--mode", default="solo", choices=["solo", "local"],
+                        help="solo: one process (the default); local: a pool of processes on this machine")
+    parser.add_argument("--workers", type=int,
+                        help="with --mode local: how many processes (default: the CPUs this job may use)")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser
 
