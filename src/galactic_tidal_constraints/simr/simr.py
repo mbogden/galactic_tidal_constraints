@@ -13,11 +13,18 @@ Every model runs on every simulator entry, with that entry's seed (`SimulatorCon
 Only what `return` and `save` name is computed: asking only for "sim.orbit" never runs particles.
 Simulated arrays come back as float32 (`PLAN.md`, Precision).
 
-Saving ("run": {"save": [...]}, with `run(..., output=folder)`) writes one folder per model:
+With an output (`run(..., output=...)`), every run is recorded in a catalog, whether or not it saves data.
+The output is a folder or a `.json` file, told apart by name:
+
+    runs/        a folder: runs/catalog.json, plus one folder per model for the data run.save names
+    gen_07.json  a catalog file on its own: no model data, so run.save with it is an error
+    runs/x.txt   any other extension is an error
+
+In a folder, saving ("run": {"save": [...]}) writes one folder per model:
 
     <output>/
-        catalog.json                  "models": id -> 14 parameters, every model ever saved here;
-                                      "runs": one record per run that saved here (see `run`)
+        catalog.json                  "models": id -> 14 parameters, every model a run here has used;
+                                      "runs": one record per run here (see `run`)
         model_000000/                 one folder per model id
             model.json                the model's record: its 14 parameters, and each saved simulation by
                                       name ("sim_00" for simulator entry 0) with its config, timing, files, code
@@ -27,7 +34,7 @@ Saving ("run": {"save": [...]}, with `run(..., output=folder)`) writes one folde
 
 A run's models are matched exactly against the catalog: a model already there uses its folder, and a new
 one gets the next id at the bottom, so folders stay the same however runs order or overlap their models.
-One run at a time per output folder.
+One run at a time per output.
 
 Each .npy is written to a temporary name and renamed into place, and only then does model.json (written
 the same way) list it, so an array counts as saved only if model.json lists it. `load_model` and
@@ -108,8 +115,8 @@ class SimrResult:
         data: one entry per name in the request's `return` list, and nothing else. Each is a numpy
             object array indexed by the levels its stage depends on: [model, simulator] for "sim.*".
             Each cell holds that run's array (or dict, for "sim.timing").
-        ids: with an output folder, each row's model id there (its folder is `model_<id>`); None for a
-            row the folder doesn't have (a run that only reads adds nothing). All None without a folder.
+        ids: with an output, each row's model id in its catalog (in a folder, its data goes in
+            `model_<id>`). All None without an output.
         status, seconds, errors: per stage ("sim" so far), each indexed like that stage's data ([m, s]):
             status: "ran", "reused" (everything requested came from disk) or "failed".
             seconds: wall time, loading included.
@@ -136,25 +143,29 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
             simulator (default one `SimulatorConfig()`): a dict or `SimulatorConfig`, or a list of them.
                 Each entry's seed is used for every model, so all models start from the same disk
                 pattern (see `SimulatorConfig.seed`).
-        output: the folder to save in, and to load already saved data from. Needed when run.save names
-            something; optional otherwise. It isn't part of the request because it doesn't change any result.
+        output: where to record the run: a folder (its `catalog.json`, plus model folders for the data
+            run.save names, and saved data is loaded from there instead of computed) or a `.json` catalog
+            file (no model data). A folder is needed when run.save names something; optional otherwise.
+            It isn't part of the request because it doesn't change any result.
 
     Returns:
         A `SimrResult`; see its docstring.
 
-    A run that saves adds a record to `catalog.json`'s "runs" when it starts and completes it when it ends:
+    A run with an output adds a record to the catalog's "runs" when it starts and completes it when it ends:
     "started", "finished" (None if the run never got there), "code", "run" (its return and save lists),
     "simulator" (the full configs), "image" and "fitness" (empty until those stages exist), "model_ids"
     (row m's model id), and at the end "status", "seconds" and "errors" (as in the result, as lists).
     """
     models = _check_models(models)
     returned, saved, configs = _read_request(request)
-    if saved and output is None:
-        raise ValueError("run.save names data to save, but no output folder was given")
-    versions = code_versions() if saved else None
-    catalog = _open_catalog(Path(output)) if output is not None else None
-    ids = _model_ids(catalog, models, add=bool(saved)) if catalog is not None else [None] * len(models)
-    if saved:
+    catalog_file, root = output_paths(output) if output is not None else (None, None)
+    if saved and root is None:
+        where = "no output was given" if output is None else f"{output} is a catalog file, not a folder"
+        raise ValueError(f"run.save names data to save, which needs an output folder, but {where}")
+    catalog = _open_catalog(catalog_file) if catalog_file is not None else None
+    ids = _model_ids(catalog, models) if catalog is not None else [None] * len(models)
+    if catalog is not None:
+        versions = code_versions()
         run_record = {
             "started": _now(),
             "finished": None,
@@ -166,7 +177,7 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
             "model_ids": ids,
         }
         catalog["runs"].append(run_record)
-        _write_catalog(Path(output), catalog)
+        _write_catalog(catalog_file, catalog)
 
     shape = (len(models), len(configs))
     data = {name: np.empty(shape, dtype=object) for name in returned}
@@ -174,7 +185,7 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
     seconds = {"sim": np.zeros(shape)}
     errors = {"sim": np.full(shape, None, dtype=object)}
     for m, params in enumerate(models):
-        folder = Path(output) / f"model_{ids[m]}" if ids[m] is not None else None
+        folder = root / f"model_{ids[m]}" if root is not None else None
         record = _open_record(folder, params) if folder is not None else None
         for s, config in enumerate(configs):
             name = f"sim_{s:02d}"
@@ -201,14 +212,14 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
 
     counts = {word: int((status["sim"] == word).sum()) for word in ("ran", "reused", "failed")}
     logger.info("simr: %d simulations: %d ran, %d reused, %d failed", status["sim"].size, *counts.values())
-    if saved:
+    if catalog is not None:
         run_record.update(
             status={"sim": status["sim"].tolist()},
             seconds={"sim": seconds["sim"].tolist()},
             errors={"sim": errors["sim"].tolist()},
             finished=_now(),
         )
-        _write_catalog(Path(output), catalog)
+        _write_catalog(catalog_file, catalog)
     return SimrResult(models=models, simulators=configs, data=data, ids=ids,
                       status=status, seconds=seconds, errors=errors)
 
@@ -229,9 +240,24 @@ def _simulate(params, config, returned, to_save, stored) -> tuple[dict, bool]:
 
 
 def load_catalog(output: str | Path) -> dict:
-    """An output folder's `catalog.json`: "models" (id -> the 14 named parameters) and "runs"."""
-    with open(Path(output) / "catalog.json", encoding="utf-8") as f:
+    """An output's catalog (a folder's `catalog.json`, or a `.json` catalog file): "models" (id -> the 14
+    named parameters) and "runs"."""
+    with open(output_paths(output)[0], encoding="utf-8") as f:
         return json.load(f)
+
+
+def output_paths(output: str | Path) -> tuple[Path, Path | None]:
+    """Where an output's catalog goes, and its folder for model data (None for a catalog file).
+
+    Told apart by name, so it works before anything exists: no extension is a folder, `.json` is a
+    catalog file, and any other extension (a dot in a folder's name included) is an error.
+    """
+    output = Path(output)
+    if output.suffix == ".json":
+        return output, None
+    if output.suffix == "":
+        return output / "catalog.json", output
+    raise ValueError(f"the output must be a folder (no extension) or a .json catalog file: {output}")
 
 
 def load_model(folder: str | Path) -> dict:
@@ -299,31 +325,34 @@ def _git_state(folder: Path, paths: list[str]) -> dict:
     return {"commit": commit, "uncommitted_changes": None if status is None else status != ""}
 
 
-def _open_catalog(output: Path) -> dict:
-    return load_catalog(output) if (output / "catalog.json").exists() else {"models": {}, "runs": []}
+def _open_catalog(catalog_file: Path) -> dict:
+    if not catalog_file.exists():
+        return {"models": {}, "runs": []}
+    with open(catalog_file, encoding="utf-8") as f:
+        return json.load(f)
 
 
-def _model_ids(catalog: dict, models: np.ndarray, add: bool) -> list[str | None]:
-    """Each row's id in the catalog, matching all 14 values exactly. With `add`, a model the catalog doesn't
-    have gets the next id at the bottom (and the same model twice gets one id); otherwise it gets None."""
+def _model_ids(catalog: dict, models: np.ndarray) -> list[str]:
+    """Each row's id in the catalog, matching all 14 values exactly. A model the catalog doesn't have gets
+    the next id at the bottom, and the same model twice gets one id."""
     known = {tuple(params.values()): model_id for model_id, params in catalog["models"].items()}
     next_id = max((int(model_id) for model_id in catalog["models"]), default=-1) + 1
     ids = []
     for params in models:
         model = model_parameters(params)
         key = tuple(model.values())
-        if key not in known and add:
+        if key not in known:
             known[key] = f"{next_id:06d}"
             catalog["models"][known[key]] = model
             next_id += 1
-        ids.append(known.get(key))
+        ids.append(known[key])
     return ids
 
 
-def _write_catalog(output: Path, catalog: dict) -> None:
-    output.mkdir(parents=True, exist_ok=True)
+def _write_catalog(catalog_file: Path, catalog: dict) -> None:
+    catalog_file.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(catalog, indent=2).encode("utf-8")
-    _write_atomically(output / "catalog.json", lambda f: f.write(text))
+    _write_atomically(catalog_file, lambda f: f.write(text))
 
 
 def _now() -> str:

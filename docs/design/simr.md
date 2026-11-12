@@ -1,7 +1,8 @@
 # SIMR workflow (`simr/simr.py`)
 
 `simr` runs the simulations a request asks for, for many models, and hands back only the data the
-request names. It can also save that data to an output folder and load it back. It sits one level
+request names. With an output it records every run in a catalog, and it can save data to an output
+folder and load it back. It sits one level
 above the Simulator stage (`simr/simulation.py`, imported as `sim`), which runs one simulation at a
 time and knows nothing about disk.
 
@@ -63,10 +64,18 @@ disks share one pattern, stretched by `rout` and tilted by `theta` and `phi`: sc
 between models come only from their parameters. To compare draws, list entries that differ only in
 `seed`. Details: [spam_physics.md](../spam_physics.md), `seed`.
 
-### The output folder
-`output` is a runtime argument, not part of the request, because it doesn't change any result. It's
-needed when `run.save` names something, and optional otherwise: with it, saved data is loaded
-instead of computed (see Reuse).
+### The output
+`output` is a runtime argument, not part of the request, because it doesn't change any result. With
+an output, **every run is recorded in a catalog**, whether or not it saves data (see The output
+catalog). It's a folder or a `.json` file, told apart by name, so it works before anything exists:
+
+| `output` | What it is |
+|---|---|
+| `runs/` (no extension) | A folder: `runs/catalog.json`, plus one folder per model for the data `run.save` names. Saved data is loaded from it instead of computed (see Reuse) |
+| `gen_07.json` | A catalog file on its own, with no model data. `run.save` with it is an error |
+| anything else, e.g. `runs.txt`, `runs.v2/` | An error |
+
+`run.save` needs a folder; otherwise `output` is optional.
 
 ## The result
 `simr.run` returns a `SimrResult`:
@@ -76,7 +85,7 @@ instead of computed (see Reuse).
 | `models` | The models that ran, `(N, 14)`: row m is model m (the result's own copy) |
 | `simulators` | The simulator entries as `SimulatorConfig`s, every default filled in: entry s is simulator s |
 | `data` | One entry per name in `return`, and nothing else |
-| `ids` | Each row's model id in the output folder, or `None` (see The output catalog) |
+| `ids` | Each row's model id in the output's catalog, or `None` without an output (see The output catalog) |
 | `status`, `seconds`, `errors` | Per stage (`"sim"` so far), indexed like its data; see Failures and status |
 
 Each `data` entry is a NumPy object array of cells, indexed by the levels its stage depends on:
@@ -171,14 +180,14 @@ A saved simulation with a different config is neither used nor changed, and a wa
 Code versions are recorded but not compared; higher-level code can check them.
 
 ### The output catalog
-`catalog.json` is the folder's table of contents:
+The catalog (a folder's `catalog.json`, or a `.json` output) is the output's table of contents:
 
-- **`"models"`**: id → 14 parameters, for every model ever saved in the folder. A run's rows are
+- **`"models"`**: id → 14 parameters, for every model a run there has used. A run's rows are
   matched against it exactly (all 14 values). A model already there uses its folder; a new one gets
   the next id at the bottom. So reordered or overlapping model lists, such as GA generations, land in
   the same folders and reuse what's saved. The same model twice in one run gets one id.
   `result.ids[m]` is row m's id.
-- **`"runs"`**: one record per run that saves:
+- **`"runs"`**: one record per run:
 
   | Key | What it is |
   |---|---|
@@ -190,11 +199,12 @@ Code versions are recorded but not compared; higher-level code can check them.
   | `model_ids` | Row m's model id |
   | `status`, `seconds`, `errors` | As in the result, as lists; added when the run ends |
 
-A run that only reads (no `save`) writes nothing, not even a run record; rows the folder doesn't
-have get `None` in `result.ids` and are computed. **One run at a time per output folder.**
+A run without `save` writes only the catalog: its models and its record, no model folders.
+**One run at a time per output.**
 
 ### Errors that protect the folder
-- `run.save` with no `output` is an error.
+- `run.save` with no `output`, or with a `.json` output, is an error.
+- An output with an extension other than `.json` is an error.
 - A model folder holding a different model than `catalog.json` says is an error, so two models'
   simulations never mix.
 - Loading a simulation or array that `model.json` doesn't list is an error, even if a file exists.
@@ -202,7 +212,7 @@ have get `None` in `result.ids` and are computed. **One run at a time per output
 ## Loading
 | Function | Returns |
 |---|---|
-| `simr.load_catalog(output)` | `catalog.json` as a dict |
+| `simr.load_catalog(output)` | The catalog (of a folder or a `.json` file) as a dict |
 | `simr.load_model(folder)` | A model folder's `model.json` as a dict |
 | `simr.load_simulation(folder, "sim_00")` | That simulation's saved arrays, `{name: array}`, `float32`, exactly as `run` returns them |
 | `simr.code_versions()` | The current code versions, in the form `model.json` records |

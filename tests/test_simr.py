@@ -200,7 +200,7 @@ def test_no_temporary_files_are_left(tmp_path):
 
 
 def test_save_needs_an_output_folder():
-    with pytest.raises(ValueError, match="no output folder"):
+    with pytest.raises(ValueError, match="needs an output folder"):
         simr.run(MODELS, save_request(["sim.orbit"]))
 
 
@@ -300,20 +300,20 @@ def test_a_different_config_is_computed_not_loaded(tmp_path):
     np.testing.assert_array_equal(result.data["sim.particles"][0, 0], expected)
 
 
-def test_reading_alone_writes_nothing(tmp_path):
+def test_a_run_without_save_writes_only_the_catalog(tmp_path):
     simr.run(MODELS, request(["sim.orbit"]), output=tmp_path)
-    assert list(tmp_path.iterdir()) == []
+    assert [p.name for p in tmp_path.iterdir()] == ["catalog.json"]
+    [record] = simr.load_catalog(tmp_path)["runs"]
+    assert record["run"] == {"return": ["sim.orbit"], "save": []}
+    assert record["status"] == {"sim": [["ran"], ["ran"]]}
 
 
-def test_reading_a_model_the_folder_doesnt_have_computes_it(tmp_path):
+def test_a_model_the_folder_doesnt_have_is_computed_and_added_to_the_catalog(tmp_path):
     simr.run(MODELS[:1], save_request(["sim.orbit"]), output=tmp_path)
     result = simr.run(MODELS, request(["sim.orbit"]), output=tmp_path)
-    assert result.ids == ["000000", None]
-    assert result.data["sim.orbit"][1, 0].shape[1] == 7
-
-
-
-# --- Step 8c: the output catalog -----------------------------------------------------------------------
+    assert result.ids == ["000000", "000001"]
+    assert result.status["sim"][:, 0].tolist() == ["reused", "ran"]
+    assert not (tmp_path / "model_000001").exists()  # nothing to save, so no model folder
 
 
 def test_catalog_lists_the_models_and_the_run(tmp_path):
@@ -360,11 +360,12 @@ def test_ids_are_none_without_an_output_folder():
     assert simr.run(MODELS, request([])).ids == [None, None]
 
 
-def test_a_run_that_only_reads_adds_nothing_to_the_catalog(tmp_path):
+def test_every_run_with_an_output_is_recorded(tmp_path):
     simr.run(MODELS[:1], save_request(["sim.orbit"]), output=tmp_path)
-    before = simr.load_catalog(tmp_path)
     simr.run(MODELS, request(["sim.orbit"]), output=tmp_path)
-    assert simr.load_catalog(tmp_path) == before
+    catalog = simr.load_catalog(tmp_path)
+    assert list(catalog["models"]) == ["000000", "000001"]
+    assert [run["model_ids"] for run in catalog["runs"]] == [["000000"], ["000000", "000001"]]
 
 
 def test_an_unfinished_run_shows_in_the_catalog(tmp_path, monkeypatch):
@@ -457,3 +458,44 @@ def test_failures_are_logged_with_a_count(caplog):
     failure = next(r for r in caplog.records if r.levelname == "ERROR")
     assert "model 1" in failure.getMessage() and failure.exc_info is not None
     assert "2 simulations: 1 ran, 0 reused, 1 failed" in caplog.text
+
+
+
+# --- Step 9b: every output gets a catalog --------------------------------------------------------------
+
+
+def test_a_json_output_is_a_catalog_file_alone(tmp_path):
+    catalog_file = tmp_path / "gen_07.json"
+    result = simr.run(MODELS, request(["sim.orbit"]), output=catalog_file)
+    assert [p.name for p in tmp_path.iterdir()] == ["gen_07.json"]
+    assert result.ids == ["000000", "000001"]
+    catalog = simr.load_catalog(catalog_file)
+    assert list(catalog["models"]) == ["000000", "000001"]
+    assert catalog["runs"][0]["status"] == {"sim": [["ran"], ["ran"]]}
+
+
+def test_a_json_output_collects_runs_like_a_folder(tmp_path):
+    catalog_file = tmp_path / "runs.json"
+    simr.run(MODELS, request([]), output=catalog_file)
+    again = simr.run(MODELS[::-1], request([]), output=catalog_file)
+    assert again.ids == ["000001", "000000"]
+    assert len(simr.load_catalog(catalog_file)["runs"]) == 2
+
+
+def test_saving_needs_a_folder_not_a_catalog_file(tmp_path):
+    with pytest.raises(ValueError, match="is a catalog file, not a folder"):
+        simr.run(MODELS, save_request(["sim.orbit"]), output=tmp_path / "gen_07.json")
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("name", ["runs.txt", "runs.v2", "catalog.JSON.bak"])
+def test_other_extensions_are_errors(tmp_path, name):
+    with pytest.raises(ValueError, match="a folder .no extension. or a .json catalog file"):
+        simr.run(MODELS, request([]), output=tmp_path / name)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_output_paths():
+    assert simr.output_paths("runs") == (Path("runs/catalog.json"), Path("runs"))
+    assert simr.output_paths("runs/gen.json") == (Path("runs/gen.json"), None)
+    assert simr.output_paths(".hidden") == (Path(".hidden/catalog.json"), Path(".hidden"))

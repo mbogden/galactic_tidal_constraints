@@ -33,13 +33,17 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
 - **Write order:** each `.npy` is written atomically (to a temporary name, then renamed); only once
   it's in place is `model.json` updated to list it. An array counts as saved only if `model.json`
   lists it.
-- **Output catalog:** `<output>/catalog.json` holds "models" (id → 14 parameters, every model ever
-  saved in the folder) and "runs" (one record per run that saves: times, code versions, what was
-  returned and saved, the full stage configs, the model id of each row, and later each
-  simulation's status, time and error). A run's models are matched exactly against the catalog;
-  new ones get the next id at the bottom, so model folders (`model_<id>`) stay the same however
-  runs order or overlap their models. The record is written when a run starts and again when it
-  ends. One run at a time per output folder.
+- **Output catalog:** every run given an output writes a catalog, whether or not it saves data.
+  It holds "models" (id → 14 parameters, every model a run there has used) and "runs" (one record
+  per run: times, code versions, what was returned and saved, the full stage configs, the model id
+  of each row, each simulation's status, time and error, and later the scores). A run's models are
+  matched exactly against the catalog; new ones get the next id at the bottom, so model folders
+  (`model_<id>`) stay the same however runs order or overlap their models. The record is written
+  when a run starts and again when it ends. One run at a time per output.
+- **The output is a folder or a `.json` file,** told apart by name: no extension is a folder
+  (`<folder>/catalog.json`, plus model folders for `run.save`), `.json` is a catalog file on its
+  own (no model data, so `run.save` with a `.json` output is an error), and any other extension is
+  an error.
 - **Reuse:** with an output folder, a simulation `model.json` lists under the same name with exactly
   the same config counts as already saved. Anything requested that it has is loaded instead of
   computed, nothing it has is written again, and arrays it's missing are computed and added. A
@@ -90,8 +94,8 @@ One config tree for everything that can change a result, plus a few runtime flag
   lines had more than 14 values. Fewer than 14 numbers is an error naming the line. Blank lines and
   `#` comments are ignored. The catalog records each run's models with its configs, so the output
   folder still says what was run.
-- On the command line `run.save` is required, so every run leaves its models, configs and
-  statuses on disk.
+- On the command line an output (folder or `.json` file) is required, so every run leaves its
+  models, configs and statuses on disk; `run.save` is optional.
 
 ### Models and stage lists
 - Encounter parameters are the one hard input every run needs, and they're their own list. Each
