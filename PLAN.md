@@ -18,6 +18,12 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
   parallelization.
 - **Disk:** the `simr` module is in charge of reads and writes, including saving and resuming.
   `info_module` is not ported as a whole.
+- **Precision:** `simr` converts simulated arrays (particles, orbits) to `float32` as soon as a
+  simulation is done;
+  everything after it (returned data, images, saved files) expects `float32`. That precision is
+  enough once a simulation is done.
+- **Saved arrays** are `.npz` files written with `np.savez` (no compression; it saves little on
+  simulated floats).
 - **Applications** live in the repo. Each owns its run's tables and final scores, and chooses how to
   parallelize. Meta scores are computed here.
 - **Failures:** a failed model returns `NaN` and writes the error to the log.
@@ -56,6 +62,13 @@ One config tree for everything that can change a result, plus a few runtime flag
   appends fixed values for them when it calls `jspam`. Why: [docs/spam_physics.md](docs/spam_physics.md).
 - SIMR and the workflow always return a 4D array, with no automatic reduction:
   `scores[model, simulator, image, fitness]`.
+- Other data is kept only when a run asks for it by name. The `run` section has two lists of
+  `stage.item` names (e.g. `sim.particles`, `sim.orbit`, later `image.model`): `return` (passed back
+  in memory) and `save` (written to disk). They're independent; a run can do both. Each stage
+  publishes its names, and an unknown name is a config error. `simr` computes only what the scores,
+  `return` and `save` need, so with both lists empty only the scores come back.
+- With no `run.seed`, `simr` draws a random one and reports it with the result, so the run can be
+  repeated.
 
 Details and an example are in [docs/architecture.md](docs/architecture.md).
 
