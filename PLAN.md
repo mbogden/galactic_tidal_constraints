@@ -75,13 +75,16 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
 One config tree for everything that can change a result, plus a few runtime flags.
 - Config tree: one section per component (`run`, `simulator`, `image`, `fitness`, `ga`, …); `run`
   holds per-run values like the target and what to return or save.
-- Precedence: defaults in code (dataclasses) < JSON config file < command-line `key=value`
-  overrides (e.g. `ga.population=128`).
+- Precedence: defaults in code (dataclasses) < JSON config file. No command-line overrides
+  (dropped 2026-11-12): the config file is the whole run, and small changes are new config files.
 - Unknown keys or wrong types are an error. Each run saves its full merged config with its
   output.
-- Parameter studies are lists of override sets, one run per set.
-- Runtime flags (`argparse`) don't change results and stay outside the tree: `--config`, the
-  override list, `--log-level`, `--mode`, output folder.
+- Parameter studies are generated config files, one run per file.
+- Runtime flags (`argparse`) don't change results and stay outside the tree: `--config`,
+  `--log-level`, `--mode`, output folder.
+- On the command line, the models are in the config file, as a top-level `models` list (each a
+  list of 14 numbers or a SPAM model string), and `run.save` is required, so every run leaves its
+  models, configs and statuses on disk.
 
 ### Models and stage lists
 - Encounter parameters are the one hard input every run needs, and they're their own list. Each
