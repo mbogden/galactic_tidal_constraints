@@ -40,9 +40,13 @@ LEAD_FACTOR = 10.0
 
 @dataclass(frozen=True)
 class SimulatorConfig:
-    """Everything that sets a simulation's result, apart from the 14 parameters and the seed.
+    """Everything that sets a simulation's result, apart from the 14 parameters.
 
     Attributes:
+        seed: sets where the disk particles start; the same seed gives exactly the same particles. 0 by
+            default. SPAM draws the same random numbers for every model (each particle's ring, radius,
+            angle and heat kicks), so with one seed every model's disks share one pattern, stretched by
+            rout and tilted by theta and phi. Change it only to test or show how the draw matters.
         n1, n2: particles in the primary's and secondary's disks.
         heat1, heat2: random motion added to each disk's particle velocities (0: none).
         heat_mode: "centered" (the default) adds a value in [-heat/2, heat/2) to each of vx, vy and vz.
@@ -72,6 +76,7 @@ class SimulatorConfig:
             `get_timing` reports it as start="fallback", with the reason.
     """
 
+    seed: int = 0
     n1: int = 1000
     n2: int = 1000
     heat1: float = 0.0
@@ -90,6 +95,8 @@ class SimulatorConfig:
 
     def __post_init__(self) -> None:
         """Check the values when the config is made, so mistakes show up before any run."""
+        if not isinstance(self.seed, (int, np.integer)) or isinstance(self.seed, bool) or self.seed < 0:
+            raise ValueError(f"seed must be a whole number of at least 0: {self.seed!r}")
         for name in ("n1", "n2"):
             value = getattr(self, name)
             if not isinstance(value, (int, np.integer)) or value < 1:
@@ -135,37 +142,35 @@ def parse_model_string(model: str) -> np.ndarray:
 
 
 def simulate_particles(
-    params: np.ndarray | list[float], config: SimulatorConfig = SimulatorConfig(), seed: int | None = None
+    params: np.ndarray | list[float], config: SimulatorConfig = SimulatorConfig()
 ) -> np.ndarray:
     """Run one SPAM simulation and return every particle at the end.
 
     Args:
         params: the 14 collision parameters, in `PARAM_NAMES` order, shape (14,).
-        config: how to simulate. The default is `SimulatorConfig()`.
-        seed: sets where the disk particles start; the same seed gives the same particles. None
-            gives different particles every run, as in Wallin's original.
+        config: how to simulate, including the seed. The default is `SimulatorConfig()`.
 
     Returns:
         x, y, z, vx, vy, vz of each particle, shape (n1 + n2 + 1, 6). Rows 0 to n1 - 1 are the
         primary's disk, the next n2 the secondary's, and the last row is the secondary's center.
         The primary's center stays at the origin.
     """
-    return jspam.run_collision(_spam_params(params), seed=seed, **_jspam_args(params, config))
+    return jspam.run_collision(_spam_params(params), **_jspam_args(params, config))
 
 
 def initial_state(
-    params: np.ndarray | list[float], config: SimulatorConfig = SimulatorConfig(), seed: int | None = None
+    params: np.ndarray | list[float], config: SimulatorConfig = SimulatorConfig()
 ) -> np.ndarray:
     """Every particle at the start of the run, before SPAM takes a step.
 
-    Takes the same arguments as `simulate_particles` and returns the same shape. With the same seed, it's
+    Takes the same arguments as `simulate_particles` and returns the same shape. With the same config, it's
     exactly the state `simulate_particles` starts from. Useful for checking how the disks are set up.
     """
-    return jspam.initial_state(_spam_params(params), seed=seed, **_jspam_args(params, config))
+    return jspam.initial_state(_spam_params(params), **_jspam_args(params, config))
 
 
 def unperturbed_particles(
-    params: np.ndarray | list[float], config: SimulatorConfig = SimulatorConfig(), seed: int | None = None
+    params: np.ndarray | list[float], config: SimulatorConfig = SimulatorConfig()
 ) -> np.ndarray:
     """The two galaxies as they'd look now if they had never interacted.
 
@@ -175,7 +180,7 @@ def unperturbed_particles(
     The start settings don't matter, and no start-time search runs, so it costs about as much as
     `initial_state`.
     """
-    return jspam.initial_state(_spam_params(params), seed=seed, **_jspam_args(params, config, t_start=0.0))
+    return jspam.initial_state(_spam_params(params), **_jspam_args(params, config, t_start=0.0))
 
 
 def get_timing(params: np.ndarray | list[float], config: SimulatorConfig = SimulatorConfig()) -> dict:
@@ -326,6 +331,7 @@ def _jspam_args(params: np.ndarray | list[float], config: SimulatorConfig, t_sta
     `t_start` when it's given, without choosing one)."""
     return {
         "t_start": _choose_start(params, config)[0] if t_start is None else t_start,
+        "seed": config.seed,
         "n1": config.n1,
         "n2": config.n2,
         "heat1": config.heat1,

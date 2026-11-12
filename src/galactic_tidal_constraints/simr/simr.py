@@ -3,14 +3,15 @@
 A request is a plain dict, shaped like the config file to come (Step 11):
 
     request = {
-        "run": {"seed": 3, "return": ["sim.orbit", "sim.particles"]},
+        "run": {"return": ["sim.orbit", "sim.particles"]},
         "simulator": [{"lnl": 0.1}, {"lnl": 0.01}],   # one dict or a list; each becomes a SimulatorConfig
     }
     result = run(models, request)
     result.data["sim.orbit"][12, 1]   # model 12's orbit from simulator entry 1
 
-Every model runs on every simulator entry. Only what `return` names is computed: asking only for
-"sim.orbit" never runs particles. Simulated arrays come back as float32 (`PLAN.md`, Precision).
+Every model runs on every simulator entry, with that entry's seed (`SimulatorConfig.seed`, 0 by default).
+Only what `return` names is computed: asking only for "sim.orbit" never runs particles. Simulated arrays
+come back as float32 (`PLAN.md`, Precision).
 
 Not yet here: saving to disk (Step 8b), failure handling (Step 9) and pools (Step 12). An error in
 any simulation stops the run.
@@ -24,19 +25,19 @@ from galactic_tidal_constraints.simr import sim
 from galactic_tidal_constraints.simr.sim import SimulatorConfig
 
 
-def _particles(params, config, seed):
-    return sim.simulate_particles(params, config, seed=seed).astype(np.float32)
+def _particles(params, config):
+    return sim.simulate_particles(params, config).astype(np.float32)
 
 
-def _unperturbed(params, config, seed):
-    return sim.unperturbed_particles(params, config, seed=seed).astype(np.float32)
+def _unperturbed(params, config):
+    return sim.unperturbed_particles(params, config).astype(np.float32)
 
 
-def _orbit(params, config, seed):
+def _orbit(params, config):
     return sim.simulate_orbit(params, config).astype(np.float32)
 
 
-def _timing(params, config, seed):
+def _timing(params, config):
     return sim.get_timing(params, config)
 
 
@@ -53,7 +54,7 @@ SIM_DATA = {
 }
 
 REQUEST_KEYS = ("run", "simulator")
-RUN_KEYS = ("seed", "return")
+RUN_KEYS = ("return",)
 
 
 @dataclass
@@ -62,9 +63,8 @@ class SimrResult:
 
     Attributes:
         models: the models that ran, shape (N, 14): row m is model m in `data`.
-        simulators: the simulator entries, with every default filled in: entry s is simulator s in `data`.
-        seed: the run's seed: the request's, or the random one drawn when it gave none. Passing it back
-            as run.seed repeats the run exactly.
+        simulators: the simulator entries, with every default filled in (seed included): entry s is
+            simulator s in `data`.
         data: one entry per name in the request's `return` list, and nothing else. Each is a numpy
             object array indexed by the levels its stage depends on: [model, simulator] for "sim.*".
             Each cell holds that run's array (or dict, for "sim.timing").
@@ -72,7 +72,6 @@ class SimrResult:
 
     models: np.ndarray
     simulators: list[SimulatorConfig]
-    seed: int
     data: dict[str, np.ndarray]
 
 
@@ -82,31 +81,23 @@ def run(models: np.ndarray, request: dict) -> SimrResult:
     Args:
         models: the models, shape (N, 14) (one model of shape (14,) also works), in `sim.PARAM_NAMES` order.
         request: a dict with optional sections "run" and "simulator" (see the module docstring).
-            run.seed (default None): the run's seed. A model's particles come from SeedSequence([seed, m]),
-                so they don't depend on which models run alongside it or in what order. None draws a
-                random seed, reported in the result.
             run.return (default []): names from `SIM_DATA` to hand back.
             simulator (default one `SimulatorConfig()`): a dict or `SimulatorConfig`, or a list of them.
+                Each entry's seed is used for every model, so all models start from the same disk
+                pattern (see `SimulatorConfig.seed`).
 
     Returns:
         A `SimrResult`; see its docstring.
     """
     models = _check_models(models)
-    seed, wanted, configs = _read_request(request)
+    wanted, configs = _read_request(request)
 
     data = {name: np.empty((len(models), len(configs)), dtype=object) for name in wanted}
     for m, params in enumerate(models):
-        model_seed = model_seed_for(seed, m)
         for s, config in enumerate(configs):
             for name in wanted:
-                data[name][m, s] = SIM_DATA[name](params, config, model_seed)
-    return SimrResult(models=models, simulators=configs, seed=seed, data=data)
-
-
-def model_seed_for(run_seed: int, model_index: int) -> int:
-    """The seed for one model's particles. All simulator entries on a model share it, so differences
-    between entries never come from different starting particles."""
-    return int(np.random.SeedSequence([run_seed, model_index]).generate_state(1)[0])
+                data[name][m, s] = SIM_DATA[name](params, config)
+    return SimrResult(models=models, simulators=configs, data=data)
 
 
 def _check_models(models) -> np.ndarray:
@@ -120,16 +111,10 @@ def _check_models(models) -> np.ndarray:
     return models.copy()  # the result keeps its own copy, so later edits to the caller's array don't reach it
 
 
-def _read_request(request: dict) -> tuple[int, list[str], list[SimulatorConfig]]:
+def _read_request(request: dict) -> tuple[list[str], list[SimulatorConfig]]:
     _reject_unknown("request", request, REQUEST_KEYS)
     run_section = request.get("run", {})
     _reject_unknown("run", run_section, RUN_KEYS)
-
-    seed = run_section.get("seed")
-    if seed is None:
-        seed = np.random.SeedSequence().entropy  # random, from the operating system
-    elif not isinstance(seed, (int, np.integer)) or isinstance(seed, bool) or seed < 0:
-        raise ValueError(f"run.seed must be a whole number of at least 0, or None: {seed!r}")
 
     wanted = run_section.get("return", [])
     if isinstance(wanted, str):
@@ -145,7 +130,7 @@ def _read_request(request: dict) -> tuple[int, list[str], list[SimulatorConfig]]
     if len(entries) == 0:
         raise ValueError("simulator is an empty list")
     configs = [_simulator_config(i, entry) for i, entry in enumerate(entries)]
-    return int(seed), wanted, configs
+    return wanted, configs
 
 
 def _simulator_config(index: int, entry) -> SimulatorConfig:

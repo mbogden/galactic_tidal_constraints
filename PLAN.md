@@ -45,7 +45,7 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
 ## Configuration
 One config tree for everything that can change a result, plus a few runtime flags.
 - Config tree: one section per component (`run`, `simulator`, `image`, `fitness`, `ga`, …); `run`
-  holds per-run values like target and seed.
+  holds per-run values like the target and what to return or save.
 - Precedence: defaults in code (dataclasses) < JSON config file < command-line `key=value`
   overrides (e.g. `ga.population=128`).
 - Unknown keys or wrong types are an error. Each run saves its full merged config with its
@@ -67,8 +67,10 @@ One config tree for everything that can change a result, plus a few runtime flag
   in memory) and `save` (written to disk). They're independent; a run can do both. Each stage
   publishes its names, and an unknown name is a config error. `simr` computes only what the scores,
   `return` and `save` need, so with both lists empty only the scores come back.
-- With no `run.seed`, `simr` draws a random one and reports it with the result, so the run can be
-  repeated.
+- The seed is part of `SimulatorConfig` (`seed`, 0 by default), and `simr` uses each simulator
+  entry's seed for every model. SPAM's draws don't depend on the model, so all models share one
+  disk pattern and score differences come only from their parameters. Comparing seeds means
+  entries that differ only in `seed`. Why: [docs/spam_physics.md](docs/spam_physics.md), `seed`.
 
 Details and an example are in [docs/architecture.md](docs/architecture.md).
 

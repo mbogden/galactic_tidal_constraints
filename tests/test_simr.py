@@ -22,8 +22,8 @@ MODELS = np.stack([PARAMS, HEAVIER])
 SMALL = {"n1": 20, "n2": 10}
 
 
-def request(names, simulator=SMALL, seed=3):
-    return {"run": {"seed": seed, "return": names}, "simulator": simulator}
+def request(names, simulator=SMALL):
+    return {"run": {"return": names}, "simulator": simulator}
 
 
 # --- Step 8a: requests and returned data -------------------------------------------------------------
@@ -64,8 +64,7 @@ def test_simulated_arrays_are_float32():
 def test_cells_match_calling_sim_directly():
     config = SimulatorConfig(**SMALL)
     result = simr.run(MODELS, request(["sim.particles", "sim.orbit", "sim.timing"]))
-    seed = simr.model_seed_for(3, 1)
-    expected = sim.simulate_particles(HEAVIER, config, seed=seed).astype(np.float32)
+    expected = sim.simulate_particles(HEAVIER, config).astype(np.float32)
     np.testing.assert_array_equal(result.data["sim.particles"][1, 0], expected)
     np.testing.assert_array_equal(
         result.data["sim.orbit"][1, 0], sim.simulate_orbit(HEAVIER, config).astype(np.float32)
@@ -73,7 +72,7 @@ def test_cells_match_calling_sim_directly():
     assert result.data["sim.timing"][1, 0]["t_start"] == sim.get_timing(HEAVIER, config)["t_start"]
 
 
-def test_simulators_on_one_model_share_its_seed():
+def test_entries_with_the_same_seed_start_from_the_same_particles():
     # Two entries that differ only in lnl: the disks start from the same particles.
     result = simr.run(MODELS[:1], request(["sim.unperturbed"], simulator=[SMALL, {**SMALL, "lnl": 0.01}]))
     np.testing.assert_array_equal(result.data["sim.unperturbed"][0, 0], result.data["sim.unperturbed"][0, 1])
@@ -85,23 +84,18 @@ def test_a_models_particles_dont_depend_on_the_other_models():
     np.testing.assert_array_equal(alone.data["sim.particles"][0, 0], together.data["sim.particles"][0, 0])
 
 
-def test_run_seed_changes_particles():
-    one = simr.run(MODELS[:1], request(["sim.particles"], seed=1)).data["sim.particles"][0, 0]
-    two = simr.run(MODELS[:1], request(["sim.particles"], seed=2)).data["sim.particles"][0, 0]
-    assert not np.array_equal(one, two)
+def test_entries_that_differ_only_in_seed_give_different_particles():
+    result = simr.run(MODELS[:1], request(["sim.particles"], simulator=[SMALL, {**SMALL, "seed": 1}]))
+    assert result.simulators[0].seed == 0  # the default
+    assert result.simulators[1].seed == 1
+    assert not np.array_equal(result.data["sim.particles"][0, 0], result.data["sim.particles"][0, 1])
 
 
-def test_no_seed_is_random_and_reported():
-    first = simr.run(MODELS[:1], {"run": {"return": ["sim.particles"]}, "simulator": SMALL})
-    second = simr.run(MODELS[:1], {"run": {"return": ["sim.particles"]}, "simulator": SMALL})
-    assert first.seed != second.seed
-    assert not np.array_equal(first.data["sim.particles"][0, 0], second.data["sim.particles"][0, 0])
-    again = simr.run(MODELS[:1], request(["sim.particles"], seed=first.seed))
-    np.testing.assert_array_equal(again.data["sim.particles"][0, 0], first.data["sim.particles"][0, 0])
-
-
-def test_given_seed_is_reported():
-    assert simr.run(MODELS, request([], seed=7)).seed == 7
+def test_runs_repeat_exactly():
+    first = simr.run(MODELS, request(["sim.particles"]))
+    again = simr.run(MODELS, request(["sim.particles"]))
+    for m in range(len(MODELS)):
+        np.testing.assert_array_equal(first.data["sim.particles"][m, 0], again.data["sim.particles"][m, 0])
 
 
 def test_one_model_and_one_simulator_object_are_accepted():
@@ -121,8 +115,8 @@ def test_default_simulator_is_simulator_config():
         ({"run": {"save": ["sim.orbit"]}}, "unknown keys in run"),
         ({"run": {"return": ["sim.orbits"]}}, "unknown names in run.return"),
         ({"run": {"return": "sim.orbit"}}, "must be a list"),
-        ({"run": {"seed": -1}}, "run.seed"),
-        ({"run": {"seed": 1.5}}, "run.seed"),
+        ({"run": {"seed": 3}}, "unknown keys in run"),
+        ({"simulator": {"seed": 1.5}}, r"simulator\[0\]: seed"),
         ({"simulator": []}, "empty"),
         ({"simulator": [SMALL, {"n_1": 5}]}, r"simulator\[1\]"),
         ({"simulator": [{"lnl": -1}]}, r"simulator\[0\]: lnl"),

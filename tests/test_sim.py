@@ -29,19 +29,19 @@ MEDIUM = SimulatorConfig(n1=50, n2=50)
 
 
 def test_simulate_shape_and_finite():
-    final = sim.simulate_particles(PARAMS, SMALL, seed=1)
+    final = sim.simulate_particles(PARAMS, replace(SMALL, seed=1))
     assert final.shape == (31, 6)
     assert np.isfinite(final).all()
 
 
 def test_simulate_matches_original_program():
     original = replace(SMALL, normalization="wallin", start="wallin")  # the original's physics and start time
-    final = sim.simulate_particles(PARAMS, original, seed=1)
+    final = sim.simulate_particles(PARAMS, replace(original, seed=1))
     np.testing.assert_allclose(final[-1], EXPECTED_SECONDARY, rtol=1e-5, atol=1e-6)
 
 
 def test_simulate_accepts_a_list():
-    final = sim.simulate_particles(list(PARAMS), SMALL, seed=1)
+    final = sim.simulate_particles(list(PARAMS), replace(SMALL, seed=1))
     assert final.shape == (31, 6)
 
 
@@ -83,37 +83,54 @@ def test_parse_model_string_rejects_too_few_values():
 
 
 def test_same_seed_gives_identical_particles():
-    first = sim.simulate_particles(PARAMS, MEDIUM, seed=7)
-    second = sim.simulate_particles(PARAMS, MEDIUM, seed=7)
+    first = sim.simulate_particles(PARAMS, replace(MEDIUM, seed=7))
+    second = sim.simulate_particles(PARAMS, replace(MEDIUM, seed=7))
     np.testing.assert_array_equal(first, second)
 
 
 def test_different_seeds_change_particles_not_orbit():
-    first = sim.simulate_particles(PARAMS, MEDIUM, seed=7)
-    second = sim.simulate_particles(PARAMS, MEDIUM, seed=8)
+    first = sim.simulate_particles(PARAMS, replace(MEDIUM, seed=7))
+    second = sim.simulate_particles(PARAMS, replace(MEDIUM, seed=8))
     assert not np.allclose(first[:-1], second[:-1])
     np.testing.assert_allclose(first[-1], second[-1], rtol=1e-12)
 
 
-def test_no_seed_differs_each_run():
-    first = sim.simulate_particles(PARAMS, MEDIUM)
-    second = sim.simulate_particles(PARAMS, MEDIUM)
-    assert not np.allclose(first[:-1], second[:-1])
+def test_seed_defaults_to_0_and_repeats():
+    assert SimulatorConfig().seed == 0
+    np.testing.assert_array_equal(
+        sim.simulate_particles(PARAMS, MEDIUM), sim.simulate_particles(PARAMS, replace(MEDIUM, seed=0))
+    )
+
+
+def test_one_seed_gives_every_model_the_same_disk_pattern():
+    # SPAM draws the same random numbers for any model: each primary-disk particle keeps its angle in the
+    # disk plane, and its radius only stretches with rout1. Here with no tilt, so the plane is x-y.
+    flat = PARAMS.copy()
+    flat[[sim.PARAM_INDEX["theta1"], sim.PARAM_INDEX["phi1"]]] = 0.0
+    wider = flat.copy()
+    wider[sim.PARAM_INDEX["rout1"]] *= 2
+    a = sim.unperturbed_particles(flat, MEDIUM)[: MEDIUM.n1]
+    b = sim.unperturbed_particles(wider, MEDIUM)[: MEDIUM.n1]
+    np.testing.assert_allclose(np.arctan2(a[:, 1], a[:, 0]), np.arctan2(b[:, 1], b[:, 0]), atol=1e-12)
+    rin, rout = 0.05, flat[sim.PARAM_INDEX["rout1"]]  # SPAM's inner radius is 0.05
+    fraction_a = (np.hypot(a[:, 0], a[:, 1]) - rin) / (rout - rin)
+    fraction_b = (np.hypot(b[:, 0], b[:, 1]) - rin) / (2 * rout - rin)
+    np.testing.assert_allclose(fraction_a, fraction_b, atol=1e-9)
 
 
 # --- Step 4a: the starting state ---------------------------------------------------------------------
 
 
 def test_initial_state_shape_and_differs_from_end():
-    start = sim.initial_state(PARAMS, SMALL, seed=3)
-    end = sim.simulate_particles(PARAMS, SMALL, seed=3)
+    start = sim.initial_state(PARAMS, replace(SMALL, seed=3))
+    end = sim.simulate_particles(PARAMS, replace(SMALL, seed=3))
     assert start.shape == end.shape == (31, 6)
     assert not np.allclose(start, end)
 
 
 def test_initial_state_is_repeatable():
-    first = sim.initial_state(PARAMS, SMALL, seed=3)
-    second = sim.initial_state(PARAMS, SMALL, seed=3)
+    first = sim.initial_state(PARAMS, replace(SMALL, seed=3))
+    second = sim.initial_state(PARAMS, replace(SMALL, seed=3))
     np.testing.assert_array_equal(first, second)
 
 
@@ -125,9 +142,9 @@ N = 2000
 
 def heat_kick(heat_mode: str) -> tuple[np.ndarray, np.ndarray]:
     """Starting states with and without heat, one seed. Returns (kick per disk particle, position change)."""
-    cold = sim.initial_state(PARAMS, SimulatorConfig(n1=N, n2=N), seed=5)
+    cold = sim.initial_state(PARAMS, SimulatorConfig(n1=N, n2=N, seed=5))
     hot_config = SimulatorConfig(n1=N, n2=N, heat1=HEAT, heat2=HEAT, heat_mode=heat_mode)
-    hot = sim.initial_state(PARAMS, hot_config, seed=5)
+    hot = sim.initial_state(PARAMS, replace(hot_config, seed=5))
     return hot[:-1, 3:] - cold[:-1, 3:], hot[:, :3] - cold[:, :3]
 
 
@@ -158,8 +175,8 @@ def test_heat_modes_differ_only_by_the_drift():
 
 
 def test_no_heat_gives_the_same_run_in_both_modes():
-    wallin = sim.simulate_particles(PARAMS, replace(SMALL, heat_mode="wallin"), seed=5)
-    centered = sim.simulate_particles(PARAMS, replace(SMALL, heat_mode="centered"), seed=5)
+    wallin = sim.simulate_particles(PARAMS, replace(SMALL, heat_mode="wallin", seed=5))
+    centered = sim.simulate_particles(PARAMS, replace(SMALL, heat_mode="centered", seed=5))
     np.testing.assert_array_equal(wallin, centered)
 
 
@@ -169,15 +186,15 @@ def test_no_heat_gives_the_same_run_in_both_modes():
 def test_config_defaults():
     config = SimulatorConfig()
     assert asdict(config) == {
-        "n1": 1000, "n2": 1000, "heat1": 0.0, "heat2": 0.0, "heat_mode": "centered",
+        "seed": 0, "n1": 1000, "n2": 1000, "heat1": 0.0, "heat2": 0.0, "heat_mode": "centered",
         "lnl": 0.1, "r_scale": 10.0, "m_halo": 5.8, "m_bulge": 0.3333, "h_bulge": 0.2, "h_disk": 1.0,
         "normalization": "total", "start": "pass", "start_pass": 1, "no_pass": -5.0,
     }  # fmt: skip
 
 
 def test_simulate_uses_default_config():
-    default = sim.initial_state(PARAMS, seed=5)
-    explicit = sim.initial_state(PARAMS, SimulatorConfig(), seed=5)
+    default = sim.initial_state(PARAMS)
+    explicit = sim.initial_state(PARAMS, SimulatorConfig())
     assert default.shape == (2001, 6)
     np.testing.assert_array_equal(default, explicit)
 
@@ -201,7 +218,7 @@ def test_config_accepts_numpy_integers():
     [
         {"n1": 0}, {"n2": -5}, {"n1": 10.5}, {"heat1": -0.1}, {"heat2": -1}, {"heat_mode": "centred"},
         {"lnl": -0.1}, {"r_scale": 0}, {"m_halo": -1}, {"m_bulge": 0}, {"h_bulge": -0.2}, {"h_disk": 0},
-        {"normalization": "unit"},
+        {"normalization": "unit"}, {"seed": -1}, {"seed": 1.5}, {"seed": None}, {"seed": True},
     ],  # fmt: skip
 )
 def test_config_rejects_bad_values(bad):
@@ -265,15 +282,15 @@ def test_each_config_mass_value_reaches_its_component():
 
 def test_lnl_changes_a_close_encounter():
     config = SimulatorConfig(n1=5, n2=5)
-    base = sim.simulate_particles(CLOSE_PARAMS, replace(config, lnl=0.0), seed=1)
-    friction = sim.simulate_particles(CLOSE_PARAMS, replace(config, lnl=0.5), seed=1)
+    base = sim.simulate_particles(CLOSE_PARAMS, replace(config, lnl=0.0, seed=1))
+    friction = sim.simulate_particles(CLOSE_PARAMS, replace(config, lnl=0.5, seed=1))
     assert np.abs(base[-1, :3] - friction[-1, :3]).max() > 1e-3
 
 
 def test_normalization_changes_the_run_slightly():
     """At the default masses the two differ by 0.45% in force (0.9955 vs 1), so the orbit moves a little."""
-    total = sim.simulate_particles(PARAMS, SMALL, seed=1)
-    wallin = sim.simulate_particles(PARAMS, replace(SMALL, normalization="wallin"), seed=1)
+    total = sim.simulate_particles(PARAMS, replace(SMALL, seed=1))
+    wallin = sim.simulate_particles(PARAMS, replace(SMALL, normalization="wallin", seed=1))
     assert not np.array_equal(total[-1], wallin[-1])
     np.testing.assert_allclose(total[-1], wallin[-1], rtol=0.05)
 
@@ -285,8 +302,8 @@ def test_simulate_appends_the_unused_parameters():
     """A 14-value model gives exactly the run of the original 22-value line (whose last 8 differ)."""
     original = np.array(MODEL_STRING.split(",")[:22], dtype=float)
     assert not np.array_equal(original[14:], sim.UNUSED_PARAMS)  # so the test means something
-    ours = sim.simulate_particles(PARAMS, SMALL, seed=1)
-    spam = jspam.run_collision(original, seed=1, **sim._jspam_args(PARAMS, SMALL))
+    ours = sim.simulate_particles(PARAMS, replace(SMALL, seed=1))
+    spam = jspam.run_collision(original, **sim._jspam_args(PARAMS, replace(SMALL, seed=1)))
     np.testing.assert_array_equal(ours, spam)
 
 
@@ -298,7 +315,7 @@ def test_last_8_parameters_do_nothing(index):
     changed[index] = 7.5
     args = sim._jspam_args(PARAMS, SMALL)
     np.testing.assert_array_equal(
-        jspam.run_collision(full, seed=1, **args), jspam.run_collision(changed, seed=1, **args)
+        jspam.run_collision(full, **args), jspam.run_collision(changed, **args)
     )
 
 
@@ -332,8 +349,8 @@ def test_orbit_starts_and_ends_with_a_particle_run():
     orbit = sim.simulate_orbit(PARAMS)
     assert orbit.shape == (timing["n_steps"] + 1, 7)
     np.testing.assert_allclose(orbit[0, 6], timing["t_start"])
-    np.testing.assert_array_equal(orbit[0, :6], sim.initial_state(PARAMS, SMALL, seed=1)[-1])
-    np.testing.assert_array_equal(orbit[-1, :6], sim.simulate_particles(PARAMS, SMALL, seed=1)[-1])
+    np.testing.assert_array_equal(orbit[0, :6], sim.initial_state(PARAMS, replace(SMALL, seed=1))[-1])
+    np.testing.assert_array_equal(orbit[-1, :6], sim.simulate_particles(PARAMS, replace(SMALL, seed=1))[-1])
 
 
 def test_orbit_closest_approach_matches_timing():
@@ -431,7 +448,7 @@ def test_missing_pass_falls_back_to_minus_5():
         assert np.isnan(timing["t_closest"]) and "0 close passes" in timing["fallback_reason"]
     orbit = sim.simulate_orbit(FIRST_APPROACH, SMALL)
     assert orbit[0, 6] == -5.0
-    np.testing.assert_array_equal(orbit[-1, :6], sim.simulate_particles(FIRST_APPROACH, SMALL, seed=1)[-1])
+    np.testing.assert_array_equal(orbit[-1, :6], sim.simulate_particles(FIRST_APPROACH, replace(SMALL, seed=1))[-1])
     assert sim.get_timing(FIRST_APPROACH, SimulatorConfig(no_pass=-4.0))["t_start"] == -4.0
     found = sim.get_timing(PARAMS)
     assert found["fallback_reason"] is None and not found["start_fallback"]
@@ -446,7 +463,7 @@ def test_missing_pass_is_an_error_when_asked():
 def test_first_approach_reason():
     assert FIRST_APPROACH[:3] @ FIRST_APPROACH[3:6] < 0  # approaching
     with pytest.raises(ValueError, match="0 close passes .* approaching now, with no earlier pass"):
-        sim.simulate_particles(FIRST_APPROACH, replace(ERROR, n1=20, n2=10), seed=1)  # fails before any particles
+        sim.simulate_particles(FIRST_APPROACH, replace(ERROR, n1=20, n2=10, seed=1))  # fails before any particles
 
 
 def test_pass_older_than_the_window_reason():
@@ -462,7 +479,7 @@ def test_fixed_start():
     assert timing["start"] == "fixed" and timing["t_start"] == -8.0 and timing["n_steps"] == 8002
     orbit = sim.simulate_orbit(PARAMS, config)
     assert orbit[0, 6] == -8.0
-    np.testing.assert_array_equal(orbit[-1, :6], sim.simulate_particles(PARAMS, config, seed=1)[-1])
+    np.testing.assert_array_equal(orbit[-1, :6], sim.simulate_particles(PARAMS, replace(config, seed=1))[-1])
     np.testing.assert_allclose(orbit[0, :6], sim.search_orbit(PARAMS)[8000, :6], rtol=1e-9, atol=1e-9)
 
 
@@ -493,8 +510,8 @@ def test_start_settings_survive_a_json_round_trip():
 
 
 def test_unperturbed_are_the_starting_disks_placed_now():
-    start = sim.initial_state(PARAMS, SMALL, seed=4)
-    now = sim.unperturbed_particles(PARAMS, SMALL, seed=4)
+    start = sim.initial_state(PARAMS, replace(SMALL, seed=4))
+    now = sim.unperturbed_particles(PARAMS, replace(SMALL, seed=4))
     assert now.shape == start.shape
     np.testing.assert_array_equal(now[-1], PARAMS[:6])  # the secondary's center, where the model puts it
     n1 = SMALL.n1
@@ -504,13 +521,13 @@ def test_unperturbed_are_the_starting_disks_placed_now():
 
 
 def test_unperturbed_ignores_the_start_settings():
-    expected = sim.unperturbed_particles(PARAMS, SMALL, seed=4)
+    expected = sim.unperturbed_particles(PARAMS, replace(SMALL, seed=4))
     for change in [{"start": -8.0}, {"start": "wallin"}, {"start_pass": 5, "no_pass": "error"}]:
-        np.testing.assert_array_equal(sim.unperturbed_particles(PARAMS, replace(SMALL, **change), seed=4), expected)
+        np.testing.assert_array_equal(sim.unperturbed_particles(PARAMS, replace(SMALL, **change, seed=4)), expected)
 
 
 def test_unperturbed_and_a_run_share_centers():
-    run = sim.simulate_particles(PARAMS, SMALL, seed=4)
-    now = sim.unperturbed_particles(PARAMS, SMALL, seed=4)
+    run = sim.simulate_particles(PARAMS, replace(SMALL, seed=4))
+    now = sim.unperturbed_particles(PARAMS, replace(SMALL, seed=4))
     # A run ends 1 to 2 steps past now, so its secondary is close to, not exactly at, the model's position
     np.testing.assert_allclose(run[-1, :3], now[-1, :3], atol=0.02)

@@ -136,7 +136,7 @@ so the lead is 4.0 and the run starts at −6.91.
   window and the 10 (`sim.LEAD_FACTOR`) and has no cap or fallback.
 
 ## The settings we expose (`SimulatorConfig`)
-Everything `sim.SimulatorConfig` can change, apart from the parameters, plus the seed. For each, what
+Everything `sim.SimulatorConfig` can change, apart from the parameters. For each, what
 it does in the code and what it means physically. `sim` passes each value through `jspam`, which sets it
 in the Fortran before every run, so nothing carries over between runs.
 
@@ -154,7 +154,7 @@ was chosen (`normalization`, `heat_mode`, `start`) or a value changed (`lnl`).
 | `heat_mode` | `"centered"` | `"wallin"` |
 | `n1`, `n2` | 1000, 1000 | 1000, 500 (`basic_run`) |
 | `start`, `start_pass`, `no_pass` | `"pass"`, 1, −5 | `"wallin"` (SPAM's search) |
-| `seed` | none (set by `simr` later) | none: random every run |
+| `seed` | 0 | none: random every run |
 
 ### The mass model
 These shape the unit galaxy, so they change every force in the run.
@@ -262,9 +262,18 @@ These change how the disks are sampled, not the forces.
 - **Code:** all of SPAM's random numbers come from `randm()` (setup_module.f90), which calls Fortran's
   `random_number`. `profile` uses it to pick each particle's radius bin, radius and angle, and (with
   heat) its velocity kicks. `jspam` expands the seed into gfortran's seed array with numpy's
-  `SeedSequence` and calls `set_seed`; with no seed it calls `seed_from_system`.
+  `SeedSequence` and calls `set_seed`; with no seed it calls `seed_from_system`. `sim` always passes
+  `config.seed` (0 by default), so runs repeat exactly.
+- **The draws don't depend on the model.** Each particle takes a fixed number of draws in a fixed order
+  (ring, radius, angle, three heat kicks, drawn even when heat is 0), galaxy 1 first. With the fixed disk
+  option (`opt = 1`) radii are spread evenly between `rin` = 0.05 and `rout`, so with one seed every
+  model gets the same pattern: each particle keeps its angle and its fractional radius, and `rout`,
+  `theta`, `phi` and the masses only stretch, tilt and spin it up. Galaxy 2's draws depend on `n1` (how
+  many galaxy 1 took first), not on any parameter.
 - **Physics:** none. Different seeds give different, equally valid samples of the same disk. The orbit
-  has no random numbers, so it's identical for every seed.
+  has no random numbers, so it's identical for every seed. Sharing one draw across models means score
+  differences come only from the parameters ("common random numbers"); the cost is that any quirk of
+  that draw is in every model. Comparing a model across seeds measures it.
 
 #### `n1`, `n2`: particles per disk
 - **Code:** the number of rows `profile` fills for each disk. Particles are placed with surface density
