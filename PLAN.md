@@ -22,8 +22,22 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
   simulation is done;
   everything after it (returned data, images, saved files) expects `float32`. That precision is
   enough once a simulation is done.
-- **Saved arrays** are `.npz` files written with `np.savez` (no compression; it saves little on
-  simulated floats).
+- **Saved arrays** are `.npy` files, one per array, written with `np.save` (no compression; it
+  saves little on simulated floats). Separate files let one array be added or deleted without
+  touching the others.
+- **One folder per model:** `<output>/model_000000/` holds `model.json` and a subfolder per stage:
+  `simulations/` (`<simulation>_<item>.npy`, e.g. `simulations/sim_00_particles.npy`), later
+  `images/`. `model.json` is the model's record: its 14 named parameters, and each simulation by
+  name with its full config (seed included), timing, files and the code that made it (both repos'
+  commits and whether either had uncommitted changes); later images and fitness scores.
+- **Write order:** each `.npy` is written atomically (to a temporary name, then renamed); only once
+  it's in place is `model.json` updated to list it. An array counts as saved only if `model.json`
+  lists it.
+- **Reuse:** with an output folder, a simulation `model.json` lists under the same name with exactly
+  the same config counts as already saved. Anything requested that it has is loaded instead of
+  computed, nothing it has is written again, and arrays it's missing are computed and added. A
+  different config is neither used nor changed. Code versions are recorded but not compared;
+  higher-level code can check them.
 - **Applications** live in the repo. Each owns its run's tables and final scores, and chooses how to
   parallelize. Meta scores are computed here.
 - **Failures:** a failed model returns `NaN` and writes the error to the log.

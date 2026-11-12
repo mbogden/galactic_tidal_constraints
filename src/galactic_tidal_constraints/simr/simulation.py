@@ -9,6 +9,8 @@ values for them (`UNUSED_PARAMS`) when it calls `jspam`. How it's simulated is s
 and bulge).
 """
 
+import importlib.metadata
+import json
 from dataclasses import dataclass
 
 import jspam
@@ -361,3 +363,15 @@ def mass_profile(config: SimulatorConfig = SimulatorConfig()) -> dict[str, np.nd
 def _mass_model(config: SimulatorConfig) -> dict[str, float]:
     """The config's mass model, as jspam names it."""
     return {name: getattr(config, name) for name in ("lnl", "r_scale", "m_halo", "m_bulge", "h_bulge", "h_disk")}
+
+
+def jspam_version() -> dict:
+    """Where the installed `jspam` came from, read from its install record (pip's `direct_url.json`).
+
+    Returns:
+        "url": the repository or folder it was installed from.
+        "commit": the git commit it was built from, or None for a local folder (e.g. an editable install).
+    """
+    record = importlib.metadata.distribution("jspam").read_text("direct_url.json")
+    info = json.loads(record) if record else {}
+    return {"url": info.get("url"), "commit": info.get("vcs_info", {}).get("commit_id")}

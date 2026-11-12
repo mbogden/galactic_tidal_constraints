@@ -1,5 +1,8 @@
 """Tests for the SIMR workflow (simr/simr.py). Each section covers one step of the rebuild."""
 
+from dataclasses import asdict
+from pathlib import Path
+
 import pytest
 
 # Skipped where the dependencies aren't installed, such as native Windows.
@@ -113,7 +116,6 @@ def test_default_simulator_is_simulator_config():
     "bad, message",
     [
         ({"runn": {}}, "unknown keys in request"),
-        ({"run": {"save": ["sim.orbit"]}}, "unknown keys in run"),
         ({"run": {"return": ["sim.orbits"]}}, "unknown names in run.return"),
         ({"run": {"return": "sim.orbit"}}, "must be a list"),
         ({"run": {"seed": 3}}, "unknown keys in run"),
@@ -132,3 +134,174 @@ def test_bad_requests_name_the_problem(bad, message):
 def test_bad_models_are_rejected(bad):
     with pytest.raises(ValueError):
         simr.run(bad, request([]))
+
+
+# --- Step 8b: saving and loading ---------------------------------------------------------------------
+
+
+def save_request(save, returned=(), simulator=SMALL):
+    return {"run": {"return": list(returned), "save": list(save)}, "simulator": simulator}
+
+
+def test_save_writes_one_folder_per_model(tmp_path):
+    simr.run(MODELS, save_request(["sim.particles", "sim.orbit"]), output=tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["model_000000", "model_000001"]
+    folder = tmp_path / "model_000001"
+    assert sorted(p.name for p in folder.iterdir()) == ["model.json", "simulations"]
+    assert sorted(p.name for p in (folder / "simulations").iterdir()) == ["sim_00_orbit.npy", "sim_00_particles.npy"]
+
+
+def test_saved_arrays_load_back_exactly_as_returned(tmp_path):
+    names = ["sim.particles", "sim.unperturbed", "sim.orbit"]
+    result = simr.run(MODELS, save_request(names, returned=names), output=tmp_path)
+    loaded = simr.load_simulation(tmp_path / "model_000001", "sim_00")
+    assert list(loaded) == names
+    for name in names:
+        assert loaded[name].dtype == np.float32
+        np.testing.assert_array_equal(loaded[name], result.data[name][1, 0])
+
+
+def test_saving_without_returning_keeps_nothing_in_memory(tmp_path):
+    result = simr.run(MODELS, save_request(["sim.particles"]), output=tmp_path)
+    assert result.data == {}
+    assert simr.load_simulation(tmp_path / "model_000000", "sim_00")["sim.particles"].shape == (31, 6)
+
+
+def test_model_json_records_model_config_timing_and_code(tmp_path):
+    simr.run(MODELS, save_request(["sim.orbit"], simulator=[SMALL, {**SMALL, "seed": 4}]), output=tmp_path)
+    record = simr.load_model(tmp_path / "model_000001")
+    assert record["model"] == dict(zip(sim.PARAM_NAMES, HEAVIER.tolist()))
+    assert list(record["simulations"]) == ["sim_00", "sim_01"]
+    entry = record["simulations"]["sim_01"]
+    assert entry["config"] == {**asdict(SimulatorConfig(**SMALL)), "seed": 4}
+    assert entry["timing"]["t_start"] == sim.get_timing(HEAVIER, SimulatorConfig(**SMALL))["t_start"]
+    assert entry["files"] == {"sim.orbit": "simulations/sim_01_orbit.npy"}
+    assert set(entry["code"]) == {"galactic_tidal_constraints", "jspam"}
+
+
+def test_jspam_version_is_the_pinned_commit():
+    pin = Path(__file__).parents[1].joinpath("pyproject.toml").read_text().split("JSPAM.git@")[1][:40]
+    assert sim.jspam_version()["commit"] == pin
+    assert simr.code_versions()["jspam"] == {**sim.jspam_version(), "uncommitted_changes": False}
+
+
+def test_timing_only_saves_no_array_file(tmp_path):
+    simr.run(MODELS[:1], save_request(["sim.timing"]), output=tmp_path)
+    entry = simr.load_model(tmp_path / "model_000000")["simulations"]["sim_00"]
+    assert entry["files"] == {}
+    assert "t_start" in entry["timing"]
+    assert not (tmp_path / "model_000000" / "simulations").exists()
+
+
+def test_no_temporary_files_are_left(tmp_path):
+    simr.run(MODELS, save_request(["sim.particles"]), output=tmp_path)
+    assert not list(tmp_path.rglob("*.tmp"))
+
+
+def test_save_needs_an_output_folder():
+    with pytest.raises(ValueError, match="no output folder"):
+        simr.run(MODELS, save_request(["sim.orbit"]))
+
+
+def test_a_saved_array_is_left_alone_and_the_run_moves_on(tmp_path):
+    simr.run(MODELS[:1], save_request(["sim.particles"]), output=tmp_path)
+    folder = tmp_path / "model_000000"
+    before = simr.load_model(folder)
+    particles = folder / "simulations" / "sim_00_particles.npy"
+    file_time = particles.stat().st_mtime_ns
+    # Again with a different sim_00 and a new sim_01: sim_00 stays as it was, sim_01 is added.
+    changed = {**SMALL, "lnl": 0.01}
+    result = simr.run(MODELS[:1], save_request(["sim.particles"], returned=["sim.particles"],
+                                               simulator=[changed, changed]), output=tmp_path)
+    after = simr.load_model(folder)
+    assert after["simulations"]["sim_00"] == before["simulations"]["sim_00"]
+    assert particles.stat().st_mtime_ns == file_time
+    assert after["simulations"]["sim_01"]["config"]["lnl"] == 0.01
+    assert result.data["sim.particles"][0, 0] is not None  # still computed, because it was returned
+
+
+def test_a_saved_simulation_gains_missing_arrays_from_the_same_config(tmp_path):
+    simr.run(MODELS[:1], save_request(["sim.particles"]), output=tmp_path)
+    folder = tmp_path / "model_000000"
+    particles = folder / "simulations" / "sim_00_particles.npy"
+    file_time = particles.stat().st_mtime_ns
+    simr.run(MODELS[:1], save_request(["sim.particles", "sim.orbit"]), output=tmp_path)
+    entry = simr.load_model(folder)["simulations"]["sim_00"]
+    assert entry["files"] == {"sim.particles": "simulations/sim_00_particles.npy",
+                              "sim.orbit": "simulations/sim_00_orbit.npy"}
+    assert particles.stat().st_mtime_ns == file_time  # the particles weren't rewritten
+    np.testing.assert_array_equal(simr.load_simulation(folder, "sim_00")["sim.orbit"],
+                                  sim.simulate_orbit(PARAMS, SimulatorConfig(**SMALL)).astype(np.float32))
+
+
+def test_a_different_config_never_adds_to_a_saved_simulation(tmp_path):
+    simr.run(MODELS[:1], save_request(["sim.particles"]), output=tmp_path)
+    simr.run(MODELS[:1], save_request(["sim.orbit"], simulator={**SMALL, "lnl": 0.01}), output=tmp_path)
+    entry = simr.load_model(tmp_path / "model_000000")["simulations"]["sim_00"]
+    assert list(entry["files"]) == ["sim.particles"]
+    assert not (tmp_path / "model_000000" / "simulations" / "sim_00_orbit.npy").exists()
+
+
+def test_numpy_integers_in_a_config_save(tmp_path):
+    simr.run(MODELS[:1], save_request(["sim.orbit"], simulator=SimulatorConfig(n1=np.int64(20), n2=10)),
+             output=tmp_path)
+    assert simr.load_model(tmp_path / "model_000000")["simulations"]["sim_00"]["config"]["n1"] == 20
+
+
+def test_a_folder_holding_another_model_is_an_error(tmp_path):
+    simr.run(MODELS[:1], save_request(["sim.orbit"]), output=tmp_path)
+    with pytest.raises(ValueError, match="different model"):
+        simr.run(MODELS[1:], save_request(["sim.orbit"]), output=tmp_path)
+
+
+def test_only_listed_simulations_count_as_saved(tmp_path):
+    simr.run(MODELS[:1], save_request(["sim.orbit"]), output=tmp_path)
+    folder = tmp_path / "model_000000"
+    (folder / "simulations" / "sim_05_orbit.npy").write_bytes(b"left by a crash")
+    with pytest.raises(KeyError, match="sim_05"):
+        simr.load_simulation(folder, "sim_05")
+
+
+def test_bad_save_names_are_rejected(tmp_path):
+    with pytest.raises(ValueError, match="unknown names in run.save"):
+        simr.run(MODELS, save_request(["sim.orbits"]), output=tmp_path)
+
+
+def _not_computed(*args):
+    raise AssertionError("computed, but it was saved")
+
+
+def test_saved_data_is_loaded_instead_of_computed(tmp_path, monkeypatch):
+    first = simr.run(MODELS, save_request(["sim.particles", "sim.orbit"], returned=["sim.particles"]), output=tmp_path)
+    for item in ("sim.particles", "sim.orbit", "sim.timing"):
+        monkeypatch.setitem(simr.SIM_DATA, item, _not_computed)
+    again = simr.run(MODELS, request(["sim.particles", "sim.orbit", "sim.timing"]), output=tmp_path)
+    np.testing.assert_array_equal(again.data["sim.particles"][1, 0], first.data["sim.particles"][1, 0])
+    assert again.data["sim.particles"][1, 0].dtype == np.float32
+    assert again.data["sim.timing"][1, 0]["t_start"] == sim.get_timing(HEAVIER, SimulatorConfig(**SMALL))["t_start"]
+
+
+def test_only_missing_data_is_computed(tmp_path, monkeypatch):
+    simr.run(MODELS[:1], save_request(["sim.particles"]), output=tmp_path)
+    monkeypatch.setitem(simr.SIM_DATA, "sim.particles", _not_computed)
+    result = simr.run(MODELS[:1], request(["sim.particles", "sim.orbit"]), output=tmp_path)
+    assert result.data["sim.orbit"][0, 0].shape[1] == 7  # computed: it wasn't saved
+
+
+def test_a_different_config_is_computed_not_loaded(tmp_path):
+    simr.run(MODELS[:1], save_request(["sim.particles"]), output=tmp_path)
+    changed = {**SMALL, "seed": 1}
+    result = simr.run(MODELS[:1], request(["sim.particles"], simulator=changed), output=tmp_path)
+    expected = sim.simulate_particles(PARAMS, SimulatorConfig(**changed)).astype(np.float32)
+    np.testing.assert_array_equal(result.data["sim.particles"][0, 0], expected)
+
+
+def test_reading_alone_writes_nothing(tmp_path):
+    simr.run(MODELS, request(["sim.orbit"]), output=tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_reading_from_a_folder_holding_another_model_is_an_error(tmp_path):
+    simr.run(MODELS[:1], save_request(["sim.orbit"]), output=tmp_path)
+    with pytest.raises(ValueError, match="different model"):
+        simr.run(MODELS[1:], request(["sim.orbit"]), output=tmp_path)
