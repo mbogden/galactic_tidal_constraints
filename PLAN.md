@@ -57,8 +57,9 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
   nothing is saved for it, and nothing is recorded in `model.json`, so a later run retries it.
   Errors while writing stop the run.
 - **Status:** each stage reports a status, time and error for each of its cells, indexed like its
-  data (`result.status["sim"][m, s]`: `"ran"`, `"reused"` when nothing had to be computed, or
-  `"failed"`; later stages mark work that depends on a failure `"skipped"`). A run that saves adds
+  data (`result.status["sim"][m, s]`: `"ran"`, `"reused"` when nothing had to be computed,
+  `"failed"`, or `"empty"` when the request asked for nothing (no `return`, no `save`; until fitness
+  exists, that's a command-line run without `run.save`); later stages mark work that depends on a failure `"skipped"`). A run that saves adds
   them to its record in `catalog.json` when it ends.
 - **One door to SPAM:** only one module imports `jspam`. Each run's saved config records the commit
   of both repos and whether either has uncommitted changes.
@@ -94,8 +95,16 @@ One config tree for everything that can change a result, plus a few runtime flag
   lines had more than 14 values. Fewer than 14 numbers is an error naming the line. Blank lines and
   `#` comments are ignored. The catalog records each run's models with its configs, so the output
   folder still says what was run.
-- On the command line an output (folder or `.json` file) is required, so every run leaves its
-  models, configs and statuses on disk; `run.save` is optional.
+- The command line: `python -m galactic_tidal_constraints.simr --models <file> --output <folder or
+  .json> [--config <file>] [--log-level <level>]`. An output is required, so every run leaves its
+  models, configs and statuses on disk. The config is optional and lists only what differs from the
+  defaults (the catalog records the full, filled-in config). `run.save` is optional; `run.return`
+  is ignored with a warning (nothing comes back in memory), so one config works in a notebook and
+  on the command line. No separate `config.py`: `simr` checks the request (keys, values and types,
+  from the dataclasses' type hints) for the command line and notebooks alike.
+- Exit codes: 0 when the run ran (even if some simulations failed; they're in the catalog and the
+  log), 1 when it couldn't run (a bad models file, config or output; a short message, no
+  traceback), 2 when it ran but every simulation failed (almost always a setup mistake).
 
 ### Models and stage lists
 - Encounter parameters are the one hard input every run needs, and they're their own list. Each

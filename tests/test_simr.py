@@ -120,7 +120,7 @@ def test_default_simulator_is_simulator_config():
         ({"run": {"return": ["sim.orbits"]}}, "unknown names in run.return"),
         ({"run": {"return": "sim.orbit"}}, "must be a list"),
         ({"run": {"seed": 3}}, "unknown keys in run"),
-        ({"simulator": {"seed": 1.5}}, r"simulator\[0\]: seed"),
+        ({"simulator": {"seed": 1.5}}, r"simulator\[0\]\.seed must be a whole number"),
         ({"simulator": []}, "empty"),
         ({"simulator": [SMALL, {"n_1": 5}]}, r"simulator\[1\]"),
         ({"simulator": [{"lnl": -1}]}, r"simulator\[0\]: lnl"),
@@ -308,6 +308,12 @@ def test_a_run_without_save_writes_only_the_catalog(tmp_path):
     assert record["status"] == {"sim": [["ran"], ["ran"]]}
 
 
+def test_nothing_requested_is_empty(tmp_path):
+    result = simr.run(MODELS, request([]), output=tmp_path)
+    assert result.status["sim"].tolist() == [["empty"], ["empty"]]
+    assert simr.load_catalog(tmp_path)["runs"][0]["status"] == {"sim": [["empty"], ["empty"]]}
+
+
 def test_a_model_the_folder_doesnt_have_is_computed_and_added_to_the_catalog(tmp_path):
     simr.run(MODELS[:1], save_request(["sim.orbit"]), output=tmp_path)
     result = simr.run(MODELS, request(["sim.orbit"]), output=tmp_path)
@@ -457,7 +463,7 @@ def test_failures_are_logged_with_a_count(caplog):
         simr.run(np.stack([PARAMS, FIRST_APPROACH]), request(["sim.orbit"], simulator=FAILING))
     failure = next(r for r in caplog.records if r.levelname == "ERROR")
     assert "model 1" in failure.getMessage() and failure.exc_info is not None
-    assert "2 simulations: 1 ran, 0 reused, 1 failed" in caplog.text
+    assert "2 simulations: 1 ran, 0 reused, 1 failed, 0 empty" in caplog.text
 
 
 
@@ -499,3 +505,63 @@ def test_output_paths():
     assert simr.output_paths("runs") == (Path("runs/catalog.json"), Path("runs"))
     assert simr.output_paths("runs/gen.json") == (Path("runs/gen.json"), None)
     assert simr.output_paths(".hidden") == (Path(".hidden/catalog.json"), Path(".hidden"))
+
+
+
+# --- Step 11: reading models, and checking types -----------------------------------------------------------
+
+
+def test_read_models_takes_the_first_14_values(tmp_path, caplog):
+    path = tmp_path / "models.txt"
+    archive_line = ",".join(str(v) for v in HEAVIER) + ",0.3,0.3,0,0,0,0,0,0,1.0,0,0 -6.9 24.9 SDSS_587722984435351614"
+    path.write_text("# a comment\n" + ",".join(str(v) for v in PARAMS) + "\n\n" + archive_line + "\n")
+    with caplog.at_level("INFO", logger="galactic_tidal_constraints.simr.simr"):
+        models = simr.read_models(path)
+    np.testing.assert_array_equal(models, MODELS)
+    assert "1 of 2 lines had more than 14 values" in caplog.text
+
+
+def test_read_models_reads_jspams_archive_line_format(tmp_path):
+    path = tmp_path / "data.txt"
+    path.write_text(
+        "-9.93853,-4.5805,15.43348,-1.54025,-2.97899,4.69234,34.41671,29.49607,2.97913,4.2501,301.0,35.5,"
+        "310.80745,321.98757,0.3,0.3,0.0,0.0,0.0,0.0,0.0,0.0,1.0,0,0,0.24008,-2.41999,5.62715,0.0,1.0,0.0,1.0,"
+        "0.0,0.0 -6.904942981293307 24.945037352311584 SDSS_587722984435351614\n"
+    )
+    np.testing.assert_array_equal(simr.read_models(path)[0], PARAMS)
+
+
+@pytest.mark.parametrize(
+    "text, message",
+    [
+        ("1,2,3\n", "line 1: expected at least 14"),
+        ("# only a comment\n\n", "has no models"),
+        ("a," + "1," * 13 + "\n", "line 1: the first 14 values must be numbers"),
+    ],
+)
+def test_bad_models_files_name_the_line(tmp_path, text, message):
+    path = tmp_path / "models.txt"
+    path.write_text(text)
+    with pytest.raises(ValueError, match=message):
+        simr.read_models(path)
+
+
+@pytest.mark.parametrize(
+    "entry, message",
+    [
+        ({"lnl": "0.1"}, r"simulator\[0\]\.lnl must be a number: '0.1'"),
+        ({"n1": 10.0}, r"simulator\[0\]\.n1 must be a whole number"),
+        ({"n1": True}, r"simulator\[0\]\.n1 must be a whole number"),
+        ({"heat_mode": 1}, r"simulator\[0\]\.heat_mode must be text"),
+        ({"start": [1]}, r"simulator\[0\]\.start must be text or a number"),
+    ],
+)
+def test_wrong_types_name_the_field(entry, message):
+    with pytest.raises(ValueError, match=message):
+        simr.run(MODELS, {"simulator": entry})
+
+
+def test_json_style_numbers_are_accepted():
+    # JSON writes 1.0 as 1, so an int is fine for a float field; a number is fine for start.
+    result = simr.run(MODELS[:1], request([], simulator={**SMALL, "lnl": 1, "start": -6, "seed": np.int64(2)}))
+    assert result.simulators[0].lnl == 1 and result.simulators[0].start == -6

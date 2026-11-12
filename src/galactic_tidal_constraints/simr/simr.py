@@ -60,6 +60,8 @@ import logging
 import os
 import subprocess
 import time
+import types
+import typing
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -118,7 +120,8 @@ class SimrResult:
         ids: with an output, each row's model id in its catalog (in a folder, its data goes in
             `model_<id>`). All None without an output.
         status, seconds, errors: per stage ("sim" so far), each indexed like that stage's data ([m, s]):
-            status: "ran", "reused" (everything requested came from disk) or "failed".
+            status: "ran", "reused" (saved, and nothing had to be computed), "failed", or "empty" (nothing
+                was requested, so there was nothing to do).
             seconds: wall time, loading included.
             errors: "Type: message" for a failed simulation, else None. The traceback is in the log.
     """
@@ -207,11 +210,15 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
             if to_save:  # errors while writing aren't caught: they stop the run
                 arrays = {item: values[item] for item in to_save if item != "sim.timing"}
                 _save_simulation(folder, record, name, config, arrays, values.get("sim.timing"), versions)
-            status["sim"][m, s] = "reused" if stored and not computed else "ran"  # reused: nothing computed
+            if not returned and not saved:
+                status["sim"][m, s] = "empty"  # the request asked for nothing, so there was nothing to do
+            else:
+                status["sim"][m, s] = "reused" if stored and not computed else "ran"  # reused: nothing computed
             seconds["sim"][m, s] = time.perf_counter() - start
 
-    counts = {word: int((status["sim"] == word).sum()) for word in ("ran", "reused", "failed")}
-    logger.info("simr: %d simulations: %d ran, %d reused, %d failed", status["sim"].size, *counts.values())
+    counts = {word: int((status["sim"] == word).sum()) for word in ("ran", "reused", "failed", "empty")}
+    logger.info("simr: %d simulations: %d ran, %d reused, %d failed, %d empty (nothing requested)",
+                status["sim"].size, *counts.values())
     if catalog is not None:
         run_record.update(
             status={"sim": status["sim"].tolist()},
@@ -237,6 +244,39 @@ def _simulate(params, config, returned, to_save, stored) -> tuple[dict, bool]:
         if isinstance(value, np.ndarray) and not np.isfinite(value).all():
             raise ValueError(f"NaN or inf in {item}")
     return values, computed
+
+
+def read_models(path: str | Path) -> np.ndarray:
+    """Read a models file: one model per line, the first 14 comma-separated values on the line.
+
+    Longer lines are accepted (SPAM's 22-value strings, JSPAM's `archive/data.txt`), and one log message
+    says how many lines had more than 14 values. Blank lines and lines starting with `#` are skipped.
+    Fewer than 14 values, or one that isn't a number, is an error naming the line.
+
+    Returns:
+        The models, shape (N, 14), in `sim.PARAM_NAMES` order.
+    """
+    n = len(sim.PARAM_NAMES)
+    models, longer = [], 0
+    with open(path, encoding="utf-8") as f:
+        for number, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            values = line.split(",")
+            if len(values) < n:
+                raise ValueError(f"{path}, line {number}: expected at least {n} comma-separated values, got {len(values)}")
+            try:
+                models.append([float(value) for value in values[:n]])
+            except ValueError as error:
+                raise ValueError(f"{path}, line {number}: the first {n} values must be numbers ({error})") from None
+            longer += len(values) > n
+    if not models:
+        raise ValueError(f"{path} has no models")
+    if longer:
+        logger.info("%s: %d of %d lines had more than %d values; the first %d were used",
+                    path, longer, len(models), n, n)
+    return np.array(models)
 
 
 def load_catalog(output: str | Path) -> dict:
@@ -470,10 +510,34 @@ def _simulator_config(index: int, entry) -> SimulatorConfig:
     if not isinstance(entry, dict):
         raise ValueError(f"simulator[{index}] must be a dict or SimulatorConfig: {entry!r}")
     _reject_unknown(f"simulator[{index}]", entry, [f.name for f in fields(SimulatorConfig)])
+    hints = typing.get_type_hints(SimulatorConfig)
+    for key, value in entry.items():
+        if not _has_type(value, hints[key]):
+            raise ValueError(f"simulator[{index}].{key} must be {_type_name(hints[key])}: {value!r}")
     try:
         return SimulatorConfig(**entry)
     except ValueError as error:
         raise ValueError(f"simulator[{index}]: {error}") from error
+
+
+def _has_type(value, hint) -> bool:
+    """Whether a config value fits its field's type hint. Integers fit a float field (JSON writes 1.0 as 1);
+    True and False fit neither numbers nor strings."""
+    if isinstance(hint, types.UnionType) or typing.get_origin(hint) is typing.Union:
+        return any(_has_type(value, option) for option in typing.get_args(hint))
+    if isinstance(value, bool):
+        return hint is bool
+    if hint is int:
+        return isinstance(value, (int, np.integer))
+    if hint is float:
+        return isinstance(value, (int, float, np.integer, np.floating))
+    return isinstance(value, hint)
+
+
+def _type_name(hint) -> str:
+    options = typing.get_args(hint) if typing.get_args(hint) else (hint,)
+    words = {int: "a whole number", float: "a number", str: "text", bool: "true or false"}
+    return " or ".join(words.get(option, option.__name__) for option in options)
 
 
 def _reject_unknown(where: str, section, known) -> None:

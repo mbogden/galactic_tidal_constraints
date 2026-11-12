@@ -39,9 +39,11 @@ request = {
 | `run.save` | `[]` | Names of the data to save. Independent of `return`: a run can do both |
 | `simulator` | one `SimulatorConfig()` | A dict (keys are `SimulatorConfig` fields) or a `SimulatorConfig`, or a list of them |
 
-**Every model runs on every simulator entry.** Unknown keys, unknown names and bad values are
-errors that say where the problem is (e.g. `simulator[1]: lnl can't be negative`), raised before
-anything runs.
+**Every model runs on every simulator entry.** Unknown keys, unknown names, wrong types and bad
+values are errors that say where the problem is (e.g. `simulator[0].lnl must be a number: '0.1'`,
+`simulator[1]: lnl can't be negative`), raised before anything runs. Types are checked against
+`SimulatorConfig`'s type hints; an integer is fine for a number field (JSON writes `1.0` as `1`), and
+`true` / `false` are never numbers.
 
 ### Data names
 The Simulator stage can hand back:
@@ -113,7 +115,7 @@ Each simulation's outcome comes back per stage, indexed like the data:
 
 | Field | Each cell |
 |---|---|
-| `result.status["sim"][m, s]` | `"ran"`, `"reused"` (saved, and nothing had to be computed) or `"failed"` |
+| `result.status["sim"][m, s]` | `"ran"`, `"reused"` (saved, and nothing had to be computed), `"failed"`, or `"empty"` (the request asked for nothing: no `return`, no `save`) |
 | `result.seconds["sim"][m, s]` | Wall time, loading included |
 | `result.errors["sim"][m, s]` | `"Type: message"` for a failure, else `None` |
 
@@ -121,7 +123,7 @@ Each simulation's outcome comes back per stage, indexed like the data:
 (result.status["sim"] == "failed").sum()     # how many failed
 ```
 
-The run ends with a log line counting how many simulations ran, were reused and failed.
+The run ends with a log line counting how many simulations ran, were reused, failed and were empty.
 
 ## Saving
 
@@ -209,9 +211,39 @@ A run without `save` writes only the catalog: its models and its record, no mode
   simulations never mix.
 - Loading a simulation or array that `model.json` doesn't list is an error, even if a file exists.
 
+## The command line
+```bash
+python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--config config.json] [--log-level INFO]
+```
+
+| Flag | |
+|---|---|
+| `--models` | Required. The models file (below) |
+| `--output` | Required: a folder or a `.json` catalog file, so every run is recorded |
+| `--config` | Optional. The request as JSON, listing only what differs from the defaults; without it, one default simulator entry. `run.return` is ignored with a warning (nothing comes back in memory), so one config works in a notebook and here |
+| `--log-level` | `DEBUG`, `INFO` (the default), `WARNING` or `ERROR` |
+
+**The models file:** one model per line; the first 14 comma-separated values on the line are the
+model. Longer lines (SPAM's 22-value strings, JSPAM's `archive/data.txt`) are fine, and one log
+message counts them. Blank lines and `#` comments are skipped; fewer than 14 values, or a value that
+isn't a number, is an error naming the line. `simr.read_models(path)` reads one in Python too.
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| 0 | The run ran, even if some simulations failed (they're in the catalog and the log) |
+| 1 | It couldn't run: a bad models file, config or output (a short message, no traceback) |
+| 2 | It ran, but every simulation failed: almost always a setup mistake |
+
+Until fitness exists, a run computes only what `run.save` asks for, so a command-line run without
+`run.save` records its models and configs but simulates nothing: each simulation's status is
+`"empty"`.
+
 ## Loading
 | Function | Returns |
 |---|---|
+| `simr.read_models(path)` | A models file's models, `(N, 14)` |
 | `simr.load_catalog(output)` | The catalog (of a folder or a `.json` file) as a dict |
 | `simr.load_model(folder)` | A model folder's `model.json` as a dict |
 | `simr.load_simulation(folder, "sim_00")` | That simulation's saved arrays, `{name: array}`, `float32`, exactly as `run` returns them |
