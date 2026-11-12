@@ -1,5 +1,6 @@
 """Tests for the SIMR workflow (simr/simr.py). Each section covers one step of the rebuild."""
 
+import json
 from dataclasses import asdict
 from pathlib import Path
 
@@ -145,7 +146,7 @@ def save_request(save, returned=(), simulator=SMALL):
 
 def test_save_writes_one_folder_per_model(tmp_path):
     simr.run(MODELS, save_request(["sim.particles", "sim.orbit"]), output=tmp_path)
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["model_000000", "model_000001"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["index.json", "model_000000", "model_000001"]
     folder = tmp_path / "model_000001"
     assert sorted(p.name for p in folder.iterdir()) == ["model.json", "simulations"]
     assert sorted(p.name for p in (folder / "simulations").iterdir()) == ["sim_00_orbit.npy", "sim_00_particles.npy"]
@@ -248,8 +249,11 @@ def test_numpy_integers_in_a_config_save(tmp_path):
     assert simr.load_model(tmp_path / "model_000000")["simulations"]["sim_00"]["config"]["n1"] == 20
 
 
-def test_a_folder_holding_another_model_is_an_error(tmp_path):
+def test_a_folder_holding_another_model_than_the_index_says_is_an_error(tmp_path):
     simr.run(MODELS[:1], save_request(["sim.orbit"]), output=tmp_path)
+    index = simr.load_index(tmp_path)
+    index["models"]["000000"] = simr.model_parameters(HEAVIER)  # the index and the folder now disagree
+    (tmp_path / "index.json").write_text(json.dumps(index))
     with pytest.raises(ValueError, match="different model"):
         simr.run(MODELS[1:], save_request(["sim.orbit"]), output=tmp_path)
 
@@ -301,7 +305,74 @@ def test_reading_alone_writes_nothing(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_reading_from_a_folder_holding_another_model_is_an_error(tmp_path):
+def test_reading_a_model_the_folder_doesnt_have_computes_it(tmp_path):
     simr.run(MODELS[:1], save_request(["sim.orbit"]), output=tmp_path)
-    with pytest.raises(ValueError, match="different model"):
-        simr.run(MODELS[1:], request(["sim.orbit"]), output=tmp_path)
+    result = simr.run(MODELS, request(["sim.orbit"]), output=tmp_path)
+    assert result.ids == ["000000", None]
+    assert result.data["sim.orbit"][1, 0].shape[1] == 7
+
+
+
+# --- Step 8c: the output index -----------------------------------------------------------------------
+
+
+def test_index_lists_the_models_and_the_run(tmp_path):
+    result = simr.run(MODELS, save_request(["sim.orbit"], simulator=[SMALL, {**SMALL, "lnl": 0.01}]), output=tmp_path)
+    assert result.ids == ["000000", "000001"]
+    index = simr.load_index(tmp_path)
+    assert index["models"] == {"000000": simr.model_parameters(PARAMS), "000001": simr.model_parameters(HEAVIER)}
+    [record] = index["runs"]
+    assert record["started"] <= record["finished"]
+    assert record["run"] == {"return": [], "save": ["sim.orbit"]}
+    assert record["simulator"] == [asdict(SimulatorConfig(**SMALL)), asdict(SimulatorConfig(**SMALL, lnl=0.01))]
+    assert record["image"] == [] and record["fitness"] == []
+    assert record["model_ids"] == ["000000", "000001"]
+    assert record["code"] == simr.code_versions()
+
+
+def test_ids_follow_the_model_not_its_row(tmp_path):
+    third = PARAMS.copy()
+    third[sim.PARAM_INDEX["vx"]] += 0.1
+    simr.run(MODELS, save_request(["sim.orbit"]), output=tmp_path)
+    # Reordered, with a new model in the middle: known models keep their ids, the new one goes at the bottom.
+    result = simr.run(np.stack([HEAVIER, third, PARAMS]), save_request(["sim.orbit"]), output=tmp_path)
+    assert result.ids == ["000001", "000002", "000000"]
+    index = simr.load_index(tmp_path)
+    assert list(index["models"]) == ["000000", "000001", "000002"]
+    assert [run["model_ids"] for run in index["runs"]] == [["000000", "000001"], ["000001", "000002", "000000"]]
+    assert simr.load_model(tmp_path / "model_000002")["model"] == simr.model_parameters(third)
+
+
+def test_a_reordered_run_reuses_each_models_saved_data(tmp_path, monkeypatch):
+    first = simr.run(MODELS, save_request(["sim.particles"], returned=["sim.particles"]), output=tmp_path)
+    monkeypatch.setitem(simr.SIM_DATA, "sim.particles", _not_computed)
+    again = simr.run(MODELS[::-1], request(["sim.particles"]), output=tmp_path)
+    np.testing.assert_array_equal(again.data["sim.particles"][0, 0], first.data["sim.particles"][1, 0])
+
+
+def test_the_same_model_twice_gets_one_id(tmp_path):
+    result = simr.run(np.stack([PARAMS, PARAMS]), save_request(["sim.orbit"]), output=tmp_path)
+    assert result.ids == ["000000", "000000"]
+    assert list(simr.load_index(tmp_path)["models"]) == ["000000"]
+
+
+def test_ids_are_none_without_an_output_folder():
+    assert simr.run(MODELS, request([])).ids == [None, None]
+
+
+def test_a_run_that_only_reads_adds_nothing_to_the_index(tmp_path):
+    simr.run(MODELS[:1], save_request(["sim.orbit"]), output=tmp_path)
+    before = simr.load_index(tmp_path)
+    simr.run(MODELS, request(["sim.orbit"]), output=tmp_path)
+    assert simr.load_index(tmp_path) == before
+
+
+def test_an_unfinished_run_shows_in_the_index(tmp_path, monkeypatch):
+    def crash(*args):
+        raise RuntimeError("crashed mid-run")
+
+    monkeypatch.setitem(simr.SIM_DATA, "sim.orbit", crash)
+    with pytest.raises(RuntimeError):
+        simr.run(MODELS, save_request(["sim.orbit"]), output=tmp_path)
+    [record] = simr.load_index(tmp_path)["runs"]
+    assert record["started"] is not None and record["finished"] is None

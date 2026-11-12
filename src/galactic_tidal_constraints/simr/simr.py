@@ -15,12 +15,19 @@ Simulated arrays come back as float32 (`PLAN.md`, Precision).
 
 Saving ("run": {"save": [...]}, with `run(..., output=folder)`) writes one folder per model:
 
-    <output>/model_000000/
-        model.json                the model's record: its 14 parameters, and each saved simulation by name
-                                  ("sim_00" for simulator entry 0) with its config, timing, files and code
-        simulations/
-            sim_00_particles.npy  one file per saved array: <simulation>_<item>.npy
-            sim_00_orbit.npy
+    <output>/
+        index.json                    "models": id -> 14 parameters, every model ever saved here;
+                                      "runs": one record per run that saved here (see `run`)
+        model_000000/                 one folder per model id
+            model.json                the model's record: its 14 parameters, and each saved simulation by
+                                      name ("sim_00" for simulator entry 0) with its config, timing, files, code
+            simulations/
+                sim_00_particles.npy  one file per saved array: <simulation>_<item>.npy
+                sim_00_orbit.npy
+
+A run's models are matched exactly against the index: a model already there uses its folder, and a new
+one gets the next id at the bottom, so folders stay the same however runs order or overlap their models.
+One run at a time per output folder.
 
 Each .npy is written to a temporary name and renamed into place, and only then does model.json (written
 the same way) list it, so an array counts as saved only if model.json lists it. `load_model` and
@@ -40,6 +47,7 @@ import logging
 import os
 import subprocess
 from dataclasses import asdict, dataclass, fields
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -93,11 +101,14 @@ class SimrResult:
         data: one entry per name in the request's `return` list, and nothing else. Each is a numpy
             object array indexed by the levels its stage depends on: [model, simulator] for "sim.*".
             Each cell holds that run's array (or dict, for "sim.timing").
+        ids: with an output folder, each row's model id there (its folder is `model_<id>`); None for a
+            row the folder doesn't have (a run that only reads adds nothing). All None without a folder.
     """
 
     models: np.ndarray
     simulators: list[SimulatorConfig]
     data: dict[str, np.ndarray]
+    ids: list[str | None]
 
 
 def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> SimrResult:
@@ -116,16 +127,36 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
 
     Returns:
         A `SimrResult`; see its docstring.
+
+    A run that saves adds a record to `index.json`'s "runs" when it starts and completes it when it ends:
+    "started", "finished" (None if the run never got there), "code", "run" (its return and save lists),
+    "simulator" (the full configs), "image" and "fitness" (empty until those stages exist) and "model_ids"
+    (row m's model id).
     """
     models = _check_models(models)
     returned, saved, configs = _read_request(request)
     if saved and output is None:
         raise ValueError("run.save names data to save, but no output folder was given")
     versions = code_versions() if saved else None
+    index = _open_index(Path(output)) if output is not None else None
+    ids = _model_ids(index, models, add=bool(saved)) if index is not None else [None] * len(models)
+    if saved:
+        run_record = {
+            "started": _now(),
+            "finished": None,
+            "code": versions,
+            "run": {"return": returned, "save": saved},
+            "simulator": [_json_ready(asdict(config)) for config in configs],
+            "image": [],
+            "fitness": [],
+            "model_ids": ids,
+        }
+        index["runs"].append(run_record)
+        _write_index(Path(output), index)
 
     data = {name: np.empty((len(models), len(configs)), dtype=object) for name in returned}
     for m, params in enumerate(models):
-        folder = Path(output) / f"model_{m:06d}" if output is not None else None
+        folder = Path(output) / f"model_{ids[m]}" if ids[m] is not None else None
         record = _open_record(folder, params) if folder is not None else None
         for s, config in enumerate(configs):
             name = f"sim_{s:02d}"
@@ -143,7 +174,16 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
             if to_save:
                 arrays = {item: values[item] for item in to_save if item != "sim.timing"}
                 _save_simulation(folder, record, name, config, arrays, values.get("sim.timing"), versions)
-    return SimrResult(models=models, simulators=configs, data=data)
+    if saved:
+        run_record["finished"] = _now()
+        _write_index(Path(output), index)
+    return SimrResult(models=models, simulators=configs, data=data, ids=ids)
+
+
+def load_index(output: str | Path) -> dict:
+    """An output folder's `index.json`: "models" (id -> the 14 named parameters) and "runs"."""
+    with open(Path(output) / "index.json", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def load_model(folder: str | Path) -> dict:
@@ -211,9 +251,41 @@ def _git_state(folder: Path, paths: list[str]) -> dict:
     return {"commit": commit, "uncommitted_changes": None if status is None else status != ""}
 
 
+def _open_index(output: Path) -> dict:
+    return load_index(output) if (output / "index.json").exists() else {"models": {}, "runs": []}
+
+
+def _model_ids(index: dict, models: np.ndarray, add: bool) -> list[str | None]:
+    """Each row's id in the index, matching all 14 values exactly. With `add`, a model the index doesn't
+    have gets the next id at the bottom (and the same model twice gets one id); otherwise it gets None."""
+    known = {tuple(params.values()): model_id for model_id, params in index["models"].items()}
+    next_id = max((int(model_id) for model_id in index["models"]), default=-1) + 1
+    ids = []
+    for params in models:
+        model = model_parameters(params)
+        key = tuple(model.values())
+        if key not in known and add:
+            known[key] = f"{next_id:06d}"
+            index["models"][known[key]] = model
+            next_id += 1
+        ids.append(known.get(key))
+    return ids
+
+
+def _write_index(output: Path, index: dict) -> None:
+    output.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(index, indent=2).encode("utf-8")
+    _write_atomically(output / "index.json", lambda f: f.write(text))
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 def _open_record(folder: Path, params: np.ndarray) -> dict:
     """The model folder's record, or a new one (written only when something is saved). A folder that holds
-    a different model is an error: its saved simulations would be mixed with this one's, or used for it."""
+    a different model than the index says is an error: its saved simulations would be mixed with this one's,
+    or used for it."""
     model = model_parameters(params)
     if not (folder / "model.json").exists():
         return {"model": model, "simulations": {}}

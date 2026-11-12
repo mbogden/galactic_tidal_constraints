@@ -33,6 +33,13 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
 - **Write order:** each `.npy` is written atomically (to a temporary name, then renamed); only once
   it's in place is `model.json` updated to list it. An array counts as saved only if `model.json`
   lists it.
+- **Output index:** `<output>/index.json` holds "models" (id → 14 parameters, every model ever
+  saved in the folder) and "runs" (one record per run that saves: times, code versions, what was
+  returned and saved, the full stage configs, the model id of each row, and later each
+  simulation's status, time and error). A run's models are matched exactly against the index;
+  new ones get the next id at the bottom, so model folders (`model_<id>`) stay the same however
+  runs order or overlap their models. The record is written when a run starts and again when it
+  ends. One run at a time per output folder.
 - **Reuse:** with an output folder, a simulation `model.json` lists under the same name with exactly
   the same config counts as already saved. Anything requested that it has is loaded instead of
   computed, nothing it has is written again, and arrays it's missing are computed and added. A
