@@ -565,3 +565,53 @@ def test_json_style_numbers_are_accepted():
     # JSON writes 1.0 as 1, so an int is fine for a float field; a number is fine for start.
     result = simr.run(MODELS[:1], request([], simulator={**SMALL, "lnl": 1, "start": -6, "seed": np.int64(2)}))
     assert result.simulators[0].lnl == 1 and result.simulators[0].start == -6
+
+
+# --- Step 12a: one task per model, through a map function ----------------------------------------------
+
+
+def counting_map(calls):
+    """A map that records each task it's given, then runs it like built-in map."""
+
+    def run_all(function, tasks):
+        tasks = list(tasks)
+        calls.extend(tasks)
+        return [function(task) for task in tasks]
+
+    return run_all
+
+
+def test_each_model_is_one_task():
+    calls = []
+    simr.run(MODELS, request(["sim.orbit"], simulator=[SMALL, {**SMALL, "lnl": 0.01}]), map=counting_map(calls))
+    assert [task.row for task in calls] == [0, 1]
+    assert all(len(task.configs) == 2 for task in calls)  # a task holds every simulator entry of its model
+
+
+def test_another_map_gives_the_same_results():
+    plain = simr.run(MODELS, request(["sim.particles", "sim.timing"]))
+    mapped = simr.run(MODELS, request(["sim.particles", "sim.timing"]), map=counting_map([]))
+    for m in range(len(MODELS)):
+        np.testing.assert_array_equal(mapped.data["sim.particles"][m, 0], plain.data["sim.particles"][m, 0])
+    assert mapped.status["sim"].tolist() == plain.status["sim"].tolist()
+
+
+def test_the_same_model_twice_is_one_task(tmp_path):
+    calls = []
+    twice = np.stack([PARAMS, HEAVIER, PARAMS])
+    result = simr.run(twice, save_request(["sim.orbit"], returned=["sim.orbit"]), output=tmp_path,
+                      map=counting_map(calls))
+    assert [task.model_id for task in calls] == ["000000", "000001"]
+    assert result.ids == ["000000", "000001", "000000"]
+    np.testing.assert_array_equal(result.data["sim.orbit"][2, 0], result.data["sim.orbit"][0, 0])
+    assert result.status["sim"][:, 0].tolist() == ["ran", "ran", "ran"]
+
+
+def test_tasks_and_the_worker_can_be_sent_to_other_processes(tmp_path):
+    import pickle
+
+    calls = []
+    simr.run(MODELS, save_request(["sim.orbit"]), output=tmp_path, map=counting_map(calls))
+    task = pickle.loads(pickle.dumps(calls[0]))
+    assert task.model_id == "000000" and task.folder == tmp_path / "model_000000"
+    assert pickle.loads(pickle.dumps(simr._run_model)) is simr._run_model

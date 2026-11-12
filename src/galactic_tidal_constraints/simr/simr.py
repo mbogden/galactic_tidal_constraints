@@ -135,7 +135,7 @@ class SimrResult:
     errors: dict[str, np.ndarray]
 
 
-def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> SimrResult:
+def run(models: np.ndarray, request: dict, output: str | Path | None = None, map=map) -> SimrResult:
     """Run every model on every simulator entry in `request`; return and save the requested data.
 
     Args:
@@ -150,6 +150,10 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
             run.save names, and saved data is loaded from there instead of computed) or a `.json` catalog
             file (no model data). A folder is needed when run.save names something; optional otherwise.
             It isn't part of the request because it doesn't change any result.
+        map: how the models' work is spread out: built-in `map` (the default) runs one model after
+            another in this process; a pool's `map` (e.g. `ProcessPoolExecutor().map`) runs them in
+            parallel. Each call handles one model with all its simulator entries, and the same model twice
+            is run once. Only this process touches the catalog.
 
     Returns:
         A `SimrResult`; see its docstring.
@@ -167,6 +171,7 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
         raise ValueError(f"run.save names data to save, which needs an output folder, but {where}")
     catalog = _open_catalog(catalog_file) if catalog_file is not None else None
     ids = _model_ids(catalog, models) if catalog is not None else [None] * len(models)
+    versions = None
     if catalog is not None:
         versions = code_versions()
         run_record = {
@@ -187,34 +192,24 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
     status = {"sim": np.empty(shape, dtype=object)}
     seconds = {"sim": np.zeros(shape)}
     errors = {"sim": np.full(shape, None, dtype=object)}
-    for m, params in enumerate(models):
-        folder = root / f"model_{ids[m]}" if root is not None else None
-        record = _open_record(folder, params) if folder is not None else None
-        for s, config in enumerate(configs):
-            name = f"sim_{s:02d}"
-            start = time.perf_counter()
-            stored, new = _saved_data(folder, record, name, config) if record is not None else ({}, True)
-            to_save = [] if stored is None else [item for item in saved if item not in (stored or {})]
-            if new and saved:
-                to_save.append("sim.timing")  # every saved simulation records its timing in model.json
-            try:
-                values, computed = _simulate(params, config, returned, to_save, stored or {})
-            except Exception as error:  # a failed simulation: recorded, and the run moves on
-                logger.exception("model %d (id %s) on simulator %d failed", m, ids[m], s)
-                status["sim"][m, s] = "failed"
-                errors["sim"][m, s] = f"{type(error).__name__}: {error}"
-                seconds["sim"][m, s] = time.perf_counter() - start
-                continue
+
+    # One task per model; rows holding the same model (one id) share a task, so no two tasks write one folder.
+    groups: dict = {}
+    for m in range(len(models)):
+        groups.setdefault(ids[m] if ids[m] is not None else m, []).append(m)
+    rows = list(groups.values())
+    tasks = [
+        _ModelTask(row=r[0], model_id=ids[r[0]], params=models[r[0]], configs=configs, returned=returned,
+                   saved=saved, folder=root / f"model_{ids[r[0]]}" if root is not None else None, versions=versions)
+        for r in rows
+    ]
+    for task_rows, outcome in zip(rows, map(_run_model, tasks)):
+        for m in task_rows:
             for item in returned:
-                data[item][m, s] = values[item]
-            if to_save:  # errors while writing aren't caught: they stop the run
-                arrays = {item: values[item] for item in to_save if item != "sim.timing"}
-                _save_simulation(folder, record, name, config, arrays, values.get("sim.timing"), versions)
-            if not returned and not saved:
-                status["sim"][m, s] = "empty"  # the request asked for nothing, so there was nothing to do
-            else:
-                status["sim"][m, s] = "reused" if stored and not computed else "ran"  # reused: nothing computed
-            seconds["sim"][m, s] = time.perf_counter() - start
+                data[item][m, :] = outcome["data"][item]
+            status["sim"][m, :] = outcome["status"]
+            seconds["sim"][m, :] = outcome["seconds"]
+            errors["sim"][m, :] = outcome["errors"]
 
     counts = {word: int((status["sim"] == word).sum()) for word in ("ran", "reused", "failed", "empty")}
     logger.info("simr: %d simulations: %d ran, %d reused, %d failed, %d empty (nothing requested)",
@@ -229,6 +224,59 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
         _write_catalog(catalog_file, catalog)
     return SimrResult(models=models, simulators=configs, data=data, ids=ids,
                       status=status, seconds=seconds, errors=errors)
+
+
+@dataclass
+class _ModelTask:
+    """One model's work, as plain data, so it can be sent to any worker process."""
+
+    row: int  # the first row of `models` holding this model (for log messages)
+    model_id: str | None
+    params: np.ndarray
+    configs: list[SimulatorConfig]
+    returned: list[str]
+    saved: list[str]
+    folder: Path | None  # the model's folder, when the output is a folder
+    versions: dict | None
+
+
+def _run_model(task: _ModelTask) -> dict:
+    """Every simulator entry of one model: load what's saved, compute the rest, save what's asked for, and
+    catch each simulation's failure. Touches only this model's folder, never the catalog.
+
+    Returns {"data": {item: one value per entry}, "status", "seconds", "errors": one per entry}.
+    """
+    n = len(task.configs)
+    outcome = {"data": {item: [None] * n for item in task.returned},
+               "status": [None] * n, "seconds": [0.0] * n, "errors": [None] * n}
+    folder = task.folder
+    record = _open_record(folder, task.params) if folder is not None else None
+    for s, config in enumerate(task.configs):
+        name = f"sim_{s:02d}"
+        start = time.perf_counter()
+        stored, new = _saved_data(folder, record, name, config) if record is not None else ({}, True)
+        to_save = [] if stored is None else [item for item in task.saved if item not in (stored or {})]
+        if new and task.saved:
+            to_save.append("sim.timing")  # every saved simulation records its timing in model.json
+        try:
+            values, computed = _simulate(task.params, config, task.returned, to_save, stored or {})
+        except Exception as error:  # a failed simulation: recorded, and the run moves on
+            logger.exception("model %d (id %s) on simulator %d failed", task.row, task.model_id, s)
+            outcome["status"][s] = "failed"
+            outcome["errors"][s] = f"{type(error).__name__}: {error}"
+            outcome["seconds"][s] = time.perf_counter() - start
+            continue
+        for item in task.returned:
+            outcome["data"][item][s] = values[item]
+        if to_save:  # errors while writing aren't caught: they stop the run
+            arrays = {item: values[item] for item in to_save if item != "sim.timing"}
+            _save_simulation(folder, record, name, config, arrays, values.get("sim.timing"), task.versions)
+        if not task.returned and not task.saved:
+            outcome["status"][s] = "empty"  # the request asked for nothing, so there was nothing to do
+        else:
+            outcome["status"][s] = "reused" if stored and not computed else "ran"  # reused: nothing computed
+        outcome["seconds"][s] = time.perf_counter() - start
+    return outcome
 
 
 def _simulate(params, config, returned, to_save, stored) -> tuple[dict, bool]:

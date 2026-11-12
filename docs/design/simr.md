@@ -99,6 +99,19 @@ result.data["sim.orbit"][12, 1]         # model 12's orbit from simulator entry 
 result.simulators[1].lnl                # what entry 1 was
 ```
 
+## Spreading the work: `map`
+`simr.run(..., map=...)` takes a `map` function, built-in `map` by default. Each call handles **one
+model** with all its simulator entries: it loads what's saved, computes the rest, saves what's asked
+for and catches each simulation's failure, touching only that model's folder. The same model twice in
+one run is one call, so no two calls write the same folder. Only the process that called `run` touches
+the catalog: it assigns ids and writes the run record before any model is handed out, and collects
+the results in order.
+
+With built-in `map`, models run one after another in this process. A pool's `map` (e.g.
+`ProcessPoolExecutor().map`) runs them in parallel; the pool is created once by the caller, never by
+`simr`. Results don't depend on the `map`: each simulator entry's seed comes from its config. Returned
+data travels back to the calling process and stays in its memory, so at scale, save instead.
+
 ## Failures and status
 A simulation (one model on one simulator entry) **fails as a whole** when computing any requested item
 raises an error, or when any simulated array holds NaN or inf. `sim.timing` isn't checked: it

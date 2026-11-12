@@ -148,6 +148,20 @@ progress reporting later if needed.
 - Parallelism above the pool comes from Slurm, not Python (e.g. a job array with one task per target,
   each running its own pool).
 
+### In `simr` (decided 2026-11-12)
+- `simr.run(..., map=...)`. The unit of work is **one model**, with all its simulator entries; one task
+  per model, handed out as workers free up (no shrinking batches for now). The same model twice in one
+  run is one task, so two workers never write the same model folder.
+- Only the main process touches the catalog: it assigns ids and writes the run record before handing
+  out work, then collects each model's results in order, writing the catalog at most once a minute as
+  they arrive and again at the end.
+- A worker crash (e.g. a Fortran segfault) breaks the pool: the main process logs the unfinished models
+  and exits with code 1; the catalog shows `"finished": null` and a rerun reuses what's saved.
+- Command line: `--mode solo|local|mpi` (solo by default) and, for local, `--workers` (default: the CPUs
+  this job may use, which respects Slurm's limit). Under MPI every rank but one is a worker.
+- `run.return` works with a pool, but returned data travels back to the main process and stays in its
+  memory; at scale, save instead.
+
 ## Environment
 One Docker image, run with Apptainer on the cluster.
 - CUDA 12.x only (the cluster driver is 12.4)
