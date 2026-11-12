@@ -16,7 +16,7 @@ Simulated arrays come back as float32 (`PLAN.md`, Precision).
 Saving ("run": {"save": [...]}, with `run(..., output=folder)`) writes one folder per model:
 
     <output>/
-        index.json                    "models": id -> 14 parameters, every model ever saved here;
+        catalog.json                  "models": id -> 14 parameters, every model ever saved here;
                                       "runs": one record per run that saved here (see `run`)
         model_000000/                 one folder per model id
             model.json                the model's record: its 14 parameters, and each saved simulation by
@@ -25,7 +25,7 @@ Saving ("run": {"save": [...]}, with `run(..., output=folder)`) writes one folde
                 sim_00_particles.npy  one file per saved array: <simulation>_<item>.npy
                 sim_00_orbit.npy
 
-A run's models are matched exactly against the index: a model already there uses its folder, and a new
+A run's models are matched exactly against the catalog: a model already there uses its folder, and a new
 one gets the next id at the bottom, so folders stay the same however runs order or overlap their models.
 One run at a time per output folder.
 
@@ -43,7 +43,7 @@ A simulation (one model on one simulator entry) fails as a whole when computing 
 raises an error, or when a simulated array holds NaN or inf. The run moves on: its cells hold None, nothing
 is saved for it, and nothing is recorded in model.json, so a later run retries it. The error is logged with
 its traceback. Errors while writing files stop the run. Each simulation's status, time and error come back
-in the result, and a run that saves adds them to its record in index.json when it ends.
+in the result, and a run that saves adds them to its record in catalog.json when it ends.
 
 Not yet here: pools (Step 12).
 """
@@ -142,7 +142,7 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
     Returns:
         A `SimrResult`; see its docstring.
 
-    A run that saves adds a record to `index.json`'s "runs" when it starts and completes it when it ends:
+    A run that saves adds a record to `catalog.json`'s "runs" when it starts and completes it when it ends:
     "started", "finished" (None if the run never got there), "code", "run" (its return and save lists),
     "simulator" (the full configs), "image" and "fitness" (empty until those stages exist), "model_ids"
     (row m's model id), and at the end "status", "seconds" and "errors" (as in the result, as lists).
@@ -152,8 +152,8 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
     if saved and output is None:
         raise ValueError("run.save names data to save, but no output folder was given")
     versions = code_versions() if saved else None
-    index = _open_index(Path(output)) if output is not None else None
-    ids = _model_ids(index, models, add=bool(saved)) if index is not None else [None] * len(models)
+    catalog = _open_catalog(Path(output)) if output is not None else None
+    ids = _model_ids(catalog, models, add=bool(saved)) if catalog is not None else [None] * len(models)
     if saved:
         run_record = {
             "started": _now(),
@@ -165,8 +165,8 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
             "fitness": [],
             "model_ids": ids,
         }
-        index["runs"].append(run_record)
-        _write_index(Path(output), index)
+        catalog["runs"].append(run_record)
+        _write_catalog(Path(output), catalog)
 
     shape = (len(models), len(configs))
     data = {name: np.empty(shape, dtype=object) for name in returned}
@@ -208,7 +208,7 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
             errors={"sim": errors["sim"].tolist()},
             finished=_now(),
         )
-        _write_index(Path(output), index)
+        _write_catalog(Path(output), catalog)
     return SimrResult(models=models, simulators=configs, data=data, ids=ids,
                       status=status, seconds=seconds, errors=errors)
 
@@ -228,9 +228,9 @@ def _simulate(params, config, returned, to_save, stored) -> tuple[dict, bool]:
     return values, computed
 
 
-def load_index(output: str | Path) -> dict:
-    """An output folder's `index.json`: "models" (id -> the 14 named parameters) and "runs"."""
-    with open(Path(output) / "index.json", encoding="utf-8") as f:
+def load_catalog(output: str | Path) -> dict:
+    """An output folder's `catalog.json`: "models" (id -> the 14 named parameters) and "runs"."""
+    with open(Path(output) / "catalog.json", encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -299,31 +299,31 @@ def _git_state(folder: Path, paths: list[str]) -> dict:
     return {"commit": commit, "uncommitted_changes": None if status is None else status != ""}
 
 
-def _open_index(output: Path) -> dict:
-    return load_index(output) if (output / "index.json").exists() else {"models": {}, "runs": []}
+def _open_catalog(output: Path) -> dict:
+    return load_catalog(output) if (output / "catalog.json").exists() else {"models": {}, "runs": []}
 
 
-def _model_ids(index: dict, models: np.ndarray, add: bool) -> list[str | None]:
-    """Each row's id in the index, matching all 14 values exactly. With `add`, a model the index doesn't
+def _model_ids(catalog: dict, models: np.ndarray, add: bool) -> list[str | None]:
+    """Each row's id in the catalog, matching all 14 values exactly. With `add`, a model the catalog doesn't
     have gets the next id at the bottom (and the same model twice gets one id); otherwise it gets None."""
-    known = {tuple(params.values()): model_id for model_id, params in index["models"].items()}
-    next_id = max((int(model_id) for model_id in index["models"]), default=-1) + 1
+    known = {tuple(params.values()): model_id for model_id, params in catalog["models"].items()}
+    next_id = max((int(model_id) for model_id in catalog["models"]), default=-1) + 1
     ids = []
     for params in models:
         model = model_parameters(params)
         key = tuple(model.values())
         if key not in known and add:
             known[key] = f"{next_id:06d}"
-            index["models"][known[key]] = model
+            catalog["models"][known[key]] = model
             next_id += 1
         ids.append(known.get(key))
     return ids
 
 
-def _write_index(output: Path, index: dict) -> None:
+def _write_catalog(output: Path, catalog: dict) -> None:
     output.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(index, indent=2).encode("utf-8")
-    _write_atomically(output / "index.json", lambda f: f.write(text))
+    text = json.dumps(catalog, indent=2).encode("utf-8")
+    _write_atomically(output / "catalog.json", lambda f: f.write(text))
 
 
 def _now() -> str:
@@ -332,7 +332,7 @@ def _now() -> str:
 
 def _open_record(folder: Path, params: np.ndarray) -> dict:
     """The model folder's record, or a new one (written only when something is saved). A folder that holds
-    a different model than the index says is an error: its saved simulations would be mixed with this one's,
+    a different model than the catalog says is an error: its saved simulations would be mixed with this one's,
     or used for it."""
     model = model_parameters(params)
     if not (folder / "model.json").exists():

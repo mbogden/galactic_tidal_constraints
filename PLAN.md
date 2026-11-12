@@ -33,10 +33,10 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
 - **Write order:** each `.npy` is written atomically (to a temporary name, then renamed); only once
   it's in place is `model.json` updated to list it. An array counts as saved only if `model.json`
   lists it.
-- **Output index:** `<output>/index.json` holds "models" (id → 14 parameters, every model ever
+- **Output catalog:** `<output>/catalog.json` holds "models" (id → 14 parameters, every model ever
   saved in the folder) and "runs" (one record per run that saves: times, code versions, what was
   returned and saved, the full stage configs, the model id of each row, and later each
-  simulation's status, time and error). A run's models are matched exactly against the index;
+  simulation's status, time and error). A run's models are matched exactly against the catalog;
   new ones get the next id at the bottom, so model folders (`model_<id>`) stay the same however
   runs order or overlap their models. The record is written when a run starts and again when it
   ends. One run at a time per output folder.
@@ -55,7 +55,7 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
 - **Status:** each stage reports a status, time and error for each of its cells, indexed like its
   data (`result.status["sim"][m, s]`: `"ran"`, `"reused"` when nothing had to be computed, or
   `"failed"`; later stages mark work that depends on a failure `"skipped"`). A run that saves adds
-  them to its record in `index.json` when it ends.
+  them to its record in `catalog.json` when it ends.
 - **One door to SPAM:** only one module imports `jspam`. Each run's saved config records the commit
   of both repos and whether either has uncommitted changes.
 - **Physics fixes:** a fix that changes SPAM's physics is an option, and Wallin's behavior stays

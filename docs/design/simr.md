@@ -76,7 +76,7 @@ instead of computed (see Reuse).
 | `models` | The models that ran, `(N, 14)`: row m is model m (the result's own copy) |
 | `simulators` | The simulator entries as `SimulatorConfig`s, every default filled in: entry s is simulator s |
 | `data` | One entry per name in `return`, and nothing else |
-| `ids` | Each row's model id in the output folder, or `None` (see The output index) |
+| `ids` | Each row's model id in the output folder, or `None` (see The output catalog) |
 | `status`, `seconds`, `errors` | Per stage (`"sim"` so far), indexed like its data; see Failures and status |
 
 Each `data` entry is a NumPy object array of cells, indexed by the levels its stage depends on:
@@ -119,7 +119,7 @@ The run ends with a log line counting how many simulations ran, were reused and 
 ### Folder layout
 ```
 <output>/
-    index.json                    "models": id -> 14 parameters; "runs": one record per run that saved here
+    catalog.json                  "models": id -> 14 parameters; "runs": one record per run that saved here
     model_000000/                 one folder per model id
         model.json                the model's record
         simulations/
@@ -170,8 +170,8 @@ same config** counts as already saved:
 A saved simulation with a different config is neither used nor changed, and a warning is logged.
 Code versions are recorded but not compared; higher-level code can check them.
 
-### The output index
-`index.json` is the folder's table of contents:
+### The output catalog
+`catalog.json` is the folder's table of contents:
 
 - **`"models"`**: id → 14 parameters, for every model ever saved in the folder. A run's rows are
   matched against it exactly (all 14 values). A model already there uses its folder; a new one gets
@@ -195,14 +195,14 @@ have get `None` in `result.ids` and are computed. **One run at a time per output
 
 ### Errors that protect the folder
 - `run.save` with no `output` is an error.
-- A model folder holding a different model than `index.json` says is an error, so two models'
+- A model folder holding a different model than `catalog.json` says is an error, so two models'
   simulations never mix.
 - Loading a simulation or array that `model.json` doesn't list is an error, even if a file exists.
 
 ## Loading
 | Function | Returns |
 |---|---|
-| `simr.load_index(output)` | `index.json` as a dict |
+| `simr.load_catalog(output)` | `catalog.json` as a dict |
 | `simr.load_model(folder)` | A model folder's `model.json` as a dict |
 | `simr.load_simulation(folder, "sim_00")` | That simulation's saved arrays, `{name: array}`, `float32`, exactly as `run` returns them |
 | `simr.code_versions()` | The current code versions, in the form `model.json` records |

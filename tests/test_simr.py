@@ -146,7 +146,7 @@ def save_request(save, returned=(), simulator=SMALL):
 
 def test_save_writes_one_folder_per_model(tmp_path):
     simr.run(MODELS, save_request(["sim.particles", "sim.orbit"]), output=tmp_path)
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["index.json", "model_000000", "model_000001"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["catalog.json", "model_000000", "model_000001"]
     folder = tmp_path / "model_000001"
     assert sorted(p.name for p in folder.iterdir()) == ["model.json", "simulations"]
     assert sorted(p.name for p in (folder / "simulations").iterdir()) == ["sim_00_orbit.npy", "sim_00_particles.npy"]
@@ -249,11 +249,11 @@ def test_numpy_integers_in_a_config_save(tmp_path):
     assert simr.load_model(tmp_path / "model_000000")["simulations"]["sim_00"]["config"]["n1"] == 20
 
 
-def test_a_folder_holding_another_model_than_the_index_says_is_an_error(tmp_path):
+def test_a_folder_holding_another_model_than_the_catalog_says_is_an_error(tmp_path):
     simr.run(MODELS[:1], save_request(["sim.orbit"]), output=tmp_path)
-    index = simr.load_index(tmp_path)
-    index["models"]["000000"] = simr.model_parameters(HEAVIER)  # the index and the folder now disagree
-    (tmp_path / "index.json").write_text(json.dumps(index))
+    catalog = simr.load_catalog(tmp_path)
+    catalog["models"]["000000"] = simr.model_parameters(HEAVIER)  # the catalog and the folder now disagree
+    (tmp_path / "catalog.json").write_text(json.dumps(catalog))
     with pytest.raises(ValueError, match="different model"):
         simr.run(MODELS[1:], save_request(["sim.orbit"]), output=tmp_path)
 
@@ -313,15 +313,15 @@ def test_reading_a_model_the_folder_doesnt_have_computes_it(tmp_path):
 
 
 
-# --- Step 8c: the output index -----------------------------------------------------------------------
+# --- Step 8c: the output catalog -----------------------------------------------------------------------
 
 
-def test_index_lists_the_models_and_the_run(tmp_path):
+def test_catalog_lists_the_models_and_the_run(tmp_path):
     result = simr.run(MODELS, save_request(["sim.orbit"], simulator=[SMALL, {**SMALL, "lnl": 0.01}]), output=tmp_path)
     assert result.ids == ["000000", "000001"]
-    index = simr.load_index(tmp_path)
-    assert index["models"] == {"000000": simr.model_parameters(PARAMS), "000001": simr.model_parameters(HEAVIER)}
-    [record] = index["runs"]
+    catalog = simr.load_catalog(tmp_path)
+    assert catalog["models"] == {"000000": simr.model_parameters(PARAMS), "000001": simr.model_parameters(HEAVIER)}
+    [record] = catalog["runs"]
     assert record["started"] <= record["finished"]
     assert record["run"] == {"return": [], "save": ["sim.orbit"]}
     assert record["simulator"] == [asdict(SimulatorConfig(**SMALL)), asdict(SimulatorConfig(**SMALL, lnl=0.01))]
@@ -337,9 +337,9 @@ def test_ids_follow_the_model_not_its_row(tmp_path):
     # Reordered, with a new model in the middle: known models keep their ids, the new one goes at the bottom.
     result = simr.run(np.stack([HEAVIER, third, PARAMS]), save_request(["sim.orbit"]), output=tmp_path)
     assert result.ids == ["000001", "000002", "000000"]
-    index = simr.load_index(tmp_path)
-    assert list(index["models"]) == ["000000", "000001", "000002"]
-    assert [run["model_ids"] for run in index["runs"]] == [["000000", "000001"], ["000001", "000002", "000000"]]
+    catalog = simr.load_catalog(tmp_path)
+    assert list(catalog["models"]) == ["000000", "000001", "000002"]
+    assert [run["model_ids"] for run in catalog["runs"]] == [["000000", "000001"], ["000001", "000002", "000000"]]
     assert simr.load_model(tmp_path / "model_000002")["model"] == simr.model_parameters(third)
 
 
@@ -353,28 +353,28 @@ def test_a_reordered_run_reuses_each_models_saved_data(tmp_path, monkeypatch):
 def test_the_same_model_twice_gets_one_id(tmp_path):
     result = simr.run(np.stack([PARAMS, PARAMS]), save_request(["sim.orbit"]), output=tmp_path)
     assert result.ids == ["000000", "000000"]
-    assert list(simr.load_index(tmp_path)["models"]) == ["000000"]
+    assert list(simr.load_catalog(tmp_path)["models"]) == ["000000"]
 
 
 def test_ids_are_none_without_an_output_folder():
     assert simr.run(MODELS, request([])).ids == [None, None]
 
 
-def test_a_run_that_only_reads_adds_nothing_to_the_index(tmp_path):
+def test_a_run_that_only_reads_adds_nothing_to_the_catalog(tmp_path):
     simr.run(MODELS[:1], save_request(["sim.orbit"]), output=tmp_path)
-    before = simr.load_index(tmp_path)
+    before = simr.load_catalog(tmp_path)
     simr.run(MODELS, request(["sim.orbit"]), output=tmp_path)
-    assert simr.load_index(tmp_path) == before
+    assert simr.load_catalog(tmp_path) == before
 
 
-def test_an_unfinished_run_shows_in_the_index(tmp_path, monkeypatch):
+def test_an_unfinished_run_shows_in_the_catalog(tmp_path, monkeypatch):
     def disk_full(*args):
         raise OSError("No space left on device")
 
     monkeypatch.setattr(simr, "_save_simulation", disk_full)  # an error while writing stops the run
     with pytest.raises(OSError):
         simr.run(MODELS, save_request(["sim.orbit"]), output=tmp_path)
-    [record] = simr.load_index(tmp_path)["runs"]
+    [record] = simr.load_catalog(tmp_path)["runs"]
     assert record["started"] is not None and record["finished"] is None
 
 
@@ -443,9 +443,9 @@ def test_status_seconds_and_errors_have_the_datas_shape():
     assert (result.seconds["sim"] > 0).all()
 
 
-def test_the_index_records_each_simulations_status(tmp_path):
+def test_the_catalog_records_each_simulations_status(tmp_path):
     simr.run(np.stack([PARAMS, FIRST_APPROACH]), save_request(["sim.orbit"], simulator=FAILING), output=tmp_path)
-    [record] = simr.load_index(tmp_path)["runs"]
+    [record] = simr.load_catalog(tmp_path)["runs"]
     assert record["status"] == {"sim": [["ran"], ["failed"]]}
     assert record["errors"]["sim"][0] == [None] and record["errors"]["sim"][1][0].startswith("ValueError")
     assert len(record["seconds"]["sim"]) == 2 and record["finished"] is not None
