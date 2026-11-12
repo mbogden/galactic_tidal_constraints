@@ -47,7 +47,15 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
   higher-level code can check them.
 - **Applications** live in the repo. Each owns its run's tables and final scores, and chooses how to
   parallelize. Meta scores are computed here.
-- **Failures:** a failed model returns `NaN` and writes the error to the log.
+- **Failures:** a failed model returns `NaN` and writes the error to the log. In `simr`, a
+  simulation (one model on one simulator entry) fails as a whole when computing any requested item
+  raises an error or a simulated array holds NaN or inf; the run moves on. Its cells hold `None`,
+  nothing is saved for it, and nothing is recorded in `model.json`, so a later run retries it.
+  Errors while writing stop the run.
+- **Status:** each stage reports a status, time and error for each of its cells, indexed like its
+  data (`result.status["sim"][m, s]`: `"ran"`, `"reused"` when nothing had to be computed, or
+  `"failed"`; later stages mark work that depends on a failure `"skipped"`). A run that saves adds
+  them to its record in `index.json` when it ends.
 - **One door to SPAM:** only one module imports `jspam`. Each run's saved config records the commit
   of both repos and whether either has uncommitted changes.
 - **Physics fixes:** a fix that changes SPAM's physics is an option, and Wallin's behavior stays

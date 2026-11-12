@@ -77,6 +77,7 @@ instead of computed (see Reuse).
 | `simulators` | The simulator entries as `SimulatorConfig`s, every default filled in: entry s is simulator s |
 | `data` | One entry per name in `return`, and nothing else |
 | `ids` | Each row's model id in the output folder, or `None` (see The output index) |
+| `status`, `seconds`, `errors` | Per stage (`"sim"` so far), indexed like its data; see Failures and status |
 
 Each `data` entry is a NumPy object array of cells, indexed by the levels its stage depends on:
 `[model, simulator]` for `sim.*`. A cell holds that simulation's own array, so orbits of different
@@ -86,6 +87,32 @@ lengths fit side by side:
 result.data["sim.orbit"][12, 1]         # model 12's orbit from simulator entry 1
 result.simulators[1].lnl                # what entry 1 was
 ```
+
+## Failures and status
+A simulation (one model on one simulator entry) **fails as a whole** when computing any requested item
+raises an error, or when any simulated array holds NaN or inf. `sim.timing` isn't checked: it
+legitimately holds NaN (e.g. `closest_distance` for a fixed start). A failure doesn't stop the run:
+
+- its cells in `result.data` hold `None`;
+- nothing is saved for it, because every item is computed and checked before anything is written;
+- nothing is recorded in `model.json`, so a later run retries it;
+- the error is logged with its traceback.
+
+Errors while **writing** files (a full disk, no permission) aren't caught: they stop the run.
+
+Each simulation's outcome comes back per stage, indexed like the data:
+
+| Field | Each cell |
+|---|---|
+| `result.status["sim"][m, s]` | `"ran"`, `"reused"` (saved, and nothing had to be computed) or `"failed"` |
+| `result.seconds["sim"][m, s]` | Wall time, loading included |
+| `result.errors["sim"][m, s]` | `"Type: message"` for a failure, else `None` |
+
+```python
+(result.status["sim"] == "failed").sum()     # how many failed
+```
+
+The run ends with a log line counting how many simulations ran, were reused and failed.
 
 ## Saving
 
@@ -161,6 +188,7 @@ Code versions are recorded but not compared; higher-level code can check them.
   | `simulator` | The full simulator configs |
   | `image`, `fitness` | Empty until those stages exist |
   | `model_ids` | Row m's model id |
+  | `status`, `seconds`, `errors` | As in the result, as lists; added when the run ends |
 
 A run that only reads (no `save`) writes nothing, not even a run record; rows the folder doesn't
 have get `None` in `result.ids` and are computed. **One run at a time per output folder.**

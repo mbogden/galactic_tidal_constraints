@@ -368,11 +368,92 @@ def test_a_run_that_only_reads_adds_nothing_to_the_index(tmp_path):
 
 
 def test_an_unfinished_run_shows_in_the_index(tmp_path, monkeypatch):
-    def crash(*args):
-        raise RuntimeError("crashed mid-run")
+    def disk_full(*args):
+        raise OSError("No space left on device")
 
-    monkeypatch.setitem(simr.SIM_DATA, "sim.orbit", crash)
-    with pytest.raises(RuntimeError):
+    monkeypatch.setattr(simr, "_save_simulation", disk_full)  # an error while writing stops the run
+    with pytest.raises(OSError):
         simr.run(MODELS, save_request(["sim.orbit"]), output=tmp_path)
     [record] = simr.load_index(tmp_path)["runs"]
     assert record["started"] is not None and record["finished"] is None
+
+
+
+# --- Step 9: failures and status ---------------------------------------------------------------------
+
+# Approaching now and unbound: it has no pass before now, so no_pass="error" makes the simulation fail.
+FIRST_APPROACH = PARAMS.copy()
+FIRST_APPROACH[3:6] *= -3
+FAILING = {**SMALL, "no_pass": "error"}
+
+
+def nan_for_heavier(params, config):
+    orbit = simr.SIM_DATA_BEFORE_TEST["sim.orbit"](params, config)
+    if params[sim.PARAM_INDEX["mass2"]] == HEAVIER[sim.PARAM_INDEX["mass2"]]:
+        orbit[5, 0] = np.nan
+    return orbit
+
+
+def test_a_failure_doesnt_stop_the_run():
+    models = np.stack([PARAMS, FIRST_APPROACH, HEAVIER])
+    result = simr.run(models, request(["sim.orbit"], simulator=FAILING))
+    assert result.status["sim"][:, 0].tolist() == ["ran", "failed", "ran"]
+    assert result.data["sim.orbit"][1, 0] is None
+    assert result.data["sim.orbit"][2, 0].shape[1] == 7
+    assert result.errors["sim"][1, 0].startswith("ValueError: ")
+    assert result.errors["sim"][0, 0] is None
+
+
+def test_nan_or_inf_in_an_array_is_a_failure(monkeypatch):
+    monkeypatch.setattr(simr, "SIM_DATA_BEFORE_TEST", dict(simr.SIM_DATA), raising=False)
+    monkeypatch.setitem(simr.SIM_DATA, "sim.orbit", nan_for_heavier)
+    result = simr.run(MODELS, request(["sim.orbit", "sim.timing"]))
+    assert result.status["sim"][:, 0].tolist() == ["ran", "failed"]
+    assert result.errors["sim"][1, 0] == "ValueError: NaN or inf in sim.orbit"
+    assert result.data["sim.timing"][1, 0] is None  # the whole simulation fails, not just the orbit
+
+
+def test_nan_in_timing_isnt_a_failure():
+    result = simr.run(MODELS[:1], request(["sim.timing"], simulator={**SMALL, "start": -5.0}))
+    assert np.isnan(result.data["sim.timing"][0, 0]["closest_distance"])  # a fixed start has no pass
+    assert result.status["sim"][0, 0] == "ran"
+
+
+def test_a_failure_is_not_saved_and_is_retried(tmp_path):
+    models = np.stack([PARAMS, FIRST_APPROACH])
+    simr.run(models, save_request(["sim.orbit"], simulator=FAILING), output=tmp_path)
+    assert simr.load_model(tmp_path / "model_000000")["simulations"]["sim_00"]["files"]
+    assert not (tmp_path / "model_000001" / "model.json").exists()
+    again = simr.run(models, save_request(["sim.orbit"], simulator=FAILING), output=tmp_path)
+    assert again.status["sim"][:, 0].tolist() == ["reused", "failed"]
+
+
+def test_reused_only_when_everything_came_from_disk(tmp_path):
+    simr.run(MODELS[:1], save_request(["sim.particles"]), output=tmp_path)
+    loaded = simr.run(MODELS[:1], request(["sim.particles"]), output=tmp_path)
+    partly = simr.run(MODELS[:1], request(["sim.particles", "sim.orbit"]), output=tmp_path)
+    assert loaded.status["sim"][0, 0] == "reused"
+    assert partly.status["sim"][0, 0] == "ran"
+
+
+def test_status_seconds_and_errors_have_the_datas_shape():
+    result = simr.run(MODELS, request(["sim.orbit"], simulator=[SMALL, SMALL]))
+    for field in (result.status, result.seconds, result.errors):
+        assert list(field) == ["sim"] and field["sim"].shape == (2, 2)
+    assert (result.seconds["sim"] > 0).all()
+
+
+def test_the_index_records_each_simulations_status(tmp_path):
+    simr.run(np.stack([PARAMS, FIRST_APPROACH]), save_request(["sim.orbit"], simulator=FAILING), output=tmp_path)
+    [record] = simr.load_index(tmp_path)["runs"]
+    assert record["status"] == {"sim": [["ran"], ["failed"]]}
+    assert record["errors"]["sim"][0] == [None] and record["errors"]["sim"][1][0].startswith("ValueError")
+    assert len(record["seconds"]["sim"]) == 2 and record["finished"] is not None
+
+
+def test_failures_are_logged_with_a_count(caplog):
+    with caplog.at_level("INFO", logger="galactic_tidal_constraints.simr.simr"):
+        simr.run(np.stack([PARAMS, FIRST_APPROACH]), request(["sim.orbit"], simulator=FAILING))
+    failure = next(r for r in caplog.records if r.levelname == "ERROR")
+    assert "model 1" in failure.getMessage() and failure.exc_info is not None
+    assert "2 simulations: 1 ran, 0 reused, 1 failed" in caplog.text

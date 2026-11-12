@@ -39,13 +39,20 @@ already has is loaded instead of computed, and nothing it has is written again; 
 computed and added. A saved simulation with a different config is neither used nor changed (a warning is
 logged). The code versions aren't compared: model.json records them, and higher-level code can check.
 
-Not yet here: failure handling (Step 9) and pools (Step 12). An error in any simulation stops the run.
+A simulation (one model on one simulator entry) fails as a whole when computing any requested item
+raises an error, or when a simulated array holds NaN or inf. The run moves on: its cells hold None, nothing
+is saved for it, and nothing is recorded in model.json, so a later run retries it. The error is logged with
+its traceback. Errors while writing files stop the run. Each simulation's status, time and error come back
+in the result, and a run that saves adds them to its record in index.json when it ends.
+
+Not yet here: pools (Step 12).
 """
 
 import json
 import logging
 import os
 import subprocess
+import time
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -103,12 +110,19 @@ class SimrResult:
             Each cell holds that run's array (or dict, for "sim.timing").
         ids: with an output folder, each row's model id there (its folder is `model_<id>`); None for a
             row the folder doesn't have (a run that only reads adds nothing). All None without a folder.
+        status, seconds, errors: per stage ("sim" so far), each indexed like that stage's data ([m, s]):
+            status: "ran", "reused" (everything requested came from disk) or "failed".
+            seconds: wall time, loading included.
+            errors: "Type: message" for a failed simulation, else None. The traceback is in the log.
     """
 
     models: np.ndarray
     simulators: list[SimulatorConfig]
     data: dict[str, np.ndarray]
     ids: list[str | None]
+    status: dict[str, np.ndarray]
+    seconds: dict[str, np.ndarray]
+    errors: dict[str, np.ndarray]
 
 
 def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> SimrResult:
@@ -130,8 +144,8 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
 
     A run that saves adds a record to `index.json`'s "runs" when it starts and completes it when it ends:
     "started", "finished" (None if the run never got there), "code", "run" (its return and save lists),
-    "simulator" (the full configs), "image" and "fitness" (empty until those stages exist) and "model_ids"
-    (row m's model id).
+    "simulator" (the full configs), "image" and "fitness" (empty until those stages exist), "model_ids"
+    (row m's model id), and at the end "status", "seconds" and "errors" (as in the result, as lists).
     """
     models = _check_models(models)
     returned, saved, configs = _read_request(request)
@@ -154,30 +168,64 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None) -> 
         index["runs"].append(run_record)
         _write_index(Path(output), index)
 
-    data = {name: np.empty((len(models), len(configs)), dtype=object) for name in returned}
+    shape = (len(models), len(configs))
+    data = {name: np.empty(shape, dtype=object) for name in returned}
+    status = {"sim": np.empty(shape, dtype=object)}
+    seconds = {"sim": np.zeros(shape)}
+    errors = {"sim": np.full(shape, None, dtype=object)}
     for m, params in enumerate(models):
         folder = Path(output) / f"model_{ids[m]}" if ids[m] is not None else None
         record = _open_record(folder, params) if folder is not None else None
         for s, config in enumerate(configs):
             name = f"sim_{s:02d}"
+            start = time.perf_counter()
             stored, new = _saved_data(folder, record, name, config) if record is not None else ({}, True)
-            usable = stored or {}  # None: saved with a different config, so nothing is used or added
-            values = {item: usable[item]() for item in returned if item in usable}  # load what's saved
-            to_save = [] if stored is None else [item for item in saved if item not in usable]
+            to_save = [] if stored is None else [item for item in saved if item not in (stored or {})]
             if new and saved:
                 to_save.append("sim.timing")  # every saved simulation records its timing in model.json
-            for item in dict.fromkeys(returned + to_save):
-                if item not in values:
-                    values[item] = SIM_DATA[item](params, config)
+            try:
+                values, computed = _simulate(params, config, returned, to_save, stored or {})
+            except Exception as error:  # a failed simulation: recorded, and the run moves on
+                logger.exception("model %d (id %s) on simulator %d failed", m, ids[m], s)
+                status["sim"][m, s] = "failed"
+                errors["sim"][m, s] = f"{type(error).__name__}: {error}"
+                seconds["sim"][m, s] = time.perf_counter() - start
+                continue
             for item in returned:
                 data[item][m, s] = values[item]
-            if to_save:
+            if to_save:  # errors while writing aren't caught: they stop the run
                 arrays = {item: values[item] for item in to_save if item != "sim.timing"}
                 _save_simulation(folder, record, name, config, arrays, values.get("sim.timing"), versions)
+            status["sim"][m, s] = "reused" if stored and not computed else "ran"  # reused: nothing computed
+            seconds["sim"][m, s] = time.perf_counter() - start
+
+    counts = {word: int((status["sim"] == word).sum()) for word in ("ran", "reused", "failed")}
+    logger.info("simr: %d simulations: %d ran, %d reused, %d failed", status["sim"].size, *counts.values())
     if saved:
-        run_record["finished"] = _now()
+        run_record.update(
+            status={"sim": status["sim"].tolist()},
+            seconds={"sim": seconds["sim"].tolist()},
+            errors={"sim": errors["sim"].tolist()},
+            finished=_now(),
+        )
         _write_index(Path(output), index)
-    return SimrResult(models=models, simulators=configs, data=data, ids=ids)
+    return SimrResult(models=models, simulators=configs, data=data, ids=ids,
+                      status=status, seconds=seconds, errors=errors)
+
+
+def _simulate(params, config, returned, to_save, stored) -> tuple[dict, bool]:
+    """One simulation's requested items: loaded when saved (`stored`), computed otherwise. Returns them and
+    whether anything was computed. Raises if any simulated array holds NaN or inf."""
+    values = {item: stored[item]() for item in returned if item in stored}
+    computed = False
+    for item in dict.fromkeys(returned + to_save):
+        if item not in values:
+            values[item] = SIM_DATA[item](params, config)
+            computed = True
+    for item, value in values.items():
+        if isinstance(value, np.ndarray) and not np.isfinite(value).all():
+            raise ValueError(f"NaN or inf in {item}")
+    return values, computed
 
 
 def load_index(output: str | Path) -> dict:
