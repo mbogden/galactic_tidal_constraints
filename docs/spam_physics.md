@@ -297,7 +297,7 @@ In SPAM's model-string order. Galaxy 1 is the primary, at the origin; galaxy 2 i
 
 ### Parameters that do nothing
 With `EXTENDED`, **`epsilon1`, `epsilon2` and all six `rscale` values have no effect**: changing them
-leaves the output bit-identical (tested for each, `tests/test_sim.py`). SPAM still needs all 22, so a
+leaves the output bit-identical (tested for each, `tests/test_simulation.py`). SPAM still needs all 22, so a
 model in `sim` is the first 14 (`sim.PARAM_NAMES`), and `sim` appends `sim.UNUSED_PARAMS`
 (ε = 0.3, 0.3; rscale = 3.0 × 6) before calling `jspam`. `sim.parse_model_string` reads the first 14 of
 any longer string.

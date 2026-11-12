@@ -1,4 +1,4 @@
-"""Tests for the Simulator stage (simr/sim.py). Each section covers one step of the rebuild."""
+"""Tests for the Simulator stage (simr/simulation.py). Each section covers one step of the rebuild."""
 
 from dataclasses import FrozenInstanceError, asdict, replace
 
@@ -8,8 +8,8 @@ import pytest
 np = pytest.importorskip("numpy")
 jspam = pytest.importorskip("jspam")
 
-from galactic_tidal_constraints.simr import sim  # noqa: E402
-from galactic_tidal_constraints.simr.sim import SimulatorConfig  # noqa: E402
+from galactic_tidal_constraints.simr import simulation as sim  # noqa: E402
+from galactic_tidal_constraints.simr.simulation import SimulatorConfig  # noqa: E402
 
 # Model SDSS 587722984435351614, a full 34-value line from JSPAM's archive/data.txt.
 MODEL_STRING = (

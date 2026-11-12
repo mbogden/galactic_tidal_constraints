@@ -6,11 +6,12 @@ import pytest
 np = pytest.importorskip("numpy")
 jspam = pytest.importorskip("jspam")
 
-from galactic_tidal_constraints.simr import sim, simr  # noqa: E402
-from galactic_tidal_constraints.simr.sim import SimulatorConfig  # noqa: E402
+from galactic_tidal_constraints.simr import simr  # noqa: E402
+from galactic_tidal_constraints.simr import simulation as sim  # noqa: E402
+from galactic_tidal_constraints.simr.simulation import SimulatorConfig  # noqa: E402
 from galactic_tidal_constraints.simr.simr import SimrResult  # noqa: E402
 
-# Model SDSS 587722984435351614 (as in test_sim.py) and a second, heavier secondary.
+# Model SDSS 587722984435351614 (as in test_simulation.py) and a second, heavier secondary.
 PARAMS = np.array(
     [-9.93853, -4.5805, 15.43348, -1.54025, -2.97899, 4.69234, 34.41671, 29.49607, 2.97913, 4.2501,
      301.0, 35.5, 310.80745, 321.98757]

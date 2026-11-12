@@ -21,8 +21,8 @@ from dataclasses import dataclass, fields
 
 import numpy as np
 
-from galactic_tidal_constraints.simr import sim
-from galactic_tidal_constraints.simr.sim import SimulatorConfig
+from galactic_tidal_constraints.simr import simulation as sim
+from galactic_tidal_constraints.simr.simulation import SimulatorConfig
 
 
 def _particles(params, config):
