@@ -327,6 +327,26 @@ setup_module.f90). It never changes a force. The disk option `opt` picks the pro
 22-value path changes them. So every disk is the 1/r profile, from r = 0.05 (`rin`, also fixed) to
 `rout`. Using rscale would mean changing `opt` in the Fortran.
 
+## Open questions
+SPAM behaviors that may be wrong for our science, found while rebuilding `sim` (2026-11-03 to 11-04),
+left unchanged in the code, and to be decided while fitting TNG targets. A change would be a physics
+option, with Wallin's behavior kept (`PLAN.md`, Physics fixes).
+
+- **Should the force keep falling past r = 10?** Past the tables' end (about 150 kpc), the pull is
+  constant instead of falling as 1/r²: a·r² should stay 1.99, but it's 2.87 at r = 12, 7.96 at r = 20
+  and 49.8 at r = 50. Only separations beyond 10 are affected, mostly early in a run on a wide orbit,
+  where too much pull bends the orbit's history (Wallin's SDSS example is at r = 18.9 now). A fix:
+  plain 1/r² beyond the table. Details: [The extended potential](#the-extended-potential-what-we-run).
+- **Should `r_scale` change only the size?** It stretches the whole galaxy and also multiplies the
+  force outside the core by (10 / `r_scale`)², so it works partly as a strength knob. That matters
+  wherever `r_scale` is read as "halo size": an optimizer exploring it, or bounds taken from TNG50 halos
+  (TNG-7). An option would rescale the force so `r_scale` changes only the shape. Details:
+  [`r_scale`](#r_scale-the-halos-core-radius-and-the-size-of-everything).
+
+Decided (2026-11-12): dynamical friction keeps its enclosed-mass density (`new_rho`, see
+[`lnl`](#lnl-dynamical-friction)), and runs from the old code aren't re-run; the bugs found there are
+reported upstream instead.
+
 ## Limits shared by all potentials
 Particles are massless, halos are rigid and don't respond, and the galaxies can't merge: there is no
 self-gravity, so nothing but dynamical friction takes energy out of the orbit. Simulated features are
