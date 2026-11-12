@@ -82,9 +82,16 @@ One config tree for everything that can change a result, plus a few runtime flag
 - Parameter studies are generated config files, one run per file.
 - Runtime flags (`argparse`) don't change results and stay outside the tree: `--config`,
   `--log-level`, `--mode`, output folder.
-- On the command line, the models are in the config file, as a top-level `models` list (each a
-  list of 14 numbers or a SPAM model string), and `run.save` is required, so every run leaves its
-  models, configs and statuses on disk.
+- Models are their own input, separate from the config: the config says how to simulate (and
+  later image and score), and the models say what. Either can then change while the other stays
+  fixed. On the command line they come from a text file (`--models models.txt`): one model per
+  line, and the first 14 comma-separated values on the line are the model. Longer lines (SPAM's
+  22-value strings, JSPAM's `archive/data.txt`) are accepted, and one log message says how many
+  lines had more than 14 values. Fewer than 14 numbers is an error naming the line. Blank lines and
+  `#` comments are ignored. The catalog records each run's models with its configs, so the output
+  folder still says what was run.
+- On the command line `run.save` is required, so every run leaves its models, configs and
+  statuses on disk.
 
 ### Models and stage lists
 - Encounter parameters are the one hard input every run needs, and they're their own list. Each
