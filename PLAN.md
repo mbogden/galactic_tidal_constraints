@@ -147,7 +147,14 @@ A basic Image Creator, `simr/image_creator.py`, numpy only. Details: [docs/desig
   3.8% across JSPAM's 62 archive models). A secondary that lands on the primary in the image
   can't be framed. Each is an error for that image.
 - **Viewing:** `to_png` writes an image as an 8-bit grayscale PNG, using only the standard library.
-- Not yet: radial brightness, luminosity balance, separate galaxy images, other view planes.
+- **In `simr`** (decided 2026-11-16): an `image` section like `simulator` (one entry or a list; one
+  default `ImageConfig()` when it's missing). Items `image.model` (from `sim.particles`) and
+  `image.unperturbed` (from `sim.unperturbed`), indexed `[model, simulator, image]`; each declares the
+  `sim` items it's made from, which `simr` computes or loads even when they aren't returned or saved.
+  Image statuses: `ran`, `failed` (the simulation is unaffected), `skipped` (its simulation failed),
+  `empty` (none asked for). The exit code depends on the simulations only.
+- Not yet: saving images (MDRN-3 step 3), radial brightness, luminosity balance, separate galaxy
+  images, other view planes.
 
 ## Parallelization
 Code takes a `map` function (default: built-in `map`). The application picks it once from `--mode`:

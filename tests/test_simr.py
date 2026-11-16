@@ -10,8 +10,10 @@ import pytest
 np = pytest.importorskip("numpy")
 jspam = pytest.importorskip("jspam")
 
+from galactic_tidal_constraints.simr import image_creator as img  # noqa: E402
 from galactic_tidal_constraints.simr import simr  # noqa: E402
 from galactic_tidal_constraints.simr import simulation as sim  # noqa: E402
+from galactic_tidal_constraints.simr.image_creator import ImageConfig  # noqa: E402
 from galactic_tidal_constraints.simr.simulation import SimulatorConfig  # noqa: E402
 from galactic_tidal_constraints.simr.simr import SimrResult  # noqa: E402
 
@@ -305,13 +307,13 @@ def test_a_run_without_save_writes_only_the_catalog(tmp_path):
     assert [p.name for p in tmp_path.iterdir()] == ["catalog.json"]
     [record] = simr.load_catalog(tmp_path)["runs"]
     assert record["run"] == {"return": ["sim.orbit"], "save": []}
-    assert record["status"] == {"sim": [["ran"], ["ran"]]}
+    assert record["status"] == {"sim": [["ran"], ["ran"]], "image": [[["empty"]], [["empty"]]]}  # no images asked for
 
 
 def test_nothing_requested_is_empty(tmp_path):
     result = simr.run(MODELS, request([]), output=tmp_path)
     assert result.status["sim"].tolist() == [["empty"], ["empty"]]
-    assert simr.load_catalog(tmp_path)["runs"][0]["status"] == {"sim": [["empty"], ["empty"]]}
+    assert simr.load_catalog(tmp_path)["runs"][0]["status"] == {"sim": [["empty"], ["empty"]], "image": [[["empty"]], [["empty"]]]}
 
 
 def test_a_model_the_folder_doesnt_have_is_computed_and_added_to_the_catalog(tmp_path):
@@ -331,7 +333,8 @@ def test_catalog_lists_the_models_and_the_run(tmp_path):
     assert record["started"] <= record["finished"]
     assert record["run"] == {"return": [], "save": ["sim.orbit"]}
     assert record["simulator"] == [asdict(SimulatorConfig(**SMALL)), asdict(SimulatorConfig(**SMALL, lnl=0.01))]
-    assert record["image"] == [] and record["fitness"] == []
+    assert record["image"] == [json.loads(json.dumps(asdict(ImageConfig())))]  # the default entry
+    assert record["fitness"] == []
     assert record["model_ids"] == ["000000", "000001"]
     assert record["code"] == simr.code_versions()
 
@@ -446,14 +449,15 @@ def test_reused_only_when_everything_came_from_disk(tmp_path):
 def test_status_seconds_and_errors_have_the_datas_shape():
     result = simr.run(MODELS, request(["sim.orbit"], simulator=[SMALL, SMALL]))
     for field in (result.status, result.seconds, result.errors):
-        assert list(field) == ["sim"] and field["sim"].shape == (2, 2)
+        assert list(field) == ["sim", "image"] and field["sim"].shape == (2, 2)
+        assert field["image"].shape == (2, 2, 1)  # one default image entry
     assert (result.seconds["sim"] > 0).all()
 
 
 def test_the_catalog_records_each_simulations_status(tmp_path):
     simr.run(np.stack([PARAMS, FIRST_APPROACH]), save_request(["sim.orbit"], simulator=FAILING), output=tmp_path)
     [record] = simr.load_catalog(tmp_path)["runs"]
-    assert record["status"] == {"sim": [["ran"], ["failed"]]}
+    assert record["status"] == {"sim": [["ran"], ["failed"]], "image": [[["empty"]], [["empty"]]]}
     assert record["errors"]["sim"][0] == [None] and record["errors"]["sim"][1][0].startswith("ValueError")
     assert len(record["seconds"]["sim"]) == 2 and record["finished"] is not None
 
@@ -477,7 +481,7 @@ def test_a_json_output_is_a_catalog_file_alone(tmp_path):
     assert result.ids == ["000000", "000001"]
     catalog = simr.load_catalog(catalog_file)
     assert list(catalog["models"]) == ["000000", "000001"]
-    assert catalog["runs"][0]["status"] == {"sim": [["ran"], ["ran"]]}
+    assert catalog["runs"][0]["status"]["sim"] == [["ran"], ["ran"]]
 
 
 def test_a_json_output_collects_runs_like_a_folder(tmp_path):
@@ -665,7 +669,7 @@ def test_a_broken_pool_records_what_finished_and_raises(tmp_path, caplog):
     assert "1 of 2 models unfinished: ['000001']" in caplog.text
     [record] = simr.load_catalog(tmp_path)["runs"]
     assert record["finished"] is None
-    assert record["status"] == {"sim": [["ran"], [None]]}
+    assert record["status"] == {"sim": [["ran"], [None]], "image": [[["empty"]], [[None]]]}
     again = simr.run(MODELS, save_request(["sim.orbit"]), output=tmp_path)  # a rerun resumes
     assert again.status["sim"][:, 0].tolist() == ["reused", "ran"]
 
@@ -719,3 +723,119 @@ def test_log_lines_can_ignore_the_mpi_rank(monkeypatch):
     monkeypatch.setattr(simr.logging, "basicConfig", lambda **kwargs: seen.update(kwargs))
     simr.configure_logging("INFO", use_rank=False)
     assert seen["format"] == simr.LOG_FORMAT
+
+
+# --- MDRN-3 step 2: images from simr.run, in memory -------------------------------------------------------
+
+
+def test_images_are_indexed_by_model_simulator_and_image():
+    images = [{"blur_sigma": 1.0}, {"width": 64, "height": 32, "brightness": "log"}]
+    result = simr.run(MODELS, {**request(["image.model", "image.unperturbed"]), "image": images})
+    assert result.images == [ImageConfig(blur_sigma=1.0), ImageConfig(width=64, height=32, brightness="log")]
+    for name in ("image.model", "image.unperturbed"):
+        assert result.data[name].shape == (2, 1, 2)
+        for m in range(2):
+            assert result.data[name][m, 0, 0].shape == (128, 128)
+            assert result.data[name][m, 0, 1].shape == (32, 64)
+            assert result.data[name][m, 0, 1].dtype == np.float32
+    assert result.status["image"].tolist() == [[["ran", "ran"]], [["ran", "ran"]]]
+    assert (result.seconds["image"] > 0).all()
+
+
+def test_an_image_is_create_image_on_the_simulations_particles():
+    config = ImageConfig(primary_center=(32, 64), secondary_center=(96, 64), blur_sigma=0.5)
+    result = simr.run(MODELS, {**request(["sim.particles", "sim.unperturbed", "image.model", "image.unperturbed"]),
+                               "image": config})
+    for m, params in enumerate(MODELS):
+        for sim_item, image_item in (("sim.particles", "image.model"), ("sim.unperturbed", "image.unperturbed")):
+            expected = img.create_image(result.data[sim_item][m, 0], params, SMALL["n1"], SMALL["n2"], config)
+            np.testing.assert_array_equal(result.data[image_item][m, 0, 0], expected)
+
+
+def test_images_compute_the_particles_they_need_without_returning_them():
+    result = simr.run(MODELS, request(["image.model"]))
+    assert list(result.data) == ["image.model"]
+    assert result.status["sim"].tolist() == [["ran"], ["ran"]]  # the particles were computed for the images
+    assert result.images == [ImageConfig()]  # no image section: one default entry
+
+
+def test_image_entries_take_centers_as_lists():
+    result = simr.run(PARAMS, {**request(["image.model"]), "image": {"primary_center": [10, 20],
+                                                                      "secondary_center": [30.5, 20]}})
+    assert result.images[0].primary_center == (10.0, 20.0) and result.images[0].secondary_center == (30.5, 20.0)
+
+
+@pytest.mark.parametrize(
+    ("image", "message"),
+    [
+        ({"zoom": 2}, r"unknown keys in image\[0\]"),
+        ({"primary_center": "middle"}, r"image\[0\].primary_center must be a list of 2"),
+        ({"primary_center": [1, 2, 3]}, r"image\[0\].primary_center must be a list of 2"),
+        ([{}, {"primary_center": [5, 5], "secondary_center": [5, 5]}], r"image\[1\]: .*can't be equal"),
+        ([], "image is an empty list"),
+    ],
+)
+def test_bad_image_entries_are_errors(image, message):
+    with pytest.raises(ValueError, match=message):
+        simr.run(PARAMS, {**request(["image.model"]), "image": image})
+
+
+def test_images_cant_be_saved_yet(tmp_path):
+    with pytest.raises(ValueError, match="images can't be saved yet"):
+        simr.run(PARAMS, save_request(["image.model"]), output=tmp_path)
+
+
+def test_a_failed_simulation_skips_its_images():
+    result = simr.run(np.stack([PARAMS, FIRST_APPROACH]), {**request(["image.model"], simulator=FAILING),
+                                                         "image": [{}, {}]})
+    assert result.status["sim"][:, 0].tolist() == ["ran", "failed"]
+    assert result.status["image"].tolist() == [[["ran", "ran"]], [["skipped", "skipped"]]]
+    assert result.data["image.model"][1, 0, 0] is None
+
+
+def test_a_failed_image_is_recorded_and_the_run_moves_on(monkeypatch, tmp_path, caplog):
+    caplog.set_level("INFO", logger="galactic_tidal_constraints.simr.simr")
+    def broken(values, params, sim_config, image_config):
+        if image_config.blur_sigma == 1.0:
+            raise ValueError("no frame")
+        return img.create_image(values["sim.particles"], params, sim_config.n1, sim_config.n2, image_config)
+
+    monkeypatch.setitem(simr.IMAGE_DATA, "image.model", (("sim.particles",), broken))
+    result = simr.run(PARAMS, {**request(["image.model"]), "image": [{}, {"blur_sigma": 1.0}]}, output=tmp_path)
+    assert result.status["sim"].tolist() == [["ran"]]
+    assert result.status["image"].tolist() == [[["ran", "failed"]]]
+    assert result.errors["image"][0, 0, 1] == "ValueError: no frame"
+    assert result.data["image.model"][0, 0, 1] is None and result.data["image.model"][0, 0, 0] is not None
+    assert "2 images: 1 ran, 1 failed, 0 skipped" in caplog.text
+    [record] = simr.load_catalog(tmp_path)["runs"]
+    assert record["status"]["image"] == [[["ran", "failed"]]]
+    assert record["errors"]["image"][0][0][1] == "ValueError: no frame"
+
+
+def test_images_use_saved_particles(tmp_path):
+    simr.run(MODELS, save_request(["sim.particles"]), output=tmp_path)
+    result = simr.run(MODELS, {**request(["image.model"]), "image": {"blur_sigma": 1.0}}, output=tmp_path)
+    assert result.status["sim"].tolist() == [["reused"], ["reused"]]
+    saved = simr.load_simulation(tmp_path / "model_000000", "sim_00")["sim.particles"]
+    expected = img.create_image(saved, PARAMS, SMALL["n1"], SMALL["n2"], ImageConfig(blur_sigma=1.0))
+    np.testing.assert_array_equal(result.data["image.model"][0, 0, 0], expected)
+
+
+def test_the_catalog_records_the_image_entries(tmp_path):
+    simr.run(MODELS, {**request(["image.model"]), "image": [{}, {"brightness": "log"}]}, output=tmp_path)
+    [record] = simr.load_catalog(tmp_path)["runs"]
+    assert [entry["brightness"] for entry in record["image"]] == ["linear", "log"]
+    assert record["image"][0]["primary_center"] == [48.0, 64.0]
+    assert record["status"]["image"] == [[["ran", "ran"]], [["ran", "ran"]]]
+
+
+def test_images_come_back_the_same_through_a_pool():
+    from concurrent.futures import ProcessPoolExecutor
+
+    req = {**request(["image.model"]), "image": [{}, {"blur_sigma": 1.0}]}
+    solo = simr.run(MODELS, req)
+    with ProcessPoolExecutor(2) as pool:
+        pooled = simr.run(MODELS, req, map=pool.map)
+    for index in np.ndindex(solo.data["image.model"].shape):
+        np.testing.assert_array_equal(pooled.data["image.model"][index], solo.data["image.model"][index])
+    assert pooled.status["image"].tolist() == solo.status["image"].tolist()

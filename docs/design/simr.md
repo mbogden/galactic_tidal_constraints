@@ -30,20 +30,23 @@ request = {
         "save": ["sim.particles"],               # data to write to the output folder
     },
     "simulator": [{"lnl": 0.1}, {"lnl": 0.01}],  # one dict or a list; each becomes a SimulatorConfig
+    "image": [{}, {"blur_sigma": 1.0}],          # one dict or a list; each becomes an ImageConfig
 }
 ```
 
 | Key | Default | Meaning |
 |---|---|---|
 | `run.return` | `[]` | Names of the data to hand back |
-| `run.save` | `[]` | Names of the data to save. Independent of `return`: a run can do both |
+| `run.save` | `[]` | Names of the data to save. Independent of `return`: a run can do both. Images can't be saved yet |
 | `simulator` | one `SimulatorConfig()` | A dict (keys are `SimulatorConfig` fields) or a `SimulatorConfig`, or a list of them |
+| `image` | one `ImageConfig()` | A dict (keys are `ImageConfig` fields) or an `ImageConfig`, or a list of them. Centers are lists in JSON (`[column, row]`). See [image_creator.md](image_creator.md) |
 
-**Every model runs on every simulator entry.** Unknown keys, unknown names, wrong types and bad
-values are errors that say where the problem is (e.g. `simulator[0].lnl must be a number: '0.1'`,
-`simulator[1]: lnl can't be negative`), raised before anything runs. Types are checked against
-`SimulatorConfig`'s type hints; an integer is fine for a number field (JSON writes `1.0` as `1`), and
-`true` / `false` are never numbers.
+**Every model runs on every simulator entry, and every simulation is imaged with every image
+entry.** Unknown keys, unknown names, wrong types and bad values are errors that say where the
+problem is (e.g. `simulator[0].lnl must be a number: '0.1'`, `simulator[1]: lnl can't be negative`,
+`image[0].primary_center must be a list of 2 (a number, a number)`), raised before anything runs.
+Types are checked against the config's type hints; an integer is fine for a number field (JSON writes
+`1.0` as `1`), `true` / `false` are never numbers, and a tuple field takes a list of that length.
 
 ### Data names
 The Simulator stage can hand back:
@@ -55,9 +58,18 @@ The Simulator stage can hand back:
 | `sim.orbit` | `sim.simulate_orbit`: the secondary's center at every step, `(n_steps + 1, 7)` |
 | `sim.timing` | the dict from `sim.get_timing` (start time, steps, which pass) |
 
+The Image Creator stage can hand back (`simr.IMAGE_DATA`; each made with `img.create_image`, from the
+simulation's own particles and that simulator's `n1` and `n2`):
+
+| Name | Made from | Each cell holds |
+|---|---|---|
+| `image.model` | `sim.particles` | The model image, `float32` `(height, width)` in [0, 1] |
+| `image.unperturbed` | `sim.unperturbed` | The unperturbed image, in the same frame |
+
 **Only what `return` and `save` name is computed.** Asking only for `sim.orbit` never runs
-particles. Simulated arrays are converted to `float32` as soon as a simulation is done; everything
-after expects `float32`.
+particles. An image needs the `sim` items it's made from, so `simr` computes them (or loads them, if
+saved) even when they aren't returned or saved. Simulated arrays are converted to `float32` as soon
+as a simulation is done; everything after expects `float32`.
 
 ### Seeds
 The seed is part of each simulator entry (`SimulatorConfig.seed`, 0 by default), and `simr` uses it
@@ -86,16 +98,18 @@ catalog). It's a folder or a `.json` file, told apart by name, so it works befor
 |---|---|
 | `models` | The models that ran, `(N, 14)`: row m is model m (the result's own copy) |
 | `simulators` | The simulator entries as `SimulatorConfig`s, every default filled in: entry s is simulator s |
+| `images` | The image entries as `ImageConfig`s, likewise: entry i is image i |
 | `data` | One entry per name in `return`, and nothing else |
 | `ids` | Each row's model id in the output's catalog, or `None` without an output (see The output catalog) |
-| `status`, `seconds`, `errors` | Per stage (`"sim"` so far), indexed like its data; see Failures and status |
+| `status`, `seconds`, `errors` | Per stage (`"sim"`, `"image"`), indexed like its data; see Failures and status |
 
 Each `data` entry is a NumPy object array of cells, indexed by the levels its stage depends on:
-`[model, simulator]` for `sim.*`. A cell holds that simulation's own array, so orbits of different
-lengths fit side by side:
+`[model, simulator]` for `sim.*`, `[model, simulator, image]` for `image.*`. A cell holds that
+simulation's (or image's) own array, so orbits of different lengths fit side by side:
 
 ```python
 result.data["sim.orbit"][12, 1]         # model 12's orbit from simulator entry 1
+result.data["image.model"][12, 1, 0]    # its image from image entry 0
 result.simulators[1].lnl                # what entry 1 was
 ```
 
@@ -169,19 +183,26 @@ legitimately holds NaN (e.g. `closest_distance` for a fixed start). A failure do
 
 Errors while **writing** files (a full disk, no permission) aren't caught: they stop the run.
 
-Each simulation's outcome comes back per stage, indexed like the data:
+An image (one simulation with one image entry) fails on its own, the same way: its cells hold
+`None`, the error is logged, and its simulation is unaffected. When a simulation fails, its images are
+`"skipped"`.
+
+Each outcome comes back per stage, indexed like the data:
 
 | Field | Each cell |
 |---|---|
-| `result.status["sim"][m, s]` | `"ran"`, `"reused"` (saved, and nothing had to be computed), `"failed"`, or `"empty"` (the request asked for nothing: no `return`, no `save`) |
-| `result.seconds["sim"][m, s]` | Wall time, loading included |
-| `result.errors["sim"][m, s]` | `"Type: message"` for a failure, else `None` |
+| `result.status["sim"][m, s]` | `"ran"`, `"reused"` (saved, and nothing had to be computed), `"failed"`, or `"empty"` (nothing was asked of it: nothing returned or saved, and no image needs it) |
+| `result.status["image"][m, s, i]` | `"ran"`, `"failed"`, `"skipped"` (its simulation failed), or `"empty"` (no image was asked for) |
+| `result.seconds[stage][...]` | Wall time, loading included. A simulation's time doesn't include its images |
+| `result.errors[stage][...]` | `"Type: message"` for a failure, else `None` |
 
 ```python
 (result.status["sim"] == "failed").sum()     # how many failed
 ```
 
-The run ends with a log line counting how many simulations ran, were reused, failed and were empty.
+The run ends with a log line counting how many simulations ran, were reused, failed and were empty,
+and, when images were asked for, one counting how many images ran, failed and were skipped. The exit
+code (see The command line) depends on the simulations only.
 
 ## Saving
 
@@ -255,7 +276,8 @@ The catalog (a folder's `catalog.json`, or a `.json` output) is the output's tab
   | `code` | The code versions, as in `model.json` |
   | `run` | Its `return` and `save` lists |
   | `simulator` | The full simulator configs |
-  | `image`, `fitness` | Empty until those stages exist |
+  | `image` | The full image configs |
+  | `fitness` | Empty until that stage exists |
   | `model_ids` | Row m's model id |
   | `status`, `seconds`, `errors` | As in the result, as lists; added when the run ends |
 

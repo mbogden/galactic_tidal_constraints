@@ -2,7 +2,8 @@
 
 The Image Creator turns one particle set into one image. Like the Simulator stage it takes values and
 returns arrays: no disk (apart from `to_png`, for looking at an image), no pools or MPI, no state.
-It imports neither `jspam` nor `sim`. `simr` doesn't run it yet (MDRN-3 step 2).
+It imports neither `jspam` nor `sim`. `simr` runs it for many models: the `image` request section and
+the `image.model` / `image.unperturbed` items ([simr.md](simr.md)).
 
 ```python
 from galactic_tidal_constraints.simr import image_creator as img

@@ -1,17 +1,21 @@
-"""SIMR workflow: run the simulations a request asks for, for many models, and return the requested data.
+"""SIMR workflow: run the simulations and images a request asks for, for many models, and return the
+requested data.
 
-A request is a plain dict, shaped like the config file to come (Step 11):
+A request is a plain dict, shaped like the config file (Step 11):
 
     request = {
-        "run": {"return": ["sim.orbit", "sim.particles"]},
+        "run": {"return": ["sim.orbit", "sim.particles", "image.model"]},
         "simulator": [{"lnl": 0.1}, {"lnl": 0.01}],   # one dict or a list; each becomes a SimulatorConfig
+        "image": [{}, {"blur_sigma": 1.0}],           # one dict or a list; each becomes an ImageConfig
     }
     result = run(models, request)
-    result.data["sim.orbit"][12, 1]   # model 12's orbit from simulator entry 1
+    result.data["sim.orbit"][12, 1]       # model 12's orbit from simulator entry 1
+    result.data["image.model"][12, 1, 0]  # its image from image entry 0
 
-Every model runs on every simulator entry, with that entry's seed (`SimulatorConfig.seed`, 0 by default).
-Only what `return` and `save` name is computed: asking only for "sim.orbit" never runs particles.
-Simulated arrays come back as float32 (`PLAN.md`, Precision).
+Every model runs on every simulator entry, with that entry's seed (`SimulatorConfig.seed`, 0 by default),
+and every simulation is imaged with every image entry. Only what `return` and `save` name is computed:
+asking only for "sim.orbit" never runs particles, and an image computes (or loads) only the particles it
+needs. Simulated arrays and images come back as float32 (`PLAN.md`, Precision).
 
 With an output (`run(..., output=...)`), every run is recorded in a catalog, whether or not it saves data.
 The output is a folder or a `.json` file, told apart by name:
@@ -49,10 +53,12 @@ logged). The code versions aren't compared: model.json records them, and higher-
 A simulation (one model on one simulator entry) fails as a whole when computing any requested item
 raises an error, or when a simulated array holds NaN or inf. The run moves on: its cells hold None, nothing
 is saved for it, and nothing is recorded in model.json, so a later run retries it. The error is logged with
-its traceback. Errors while writing files stop the run. Each simulation's status, time and error come back
-in the result, and a run that saves adds them to its record in catalog.json when it ends.
+its traceback. Errors while writing files stop the run. An image (one simulation with one image entry)
+fails on its own, the same way, and leaves its simulation alone; a failed simulation's images are
+"skipped". Each simulation's and image's status, time and error come back in the result, and a run with an
+output adds them to its record in catalog.json.
 
-Not yet here: pools (Step 12).
+Not yet here: saving images (MDRN-3 step 3).
 """
 
 import json
@@ -69,7 +75,9 @@ from pathlib import Path
 
 import numpy as np
 
+from galactic_tidal_constraints.simr import image_creator as img
 from galactic_tidal_constraints.simr import simulation as sim
+from galactic_tidal_constraints.simr.image_creator import ImageConfig
 from galactic_tidal_constraints.simr.simulation import SimulatorConfig
 
 logger = logging.getLogger(__name__)
@@ -103,10 +111,29 @@ SIM_DATA = {
     "sim.timing": _timing,
 }
 
+
+def _model_image(values, params, sim_config, image_config):
+    return img.create_image(values["sim.particles"], params, sim_config.n1, sim_config.n2, image_config)
+
+
+def _unperturbed_image(values, params, sim_config, image_config):
+    return img.create_image(values["sim.unperturbed"], params, sim_config.n1, sim_config.n2, image_config)
+
+
+# The data the Image Creator stage can hand back, by name: (the `sim` items it's made from, how). Each is
+# indexed [model, simulator, image]: float32 (height, width), values in [0, 1]. Asking for one makes simr
+# compute (or load) the `sim` items it needs, whether or not those are returned or saved.
+#   image.model:       the particles at the end of the run
+#   image.unperturbed: the same disks placed at today's centers with no steps, in the same frame
+IMAGE_DATA = {
+    "image.model": (("sim.particles",), _model_image),
+    "image.unperturbed": (("sim.unperturbed",), _unperturbed_image),
+}
+
 # While a run collects results, its statuses are written to the catalog at most this often (and at the end).
 CATALOG_WRITE_SECONDS = 60.0
 
-REQUEST_KEYS = ("run", "simulator")
+REQUEST_KEYS = ("run", "simulator", "image")
 RUN_KEYS = ("return", "save")
 
 
@@ -118,20 +145,24 @@ class SimrResult:
         models: the models that ran, shape (N, 14): row m is model m in `data`.
         simulators: the simulator entries, with every default filled in (seed included): entry s is
             simulator s in `data`.
+        images: the image entries (`ImageConfig`s), likewise: entry i is image i in `data`.
         data: one entry per name in the request's `return` list, and nothing else. Each is a numpy
-            object array indexed by the levels its stage depends on: [model, simulator] for "sim.*".
-            Each cell holds that run's array (or dict, for "sim.timing").
+            object array indexed by the levels its stage depends on: [model, simulator] for "sim.*",
+            [model, simulator, image] for "image.*". Each cell holds that run's array (or dict, for
+            "sim.timing"), or None if it failed or was skipped.
         ids: with an output, each row's model id in its catalog (in a folder, its data goes in
             `model_<id>`). All None without an output.
-        status, seconds, errors: per stage ("sim" so far), each indexed like that stage's data ([m, s]):
-            status: "ran", "reused" (saved, and nothing had to be computed), "failed", or "empty" (nothing
-                was requested, so there was nothing to do).
-            seconds: wall time, loading included.
-            errors: "Type: message" for a failed simulation, else None. The traceback is in the log.
+        status, seconds, errors: per stage ("sim", "image"), each indexed like that stage's data:
+            status: "ran", "reused" (saved, and nothing had to be computed; "sim" only), "failed",
+                "skipped" ("image" only: its simulation failed), or "empty" (nothing was requested from
+                the stage, so there was nothing to do).
+            seconds: wall time, loading included. A simulation's time doesn't include its images.
+            errors: "Type: message" for a failure, else None. The traceback is in the log.
     """
 
     models: np.ndarray
     simulators: list[SimulatorConfig]
+    images: list[ImageConfig]
     data: dict[str, np.ndarray]
     ids: list[str | None]
     status: dict[str, np.ndarray]
@@ -144,12 +175,15 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
 
     Args:
         models: the models, shape (N, 14) (one model of shape (14,) also works), in `sim.PARAM_NAMES` order.
-        request: a dict with optional sections "run" and "simulator" (see the module docstring).
-            run.return (default []): names from `SIM_DATA` to hand back.
+        request: a dict with optional sections "run", "simulator" and "image" (see the module docstring).
+            run.return (default []): names from `SIM_DATA` and `IMAGE_DATA` to hand back.
             run.save (default []): names from `SIM_DATA` to write to `output`. Independent of `return`.
+                Images can't be saved yet.
             simulator (default one `SimulatorConfig()`): a dict or `SimulatorConfig`, or a list of them.
                 Each entry's seed is used for every model, so all models start from the same disk
                 pattern (see `SimulatorConfig.seed`).
+            image (default one `ImageConfig()`): a dict or `ImageConfig`, or a list of them. Every
+                simulation gets every image entry. Centers can be given as lists ([column, row]).
         output: where to record the run: a folder (its `catalog.json`, plus model folders for the data
             run.save names, and saved data is loaded from there instead of computed) or a `.json` catalog
             file (no model data). A folder is needed when run.save names something; optional otherwise.
@@ -167,11 +201,11 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
 
     A run with an output adds a record to the catalog's "runs" when it starts and completes it when it ends:
     "started", "finished" (None if the run never got there), "code", "run" (its return and save lists),
-    "simulator" (the full configs), "image" and "fitness" (empty until those stages exist), "model_ids"
+    "simulator" and "image" (the full configs), "fitness" (empty until that stage exists), "model_ids"
     (row m's model id), and at the end "status", "seconds" and "errors" (as in the result, as lists).
     """
     models = _check_models(models)
-    returned, saved, configs = _read_request(request)
+    returned, saved, configs, image_configs = _read_request(request)
     catalog_file, root = output_paths(output) if output is not None else (None, None)
     if saved and root is None:
         where = "no output was given" if output is None else f"{output} is a catalog file, not a folder"
@@ -187,18 +221,18 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
             "code": versions,
             "run": {"return": returned, "save": saved},
             "simulator": [_json_ready(asdict(config)) for config in configs],
-            "image": [],
+            "image": [_json_ready(asdict(config)) for config in image_configs],
             "fitness": [],
             "model_ids": ids,
         }
         catalog["runs"].append(run_record)
         _write_catalog(catalog_file, catalog)
 
-    shape = (len(models), len(configs))
-    data = {name: np.empty(shape, dtype=object) for name in returned}
-    status = {"sim": np.empty(shape, dtype=object)}
-    seconds = {"sim": np.zeros(shape)}
-    errors = {"sim": np.full(shape, None, dtype=object)}
+    shapes = {"sim": (len(models), len(configs)), "image": (len(models), len(configs), len(image_configs))}
+    data = {name: np.empty(shapes[_stage(name)], dtype=object) for name in returned}
+    status = {stage: np.empty(shape, dtype=object) for stage, shape in shapes.items()}
+    seconds = {stage: np.zeros(shape) for stage, shape in shapes.items()}
+    errors = {stage: np.full(shape, None, dtype=object) for stage, shape in shapes.items()}
 
     # One task per model; rows holding the same model (one id) share a task, so no two tasks write one folder.
     groups: dict = {}
@@ -206,8 +240,9 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
         groups.setdefault(ids[m] if ids[m] is not None else m, []).append(m)
     rows = list(groups.values())
     tasks = [
-        _ModelTask(row=r[0], model_id=ids[r[0]], params=models[r[0]], configs=configs, returned=returned,
-                   saved=saved, folder=root / f"model_{ids[r[0]]}" if root is not None else None, versions=versions)
+        _ModelTask(row=r[0], model_id=ids[r[0]], params=models[r[0]], configs=configs,
+                   image_configs=image_configs, returned=returned, saved=saved,
+                   folder=root / f"model_{ids[r[0]]}" if root is not None else None, versions=versions)
         for r in rows
     ]
     last_write = time.monotonic()
@@ -216,10 +251,12 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
         for task_rows, outcome in zip(rows, map(_run_model, tasks)):
             for m in task_rows:
                 for item in returned:
-                    data[item][m, :] = outcome["data"][item]
-                status["sim"][m, :] = outcome["status"]
-                seconds["sim"][m, :] = outcome["seconds"]
-                errors["sim"][m, :] = outcome["errors"]
+                    for index, value in np.ndenumerate(outcome["data"][item]):
+                        data[item][(m, *index)] = value  # cell by cell: numpy would try to merge equal-shape arrays
+                for stage in shapes:
+                    status[stage][m] = outcome["status"][stage]
+                    seconds[stage][m] = outcome["seconds"][stage]
+                    errors[stage][m] = outcome["errors"][stage]
             done += 1
             if catalog is not None and time.monotonic() - last_write >= CATALOG_WRITE_SECONDS:
                 _record_status(catalog_file, catalog, run_record, status, seconds, errors)
@@ -235,10 +272,14 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     counts = {word: int((status["sim"] == word).sum()) for word in ("ran", "reused", "failed", "empty")}
     logger.info("simr: %d simulations: %d ran, %d reused, %d failed, %d empty (nothing requested)",
                 status["sim"].size, *counts.values())
+    if any(_stage(name) == "image" for name in returned):
+        counts = {word: int((status["image"] == word).sum()) for word in ("ran", "failed", "skipped")}
+        logger.info("simr: %d images: %d ran, %d failed, %d skipped (simulation failed)",
+                    status["image"].size, *counts.values())
     if catalog is not None:
         run_record["finished"] = _now()
         _record_status(catalog_file, catalog, run_record, status, seconds, errors)
-    return SimrResult(models=models, simulators=configs, data=data, ids=ids,
+    return SimrResult(models=models, simulators=configs, images=image_configs, data=data, ids=ids,
                       status=status, seconds=seconds, errors=errors)
 
 
@@ -278,11 +319,16 @@ class SimrRunError(RuntimeError):
 def _record_status(catalog_file, catalog, run_record, status, seconds, errors) -> None:
     """Write the statuses so far into the run's record (cells not yet run are None) and the catalog."""
     run_record.update(
-        status={"sim": status["sim"].tolist()},
-        seconds={"sim": seconds["sim"].tolist()},
-        errors={"sim": errors["sim"].tolist()},
+        status={stage: values.tolist() for stage, values in status.items()},
+        seconds={stage: values.tolist() for stage, values in seconds.items()},
+        errors={stage: values.tolist() for stage, values in errors.items()},
     )
     _write_catalog(catalog_file, catalog)
+
+
+def _stage(name: str) -> str:
+    """The stage a data name belongs to: "sim.orbit" -> "sim"."""
+    return name.split(".", 1)[0]
 
 
 @dataclass
@@ -293,6 +339,7 @@ class _ModelTask:
     model_id: str | None
     params: np.ndarray
     configs: list[SimulatorConfig]
+    image_configs: list[ImageConfig]
     returned: list[str]
     saved: list[str]
     folder: Path | None  # the model's folder, when the output is a folder
@@ -300,14 +347,26 @@ class _ModelTask:
 
 
 def _run_model(task: _ModelTask) -> dict:
-    """Every simulator entry of one model: load what's saved, compute the rest, save what's asked for, and
-    catch each simulation's failure. Touches only this model's folder, never the catalog.
+    """Every simulator entry of one model, then every image entry of each simulation: load what's saved,
+    compute the rest, save what's asked for, and catch each simulation's and image's failure. Touches only
+    this model's folder, never the catalog.
 
-    Returns {"data": {item: one value per entry}, "status", "seconds", "errors": one per entry}.
+    Returns {"data": {item: array of values}, "status", "seconds", "errors": {stage: array}}, each array
+    shaped [simulator] for "sim" and [simulator, image] for "image".
     """
-    n = len(task.configs)
-    outcome = {"data": {item: [None] * n for item in task.returned},
-               "status": [None] * n, "seconds": [0.0] * n, "errors": [None] * n}
+    shapes = {"sim": (len(task.configs),), "image": (len(task.configs), len(task.image_configs))}
+    outcome = {
+        "data": {item: np.empty(shapes[_stage(item)], dtype=object) for item in task.returned},
+        "status": {stage: np.empty(shape, dtype=object) for stage, shape in shapes.items()},
+        "seconds": {stage: np.zeros(shape) for stage, shape in shapes.items()},
+        "errors": {stage: np.full(shape, None, dtype=object) for stage, shape in shapes.items()},
+    }
+    images = [item for item in task.returned if _stage(item) == "image"]
+    # The sim items wanted in memory: those returned, and those the requested images are made from
+    wanted = list(dict.fromkeys(
+        [item for item in task.returned if _stage(item) == "sim"]
+        + [need for item in images for need in IMAGE_DATA[item][0]]
+    ))
     folder = task.folder
     record = _open_record(folder, task.params) if folder is not None else None
     for s, config in enumerate(task.configs):
@@ -318,23 +377,41 @@ def _run_model(task: _ModelTask) -> dict:
         if new and task.saved:
             to_save.append("sim.timing")  # every saved simulation records its timing in model.json
         try:
-            values, computed = _simulate(task.params, config, task.returned, to_save, stored or {})
+            values, computed = _simulate(task.params, config, wanted, to_save, stored or {})
         except Exception as error:  # a failed simulation: recorded, and the run moves on
             logger.exception("model %d (id %s) on simulator %d failed", task.row, task.model_id, s)
-            outcome["status"][s] = "failed"
-            outcome["errors"][s] = f"{type(error).__name__}: {error}"
-            outcome["seconds"][s] = time.perf_counter() - start
+            outcome["status"]["sim"][s] = "failed"
+            outcome["errors"]["sim"][s] = f"{type(error).__name__}: {error}"
+            outcome["seconds"]["sim"][s] = time.perf_counter() - start
+            outcome["status"]["image"][s] = "skipped" if images else "empty"
             continue
         for item in task.returned:
-            outcome["data"][item][s] = values[item]
+            if _stage(item) == "sim":
+                outcome["data"][item][s] = values[item]
         if to_save:  # errors while writing aren't caught: they stop the run
             arrays = {item: values[item] for item in to_save if item != "sim.timing"}
             _save_simulation(folder, record, name, config, arrays, values.get("sim.timing"), task.versions)
-        if not task.returned and not task.saved:
-            outcome["status"][s] = "empty"  # the request asked for nothing, so there was nothing to do
+        if not wanted and not task.saved:
+            outcome["status"]["sim"][s] = "empty"  # the request asked for nothing, so there was nothing to do
         else:
-            outcome["status"][s] = "reused" if stored and not computed else "ran"  # reused: nothing computed
-        outcome["seconds"][s] = time.perf_counter() - start
+            outcome["status"]["sim"][s] = "reused" if stored and not computed else "ran"  # reused: nothing computed
+        outcome["seconds"]["sim"][s] = time.perf_counter() - start
+        for i, image_config in enumerate(task.image_configs):
+            if not images:
+                outcome["status"]["image"][s, i] = "empty"
+                continue
+            start = time.perf_counter()
+            try:
+                made = {item: IMAGE_DATA[item][1](values, task.params, config, image_config) for item in images}
+            except Exception as error:  # a failed image: recorded, and the run moves on
+                logger.exception("model %d (id %s), simulator %d, image %d failed", task.row, task.model_id, s, i)
+                outcome["status"]["image"][s, i] = "failed"
+                outcome["errors"]["image"][s, i] = f"{type(error).__name__}: {error}"
+            else:
+                for item, picture in made.items():
+                    outcome["data"][item][s, i] = picture
+                outcome["status"]["image"][s, i] = "ran"
+            outcome["seconds"]["image"][s, i] = time.perf_counter() - start
     return outcome
 
 
@@ -586,52 +663,69 @@ def _check_models(models) -> np.ndarray:
     return models.copy()  # the result keeps its own copy, so later edits to the caller's array don't reach it
 
 
-def _read_request(request: dict) -> tuple[list[str], list[str], list[SimulatorConfig]]:
+def _read_request(request: dict) -> tuple[list[str], list[str], list[SimulatorConfig], list[ImageConfig]]:
     _reject_unknown("request", request, REQUEST_KEYS)
     run_section = request.get("run", {})
     _reject_unknown("run", run_section, RUN_KEYS)
     returned, saved = (_names(run_section, key) for key in ("return", "save"))
-
-    entries = request.get("simulator", [{}])
-    if isinstance(entries, (dict, SimulatorConfig)):
-        entries = [entries]
-    if len(entries) == 0:
-        raise ValueError("simulator is an empty list")
-    configs = [_simulator_config(i, entry) for i, entry in enumerate(entries)]
-    return returned, saved, configs
+    images = [name for name in saved if _stage(name) == "image"]
+    if images:
+        raise ValueError(f"images can't be saved yet: {images} in run.save; return them instead")
+    configs = _stage_configs(request, "simulator", SimulatorConfig)
+    image_configs = _stage_configs(request, "image", ImageConfig)
+    return returned, saved, configs, image_configs
 
 
 def _names(run_section: dict, key: str) -> list[str]:
     names = run_section.get(key, [])
     if isinstance(names, str):
         raise ValueError(f'run.{key} must be a list of names, e.g. ["{names}"]')
-    unknown = [name for name in names if name not in SIM_DATA]
+    known = [*SIM_DATA, *IMAGE_DATA]
+    unknown = [name for name in names if name not in known]
     if unknown:
-        raise ValueError(f"unknown names in run.{key}: {unknown}. Known: {list(SIM_DATA)}")
+        raise ValueError(f"unknown names in run.{key}: {unknown}. Known: {known}")
     return list(dict.fromkeys(names))  # drop repeats, keep order
 
 
-def _simulator_config(index: int, entry) -> SimulatorConfig:
-    if isinstance(entry, SimulatorConfig):
+def _stage_configs(request: dict, section: str, kind: type) -> list:
+    """A stage's entries (one dict or config, or a list of them) as configs; one default config if the
+    section is missing."""
+    entries = request.get(section, [{}])
+    if isinstance(entries, (dict, kind)):
+        entries = [entries]
+    if not isinstance(entries, (list, tuple)):
+        raise ValueError(f"{section} must be a dict or a list of them: {entries!r}")
+    if len(entries) == 0:
+        raise ValueError(f"{section} is an empty list")
+    return [_stage_config(f"{section}[{i}]", entry, kind) for i, entry in enumerate(entries)]
+
+
+def _stage_config(where: str, entry, kind: type):
+    if isinstance(entry, kind):
         return entry
     if not isinstance(entry, dict):
-        raise ValueError(f"simulator[{index}] must be a dict or SimulatorConfig: {entry!r}")
-    _reject_unknown(f"simulator[{index}]", entry, [f.name for f in fields(SimulatorConfig)])
-    hints = typing.get_type_hints(SimulatorConfig)
+        raise ValueError(f"{where} must be a dict or {kind.__name__}: {entry!r}")
+    _reject_unknown(where, entry, [f.name for f in fields(kind)])
+    hints = typing.get_type_hints(kind)
     for key, value in entry.items():
         if not _has_type(value, hints[key]):
-            raise ValueError(f"simulator[{index}].{key} must be {_type_name(hints[key])}: {value!r}")
+            raise ValueError(f"{where}.{key} must be {_type_name(hints[key])}: {value!r}")
     try:
-        return SimulatorConfig(**entry)
+        return kind(**entry)
     except ValueError as error:
-        raise ValueError(f"simulator[{index}]: {error}") from error
+        raise ValueError(f"{where}: {error}") from error
 
 
 def _has_type(value, hint) -> bool:
     """Whether a config value fits its field's type hint. Integers fit a float field (JSON writes 1.0 as 1);
-    True and False fit neither numbers nor strings."""
+    True and False fit neither numbers nor strings. A tuple field takes a list or tuple of that length, as
+    JSON has no tuples."""
     if isinstance(hint, types.UnionType) or typing.get_origin(hint) is typing.Union:
         return any(_has_type(value, option) for option in typing.get_args(hint))
+    if typing.get_origin(hint) is tuple:
+        options = typing.get_args(hint)
+        return (isinstance(value, (list, tuple)) and len(value) == len(options)
+                and all(_has_type(v, option) for v, option in zip(value, options)))
     if isinstance(value, bool):
         return hint is bool
     if hint is int:
@@ -642,6 +736,8 @@ def _has_type(value, hint) -> bool:
 
 
 def _type_name(hint) -> str:
+    if typing.get_origin(hint) is tuple:
+        return f"a list of {len(typing.get_args(hint))} ({', '.join(map(_type_name, typing.get_args(hint)))})"
     options = typing.get_args(hint) if typing.get_args(hint) else (hint,)
     words = {int: "a whole number", float: "a number", str: "text", bool: "true or false"}
     return " or ".join(words.get(option, option.__name__) for option in options)

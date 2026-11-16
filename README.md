@@ -16,8 +16,8 @@ what tidal features can tell us about how galaxies interact. Formerly `galaxyJSP
   carries on past failed simulations. From Python or the command line, in one process, a local pool
   or MPI.
 - **The Image Creator stage** (`simr/image_creator.py`, a first draft): turns a particle set into an image,
-  with the two galaxies' centers on chosen pixels, and maps orbits into the same pixels. Not yet run
-  by `simr`.
+  with the two galaxies' centers on chosen pixels, and maps orbits into the same pixels. `simr` returns
+  images in memory (`image.model`, `image.unperturbed`); saving them comes next.
 - **Running on Babbage**, MTSU's Slurm cluster, with the project's image.
 
 **Next:** image creation, fitness functions, the optimizer and the TNG application.

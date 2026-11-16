@@ -44,7 +44,8 @@ def test_a_run_records_its_catalog(tmp_path, files):
     assert main(files(config={"simulator": SMALL})) == 0
     catalog = simr.load_catalog(tmp_path / "runs")
     assert len(catalog["models"]) == 1
-    assert catalog["runs"][0]["status"] == {"sim": [["empty"]]}  # nothing saved: nothing to do (until fitness)
+    # Nothing saved or returned: nothing to do (until fitness)
+    assert catalog["runs"][0]["status"] == {"sim": [["empty"]], "image": [[["empty"]]]}
 
 
 def test_the_config_is_optional(tmp_path, files):
@@ -133,7 +134,7 @@ def test_local_mode(tmp_path, files, caplog):
         assert main(files(models=(MODEL, FIRST_APPROACH), config=config) + ["--mode", "local", "--workers", "2"]) == 0
     assert "local mode: 2 workers" in caplog.text
     [record] = simr.load_catalog(tmp_path / "runs")["runs"]
-    assert record["status"] == {"sim": [["ran", "ran"], ["ran", "ran"]]}
+    assert record["status"]["sim"] == [["ran", "ran"], ["ran", "ran"]]
     solo = tmp_path / "solo"
     main(files(models=(MODEL, FIRST_APPROACH), config=config, output="solo"))
     np.testing.assert_array_equal(simr.load_simulation(tmp_path / "runs" / "model_000001", "sim_01")["sim.orbit"],
@@ -182,7 +183,8 @@ def test_mpi_mode_matches_solo(tmp_path, files, caplog):
     assert main(files(models=(MODEL, FIRST_APPROACH, MODEL.replace("301.0", "302.0")), config=config,
                       output="solo")) == 0
     [mpi_run], [solo_run] = (simr.load_catalog(tmp_path / name)["runs"] for name in ("mpi", "solo"))
-    assert mpi_run["status"] == solo_run["status"] == {"sim": [["ran"], ["failed"], ["ran"]]}
+    assert mpi_run["status"] == solo_run["status"]
+    assert mpi_run["status"]["sim"] == [["ran"], ["failed"], ["ran"]]
     assert mpi_run["finished"] is not None
     for model in ("model_000000", "model_000002"):  # the two that ran
         mpi_data = simr.load_simulation(tmp_path / "mpi" / model, "sim_00")
