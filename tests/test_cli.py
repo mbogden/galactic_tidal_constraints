@@ -59,6 +59,18 @@ def test_save_writes_model_data(tmp_path, files):
     assert simr.load_simulation(tmp_path / "runs" / "model_000000", "sim_00")["sim.orbit"].shape[1] == 7
 
 
+def test_save_writes_images(tmp_path, files):
+    config = {"run": {"save": ["image.model"]}, "simulator": SMALL,
+              "image": [{"primary_center": [32, 64], "secondary_center": [96, 64]}, {"blur_sigma": 0.75}]}
+    assert main(files(config=config)) == 0
+    images = simr.load_images(tmp_path / "runs" / "model_000000")
+    assert list(images) == [("sim_00", "img_0000", "image.model"), ("sim_00", "img_0001", "image.model")]
+    [record] = simr.load_catalog(tmp_path / "runs")["runs"]
+    assert record["status"]["image"] == [[["ran", "ran"]]]
+    assert main(files(config=config)) == 0  # again: everything is reused
+    assert simr.load_catalog(tmp_path / "runs")["runs"][1]["status"]["image"] == [[["reused", "reused"]]]
+
+
 def test_a_json_output(tmp_path, files):
     assert main(files(config={"simulator": SMALL}, output="gen_01.json")) == 0
     assert simr.load_catalog(tmp_path / "gen_01.json")["runs"][0]["model_ids"] == ["000000"]

@@ -30,25 +30,31 @@ In a folder, saving ("run": {"save": [...]}) writes one folder per model:
         catalog.json                  "models": id -> 14 parameters, every model a run here has used;
                                       "runs": one record per run here (see `run`)
         model_000000/                 one folder per model id
-            model.json                the model's record: its 14 parameters, and each saved simulation by
-                                      name ("sim_00" for simulator entry 0) with its config, timing, files, code
+            model.json                the model's record: its 14 parameters, each saved simulation by
+                                      name ("sim_00" for simulator entry 0) with its config, timing, files,
+                                      code, and each saved image entry ("img_0000") with its config and
+                                      files (simulation -> item -> path)
             simulations/
                 sim_00_particles.npy  one file per saved array: <simulation>_<item>.npy
                 sim_00_orbit.npy
+            images/
+                sim_00_img_0000_model.npy   one file per saved image: <simulation>_<image>_<item>.npy
 
 A run's models are matched exactly against the catalog: a model already there uses its folder, and a new
 one gets the next id at the bottom, so folders stay the same however runs order or overlap their models.
 One run at a time per output.
 
 Each .npy is written to a temporary name and renamed into place, and only then does model.json (written
-the same way) list it, so an array counts as saved only if model.json lists it. `load_model` and
-`load_simulation` read them back.
+the same way) list it, so an array counts as saved only if model.json lists it. `load_model`,
+`load_simulation` and `load_images` read them back.
 
 With an output folder, saved data is used again. A simulation counts as already saved when model.json
 lists its name ("sim_00" for entry 0) with exactly this entry's config. Then anything requested that it
 already has is loaded instead of computed, and nothing it has is written again; arrays it's missing are
 computed and added. A saved simulation with a different config is neither used nor changed (a warning is
 logged). The code versions aren't compared: model.json records them, and higher-level code can check.
+A saved image is used again when both its image entry's config and its simulation's config match; then
+no simulation runs just to make it again.
 
 A simulation (one model on one simulator entry) fails as a whole when computing any requested item
 raises an error, or when a simulated array holds NaN or inf. The run moves on: its cells hold None, nothing
@@ -57,8 +63,6 @@ its traceback. Errors while writing files stop the run. An image (one simulation
 fails on its own, the same way, and leaves its simulation alone; a failed simulation's images are
 "skipped". Each simulation's and image's status, time and error come back in the result, and a run with an
 output adds them to its record in catalog.json.
-
-Not yet here: saving images (MDRN-3 step 3).
 """
 
 import json
@@ -153,7 +157,7 @@ class SimrResult:
         ids: with an output, each row's model id in its catalog (in a folder, its data goes in
             `model_<id>`). All None without an output.
         status, seconds, errors: per stage ("sim", "image"), each indexed like that stage's data:
-            status: "ran", "reused" (saved, and nothing had to be computed; "sim" only), "failed",
+            status: "ran", "reused" (saved, and nothing had to be computed), "failed",
                 "skipped" ("image" only: its simulation failed), or "empty" (nothing was requested from
                 the stage, so there was nothing to do).
             seconds: wall time, loading included. A simulation's time doesn't include its images.
@@ -177,8 +181,8 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
         models: the models, shape (N, 14) (one model of shape (14,) also works), in `sim.PARAM_NAMES` order.
         request: a dict with optional sections "run", "simulator" and "image" (see the module docstring).
             run.return (default []): names from `SIM_DATA` and `IMAGE_DATA` to hand back.
-            run.save (default []): names from `SIM_DATA` to write to `output`. Independent of `return`.
-                Images can't be saved yet.
+            run.save (default []): names from `SIM_DATA` and `IMAGE_DATA` to write to `output`.
+                Independent of `return`.
             simulator (default one `SimulatorConfig()`): a dict or `SimulatorConfig`, or a list of them.
                 Each entry's seed is used for every model, so all models start from the same disk
                 pattern (see `SimulatorConfig.seed`).
@@ -272,9 +276,9 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     counts = {word: int((status["sim"] == word).sum()) for word in ("ran", "reused", "failed", "empty")}
     logger.info("simr: %d simulations: %d ran, %d reused, %d failed, %d empty (nothing requested)",
                 status["sim"].size, *counts.values())
-    if any(_stage(name) == "image" for name in returned):
-        counts = {word: int((status["image"] == word).sum()) for word in ("ran", "failed", "skipped")}
-        logger.info("simr: %d images: %d ran, %d failed, %d skipped (simulation failed)",
+    if any(_stage(name) == "image" for name in returned + saved):
+        counts = {word: int((status["image"] == word).sum()) for word in ("ran", "reused", "failed", "skipped")}
+        logger.info("simr: %d images: %d ran, %d reused, %d failed, %d skipped (simulation failed)",
                     status["image"].size, *counts.values())
     if catalog is not None:
         run_record["finished"] = _now()
@@ -361,20 +365,38 @@ def _run_model(task: _ModelTask) -> dict:
         "seconds": {stage: np.zeros(shape) for stage, shape in shapes.items()},
         "errors": {stage: np.full(shape, None, dtype=object) for stage, shape in shapes.items()},
     }
-    images = [item for item in task.returned if _stage(item) == "image"]
-    # The sim items wanted in memory: those returned, and those the requested images are made from
-    wanted = list(dict.fromkeys(
-        [item for item in task.returned if _stage(item) == "sim"]
-        + [need for item in images for need in IMAGE_DATA[item][0]]
-    ))
+    sim_returned = [item for item in task.returned if _stage(item) == "sim"]
+    sim_saved = [item for item in task.saved if _stage(item) == "sim"]
+    image_items = list(dict.fromkeys(item for item in task.returned + task.saved if _stage(item) == "image"))
+    image_saved = [item for item in task.saved if _stage(item) == "image"]
     folder = task.folder
     record = _open_record(folder, task.params) if folder is not None else None
+    # Each image entry's saved record, or None when it was saved with a different config (not used or changed)
+    image_entries = [
+        _saved_image_entry(folder, record, image_name(i), image_config) if record is not None else {}
+        for i, image_config in enumerate(task.image_configs)
+    ]
     for s, config in enumerate(task.configs):
-        name = f"sim_{s:02d}"
+        name = simulation_name(s)
         start = time.perf_counter()
         stored, new = _saved_data(folder, record, name, config) if record is not None else ({}, True)
-        to_save = [] if stored is None else [item for item in task.saved if item not in (stored or {})]
-        if new and task.saved:
+        # Images count as saved only under a saved simulation with this config, and an image entry with its config
+        usable = [stored is not None and not new and entry is not None for entry in image_entries]
+        stored_images = [
+            _saved_images(folder, entry, name) if ok else {} for entry, ok in zip(image_entries, usable)
+        ]
+        image_to_save = [
+            [item for item in image_saved if item not in saved] if stored is not None and entry is not None else []
+            for entry, saved in zip(image_entries, stored_images)
+        ]
+        # The sim items wanted in memory: those returned, and those the images still to be made need
+        wanted = list(dict.fromkeys(
+            sim_returned
+            + [need for saved in stored_images for item in image_items if item not in saved
+               for need in IMAGE_DATA[item][0]]
+        ))
+        to_save = [] if stored is None else [item for item in sim_saved if item not in stored]
+        if new and (sim_saved or any(image_to_save)):
             to_save.append("sim.timing")  # every saved simulation records its timing in model.json
         try:
             values, computed = _simulate(task.params, config, wanted, to_save, stored or {})
@@ -383,34 +405,45 @@ def _run_model(task: _ModelTask) -> dict:
             outcome["status"]["sim"][s] = "failed"
             outcome["errors"]["sim"][s] = f"{type(error).__name__}: {error}"
             outcome["seconds"]["sim"][s] = time.perf_counter() - start
-            outcome["status"]["image"][s] = "skipped" if images else "empty"
+            outcome["status"]["image"][s] = "skipped" if image_items else "empty"
             continue
-        for item in task.returned:
-            if _stage(item) == "sim":
-                outcome["data"][item][s] = values[item]
+        for item in sim_returned:
+            outcome["data"][item][s] = values[item]
         if to_save:  # errors while writing aren't caught: they stop the run
             arrays = {item: values[item] for item in to_save if item != "sim.timing"}
             _save_simulation(folder, record, name, config, arrays, values.get("sim.timing"), task.versions)
-        if not wanted and not task.saved:
+        if not sim_returned and not sim_saved and not image_items:
             outcome["status"]["sim"][s] = "empty"  # the request asked for nothing, so there was nothing to do
         else:
             outcome["status"]["sim"][s] = "reused" if stored and not computed else "ran"  # reused: nothing computed
         outcome["seconds"]["sim"][s] = time.perf_counter() - start
         for i, image_config in enumerate(task.image_configs):
-            if not images:
+            if not image_items:
                 outcome["status"]["image"][s, i] = "empty"
                 continue
             start = time.perf_counter()
+            made, image_computed = {}, False
             try:
-                made = {item: IMAGE_DATA[item][1](values, task.params, config, image_config) for item in images}
-            except Exception as error:  # a failed image: recorded, and the run moves on
+                for item in image_items:
+                    if item in stored_images[i]:
+                        if item in task.returned:
+                            made[item] = stored_images[i][item]()
+                    else:
+                        made[item] = IMAGE_DATA[item][1](values, task.params, config, image_config)
+                        image_computed = True
+            except Exception as error:  # a failed image: recorded, nothing saved, and the run moves on
                 logger.exception("model %d (id %s), simulator %d, image %d failed", task.row, task.model_id, s, i)
                 outcome["status"]["image"][s, i] = "failed"
                 outcome["errors"]["image"][s, i] = f"{type(error).__name__}: {error}"
-            else:
-                for item, picture in made.items():
-                    outcome["data"][item][s, i] = picture
-                outcome["status"]["image"][s, i] = "ran"
+                outcome["seconds"]["image"][s, i] = time.perf_counter() - start
+                continue
+            for item in task.returned:
+                if _stage(item) == "image":
+                    outcome["data"][item][s, i] = made[item]
+            if image_to_save[i]:  # errors while writing aren't caught: they stop the run
+                arrays = {item: made[item] for item in image_to_save[i]}
+                _save_images(folder, record, image_name(i), image_config, name, arrays)
+            outcome["status"]["image"][s, i] = "ran" if image_computed else "reused"
             outcome["seconds"]["image"][s, i] = time.perf_counter() - start
     return outcome
 
@@ -485,10 +518,73 @@ def output_paths(output: str | Path) -> tuple[Path, Path | None]:
 
 
 def load_model(folder: str | Path) -> dict:
-    """A model folder's record (`model.json`): "model" (the 14 named parameters) and "simulations"
-    (each saved simulation by name: "config", "timing", "files" (item: path in the folder) and "code")."""
+    """A model folder's record (`model.json`): "model" (the 14 named parameters), "simulations" (each saved
+    simulation by name: "config", "timing", "files" (item: path in the folder) and "code") and "images"
+    (each image entry by name: "config", and "files": simulation name -> item -> path)."""
     with open(Path(folder) / "model.json", encoding="utf-8") as f:
         return json.load(f)
+
+
+def load_images(
+    folder: str | Path,
+    simulation: str | None = None,
+    image: str | None = None,
+    items: str | list[str] | None = None,
+) -> dict[tuple[str, str, str], np.ndarray]:
+    """Saved images, as float32, just as `run` returns them, picked by any mix of simulation, image entry
+    and item; each left as None means all.
+
+    Args:
+        simulation: e.g. "sim_00" (`simulation_name(0)`).
+        image: e.g. "img_0001" (`image_name(1)`).
+        items: an item or a list of them, e.g. "image.model".
+
+    Returns:
+        {(simulation, image, item): array}, sorted, e.g. {("sim_00", "img_0001", "image.model"): (128, 128)}.
+        {} when nothing saved matches.
+
+    Raises:
+        KeyError: `model.json` has no such simulation or image entry.
+        ValueError: an unknown item.
+
+    Only what `model.json` lists counts as saved, even if other files exist.
+    """
+    folder = Path(folder)
+    record = load_model(folder)
+    entries = record.get("images", {})
+    if simulation is not None and simulation not in record["simulations"]:
+        raise KeyError(f"{folder.name} has no saved simulation {simulation!r}")
+    if image is not None and image not in entries:
+        raise KeyError(f"{folder.name} has no saved image entry {image!r}")
+    if isinstance(items, str):
+        items = [items]
+    unknown = [item for item in items or [] if item not in IMAGE_DATA]
+    if unknown:
+        raise ValueError(f"unknown image items: {unknown}. Known: {list(IMAGE_DATA)}")
+    found = {}
+    for image_entry, entry in entries.items():
+        for simulation_entry, files in entry["files"].items():
+            for item, file in files.items():
+                if (image in (None, image_entry) and simulation in (None, simulation_entry)
+                        and (items is None or item in items)):
+                    found[simulation_entry, image_entry, item] = np.load(folder / file)
+    return dict(sorted(found.items()))
+
+
+def simulation_name(s: int) -> str:
+    """Simulator entry s's name in a model folder: "sim_00"."""
+    return f"sim_{s:02d}"
+
+
+def image_name(i: int) -> str:
+    """Image entry i's name in a model folder: "img_0000"."""
+    return f"img_{i:04d}"
+
+
+def image_file(simulation: str, image: str, item: str) -> str:
+    """Where one saved image goes in its model folder: "image.model" of "sim_00" with "img_0001" is
+    "images/sim_00_img_0001_model.npy"."""
+    return f"images/{simulation}_{image}_{item.split('.', 1)[1]}.npy"
 
 
 def load_simulation(folder: str | Path, name: str) -> dict[str, np.ndarray]:
@@ -589,13 +685,14 @@ def _open_record(folder: Path, params: np.ndarray) -> dict:
     or used for it."""
     model = model_parameters(params)
     if not (folder / "model.json").exists():
-        return {"model": model, "simulations": {}}
+        return {"model": model, "simulations": {}, "images": {}}
     record = load_model(folder)
     if record["model"] != model:
         raise ValueError(
             f"{folder} holds a different model; save this run in another output folder.\n"
             f"  saved: {record['model']}\n  this:  {model}"
         )
+    record.setdefault("images", {})  # saved before images could be
     return record
 
 
@@ -630,9 +727,49 @@ def _save_simulation(folder, record, name, config, arrays, timing, versions) -> 
         _write_atomically(folder / file, lambda f, array=array: np.save(f, array))
         entry["files"][item] = file
     record["simulations"][name] = entry
+    _write_record(folder, record)
+
+
+def _saved_image_entry(folder, record, name, config) -> dict | None:
+    """An image entry's record in model.json ({} if it has none yet), or None if it was saved with a
+    different config: then nothing of it is used or added."""
+    entry = record["images"].get(name)
+    if entry is None:
+        return {}
+    if entry["config"] != _config_json(config):
+        logger.warning("%s/%s was saved with a different image config; not used or changed", folder.name, name)
+        return None
+    return entry
+
+
+def _saved_images(folder, entry, simulation) -> dict:
+    """{item: function that loads it} for one simulation's saved images in one image entry."""
+    files = entry.get("files", {}).get(simulation, {})
+    return {item: (lambda file=file: np.load(folder / file)) for item, file in files.items()}
+
+
+def _save_images(folder, record, name, config, simulation, arrays) -> None:
+    """Write one simulation's images for one image entry, then list them in model.json (all atomically)."""
+    entry = record["images"].get(name) or {"config": _config_json(config), "files": {}}
+    for item, array in arrays.items():
+        file = image_file(simulation, name, item)
+        (folder / file).parent.mkdir(parents=True, exist_ok=True)
+        _write_atomically(folder / file, lambda f, array=array: np.save(f, array))
+        entry["files"].setdefault(simulation, {})[item] = file
+    record["images"][name] = entry
+    _write_record(folder, record)
+
+
+def _write_record(folder: Path, record: dict) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     text = json.dumps(record, indent=2).encode("utf-8")
     _write_atomically(folder / "model.json", lambda f: f.write(text))
+
+
+def _config_json(config) -> dict:
+    """A config as model.json stores it: plain numbers, and tuples as lists, so it compares equal to its
+    copy read back."""
+    return json.loads(json.dumps(_json_ready(asdict(config))))
 
 
 def _write_atomically(path: Path, write) -> None:
@@ -668,9 +805,6 @@ def _read_request(request: dict) -> tuple[list[str], list[str], list[SimulatorCo
     run_section = request.get("run", {})
     _reject_unknown("run", run_section, RUN_KEYS)
     returned, saved = (_names(run_section, key) for key in ("return", "save"))
-    images = [name for name in saved if _stage(name) == "image"]
-    if images:
-        raise ValueError(f"images can't be saved yet: {images} in run.save; return them instead")
     configs = _stage_configs(request, "simulator", SimulatorConfig)
     image_configs = _stage_configs(request, "image", ImageConfig)
     return returned, saved, configs, image_configs

@@ -153,8 +153,16 @@ A basic Image Creator, `simr/image_creator.py`, numpy only. Details: [docs/desig
   `sim` items it's made from, which `simr` computes or loads even when they aren't returned or saved.
   Image statuses: `ran`, `failed` (the simulation is unaffected), `skipped` (its simulation failed),
   `empty` (none asked for). The exit code depends on the simulations only.
-- Not yet: saving images (MDRN-3 step 3), radial brightness, luminosity balance, separate galaxy
-  images, other view planes.
+- **Saving images** (decided 2026-11-16): `images/<simulation>_<image>_<item>.npy` (e.g.
+  `images/sim_00_img_0000_model.npy`); image entries are named with four digits (`img_0000`),
+  simulations keep two. `model.json` gets an `images` section level with `simulations`, mirroring the
+  config: each entry's config, and `files` nested simulation → item → path, so an image's address is
+  (simulation, image, item) everywhere. Saving only images still records the simulation. A saved image
+  is reused when its image config and its simulation's config both match, and then no simulation runs
+  to remake it; a different config is neither used nor changed. `load_images(folder, simulation,
+  image, items)` returns `{(simulation, image, item): array}`, separate from `load_simulation`.
+- Not yet: radial brightness, luminosity balance, separate galaxy images, other view planes, each image
+  entry choosing its own items.
 
 ## Parallelization
 Code takes a `map` function (default: built-in `map`). The application picks it once from `--mode`:

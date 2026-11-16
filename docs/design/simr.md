@@ -37,7 +37,7 @@ request = {
 | Key | Default | Meaning |
 |---|---|---|
 | `run.return` | `[]` | Names of the data to hand back |
-| `run.save` | `[]` | Names of the data to save. Independent of `return`: a run can do both. Images can't be saved yet |
+| `run.save` | `[]` | Names of the data to save. Independent of `return`: a run can do both |
 | `simulator` | one `SimulatorConfig()` | A dict (keys are `SimulatorConfig` fields) or a `SimulatorConfig`, or a list of them |
 | `image` | one `ImageConfig()` | A dict (keys are `ImageConfig` fields) or an `ImageConfig`, or a list of them. Centers are lists in JSON (`[column, row]`). See [image_creator.md](image_creator.md) |
 
@@ -192,7 +192,7 @@ Each outcome comes back per stage, indexed like the data:
 | Field | Each cell |
 |---|---|
 | `result.status["sim"][m, s]` | `"ran"`, `"reused"` (saved, and nothing had to be computed), `"failed"`, or `"empty"` (nothing was asked of it: nothing returned or saved, and no image needs it) |
-| `result.status["image"][m, s, i]` | `"ran"`, `"failed"`, `"skipped"` (its simulation failed), or `"empty"` (no image was asked for) |
+| `result.status["image"][m, s, i]` | `"ran"`, `"reused"` (saved, and nothing had to be made), `"failed"`, `"skipped"` (its simulation failed), or `"empty"` (no image was asked for) |
 | `result.seconds[stage][...]` | Wall time, loading included. A simulation's time doesn't include its images |
 | `result.errors[stage][...]` | `"Type: message"` for a failure, else `None` |
 
@@ -201,7 +201,8 @@ Each outcome comes back per stage, indexed like the data:
 ```
 
 The run ends with a log line counting how many simulations ran, were reused, failed and were empty,
-and, when images were asked for, one counting how many images ran, failed and were skipped. The exit
+and, when images were asked for, one counting how many images ran, were reused, failed and were
+skipped. The exit
 code (see The command line) depends on the simulations only.
 
 ## Saving
@@ -215,14 +216,20 @@ code (see The command line) depends on the simulations only.
         simulations/
             sim_00_particles.npy  one file per saved array: <simulation>_<item>.npy
             sim_00_orbit.npy
+        images/
+            sim_00_img_0000_model.npy        one file per saved image: <simulation>_<image>_<item>.npy
+            sim_00_img_0000_unperturbed.npy
 ```
 
-A simulation's name is `sim_<s>` for simulator entry s (`sim_00`, `sim_01`, …). Arrays are `.npy`
-files, one per array, `float32`, uncompressed, so one array can be added or deleted without
+A simulation's name is `sim_<s>` for simulator entry s (`sim_00`, `sim_01`, …; `simr.simulation_name`),
+and an image entry's is `img_<i>` with four digits (`img_0000`, …; `simr.image_name`). Arrays are
+`.npy` files, one per array, `float32`, uncompressed, so one array can be added or deleted without
 touching the others.
 
 ### `model.json`
-One per model folder: the model's 14 named parameters, and each saved simulation by name.
+One per model folder: the model's 14 named parameters, each saved simulation by name, and each saved
+image entry by name. `simulations` and `images` mirror the request's `simulator` and `image` lists:
+each entry's full config, plus `files` pointing to what's on disk.
 
 ```json
 {
@@ -235,10 +242,23 @@ One per model folder: the model's 14 named parameters, and each saved simulation
       "code": {"galactic_tidal_constraints": {"commit": "...", "uncommitted_changes": false},
                "jspam": {"url": "...", "commit": "...", "uncommitted_changes": false}}
     }
+  },
+  "images": {
+    "img_0000": {
+      "config": {"width": 128, "height": 128, "primary_center": [32.0, 64.0], "...": "every ImageConfig field"},
+      "files": {
+        "sim_00": {"image.model":       "images/sim_00_img_0000_model.npy",
+                   "image.unperturbed": "images/sim_00_img_0000_unperturbed.npy"}
+      }
+    }
   }
 }
 ```
 
+- An image's address is (simulation, image, item): `images[image]["files"][simulation][item]`, the same
+  three names `load_images` uses as its keys.
+- Saving only images still records their simulation (config, timing, code, `"files": {}`), so it's
+  clear what made them.
 - `timing` is always recorded (it's small); `sim.timing` has no `.npy`.
 - `code` is the code the simulation was made with: each repo's commit, and whether it had
   uncommitted changes. For this repo only changes to `src/`, `pyproject.toml` and `uv.lock` count;
@@ -259,6 +279,17 @@ same config** counts as already saved:
 
 A saved simulation with a different config is neither used nor changed, and a warning is logged.
 Code versions are recorded but not compared; higher-level code can check them.
+
+Images work the same way. A saved image is reused when **both** its image entry's config and its
+simulation's config match this run's:
+- it's **loaded instead of made**, and no simulation runs just to make it again (its status is
+  `"reused"`);
+- missing items (e.g. `image.unperturbed` asked for later) are made and added; that may need the
+  simulation;
+- an image entry saved with a different config is neither used nor changed (a warning is logged), and
+  neither is any image of a simulation saved with a different config. Nothing listed is ever
+  overwritten, so a listed file always matches the configs it's listed with;
+- a failed image saves nothing and isn't listed, so a later run retries it.
 
 ### The output catalog
 The catalog (a folder's `catalog.json`, or a `.json` output) is the output's table of contents:
@@ -330,7 +361,22 @@ Until fitness exists, a run computes only what `run.save` asks for, so a command
 | `simr.load_catalog(output)` | The catalog (of a folder or a `.json` file) as a dict |
 | `simr.load_model(folder)` | A model folder's `model.json` as a dict |
 | `simr.load_simulation(folder, "sim_00")` | That simulation's saved arrays, `{name: array}`, `float32`, exactly as `run` returns them |
+| `simr.load_images(folder, simulation=None, image=None, items=None)` | Saved images, `{(simulation, image, item): array}`, sorted, `float32`; each filter left `None` means all (below) |
 | `simr.code_versions()` | The current code versions, in the form `model.json` records |
+
+`load_images` picks by any mix of simulation, image entry and item:
+
+```python
+simr.load_images(folder)                                  # every saved image
+simr.load_images(folder, simulation="sim_00")             # all of sim_00's images
+simr.load_images(folder, image="img_0001")                # all images made with img_0001
+simr.load_images(folder, "sim_00", "img_0001")            # one simulation and image entry
+simr.load_images(folder, items="image.model")             # model images only (or a list of items)
+# {("sim_00", "img_0001", "image.model"): array (128, 128), ...}
+```
+
+A simulation or image entry that `model.json` doesn't have is a `KeyError`, an unknown item a
+`ValueError`; filters that match nothing saved give `{}`.
 
 ## Where to see it
 - `examples/notebooks/simr_tour.ipynb`: a hands-on tour.
