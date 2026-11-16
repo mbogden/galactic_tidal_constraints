@@ -15,6 +15,9 @@ what tidal features can tell us about how galaxies interact. Formerly `galaxyJSP
   saves the data you ask for, records every run in a catalog, reuses what's already saved, and
   carries on past failed simulations. From Python or the command line, in one process, a local pool
   or MPI.
+- **The Image Creator stage** (`simr/image_creator.py`, a first draft): turns a particle set into an image,
+  with the two galaxies' centers on chosen pixels, and maps orbits into the same pixels. Not yet run
+  by `simr`.
 - **Running on Babbage**, MTSU's Slurm cluster, with the project's image.
 
 **Next:** image creation, fitness functions, the optimizer and the TNG application.
@@ -65,6 +68,7 @@ The notebooks in [`examples/notebooks/`](examples/notebooks/) are the guided way
 | Doc | What it covers |
 |---|---|
 | [design/simr.md](docs/design/simr.md) | How `simr` works: inputs, results, saving and reuse, the catalog, the command line |
+| [design/image_creator.md](docs/design/image_creator.md) | How the Image Creator works: the config, the pixel frame, the image steps |
 | [spam_physics.md](docs/spam_physics.md) | SPAM's physics and every setting the Simulator stage exposes, with code and open questions |
 | [running_spam.md](docs/running_spam.md) | Compile and run SPAM itself, from Python or as the Fortran program |
 | [running_on_babbage.md](docs/running_on_babbage.md) | Set up an experiment and run `simr` on Babbage |
@@ -73,7 +77,7 @@ The notebooks in [`examples/notebooks/`](examples/notebooks/) are the guided way
 ## Repo layout
 ```
 src/galactic_tidal_constraints/
-└── simr/            simulation.py (Simulator stage), simr.py (workflow), __main__.py (command line)
+└── simr/            simulation.py (Simulator stage), simr.py (workflow), image_creator.py (Image Creator), __main__.py (command line)
 docs/                the docs above
 examples/
 ├── notebooks/       guided tours
