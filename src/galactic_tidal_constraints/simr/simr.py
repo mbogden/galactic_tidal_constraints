@@ -249,11 +249,16 @@ LOG_FORMAT = "%(asctime)s %(levelname)s [%(processName)s] %(name)s: %(message)s"
 MPI_RANK_VARIABLES = ("OMPI_COMM_WORLD_RANK", "PMI_RANK")
 
 
-def configure_logging(level: str | int = "INFO") -> None:
+def configure_logging(level: str | int = "INFO", use_rank: bool = True) -> None:
     """Set up logging for an application: once in the main process, and once in each worker a pool starts
     (as its initializer). Every line names its process, to tell interleaved workers apart: the MPI rank
-    ("rank 3") when an MPI launcher set one, else the process name. simr itself never calls this."""
-    rank = next((os.environ[name] for name in MPI_RANK_VARIABLES if name in os.environ), None)
+    ("rank 3") when an MPI launcher set one, else the process name. simr itself never calls this.
+
+    use_rank=False always names the process. For a local pool started under mpirun (as a Slurm job script
+    may do), where every process would otherwise read the same rank 0."""
+    rank = None
+    if use_rank:
+        rank = next((os.environ[name] for name in MPI_RANK_VARIABLES if name in os.environ), None)
     log_format = LOG_FORMAT if rank is None else LOG_FORMAT.replace("%(processName)s", f"rank {rank}")
     logging.basicConfig(level=level, format=log_format)
 

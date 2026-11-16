@@ -128,7 +128,9 @@ with ProcessPoolExecutor(max_workers=simr.available_cpus(), mp_context=multiproc
   `"finished": null`, and `simr.SimrRunError` is raised. Everything already saved is reused by a rerun.
 - `simr.available_cpus()` is the CPUs this process may use (under Slurm, the job's, not the
   machine's). `simr.configure_logging(level)` sets up logging with the process name in each line, for
-  the main process and, as the pool's initializer, each worker.
+  the main process and, as the pool's initializer, each worker. Under `mpirun` it names the MPI rank
+  instead (below); `use_rank=False` keeps process names, which `--mode local` uses, since a local pool
+  started under `mpirun` (as Babbage's job scripts do) would otherwise read rank 0 in every process.
 - "spawn" starts workers fresh, as MPI does. A script that uses it needs the usual
   `if __name__ == "__main__":` guard.
 

@@ -710,3 +710,12 @@ def test_log_lines_name_the_process_without_mpi(monkeypatch):
     monkeypatch.setattr(simr.logging, "basicConfig", lambda **kwargs: seen.update(kwargs))
     simr.configure_logging()
     assert seen["format"] == simr.LOG_FORMAT
+
+
+# --- After Step 12d: a local pool under mpirun names its processes -----------------------------------
+def test_log_lines_can_ignore_the_mpi_rank(monkeypatch):
+    monkeypatch.setenv("OMPI_COMM_WORLD_RANK", "0")  # as mpirun sets it for a single process
+    seen = {}
+    monkeypatch.setattr(simr.logging, "basicConfig", lambda **kwargs: seen.update(kwargs))
+    simr.configure_logging("INFO", use_rank=False)
+    assert seen["format"] == simr.LOG_FORMAT

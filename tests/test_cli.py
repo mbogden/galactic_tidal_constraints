@@ -140,6 +140,20 @@ def test_local_mode(tmp_path, files, caplog):
                                   simr.load_simulation(solo / "model_000001", "sim_01")["sim.orbit"])
 
 
+def test_local_mode_under_mpirun_names_processes(tmp_path, files):
+    # A Slurm job script may start the local pool through mpirun, which sets the rank to 0 for every
+    # process; the log should still tell the main process and the workers apart.
+    config = {"run": {"save": ["sim.orbit"]}, "simulator": {**SMALL, "no_pass": "error"}}
+    env = {**os.environ, "OMPI_COMM_WORLD_RANK": "0"}
+    result = subprocess.run([sys.executable, "-m", "galactic_tidal_constraints.simr",
+                             *files(models=(MODEL, FIRST_APPROACH), config=config), "--mode", "local", "--workers", "2"],
+                            capture_output=True, text=True, env=env, timeout=300)
+    assert result.returncode == 0, result.stderr
+    assert "[rank 0]" not in result.stderr
+    assert "[MainProcess]" in result.stderr
+    assert re.search(r"\[SpawnProcess-\d+\] .*failed", result.stderr)  # the failing model, logged by its worker
+
+
 def test_workers_needs_local_mode(files, capsys):
     with pytest.raises(SystemExit) as stop:
         main(files() + ["--workers", "2"])

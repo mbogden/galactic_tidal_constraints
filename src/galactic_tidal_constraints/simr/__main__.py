@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.workers is not None and args.mode != "local":
         parser.error("--workers is for --mode local")
-    simr.configure_logging(args.log_level)
+    simr.configure_logging(args.log_level, use_rank=args.mode == "mpi")
     try:
         models = simr.read_models(args.models)
         request = _read_config(args.config)
@@ -60,7 +60,7 @@ def _run_local(models, request, args) -> simr.SimrResult:
     workers = args.workers or simr.available_cpus()
     logger.info("local mode: %d workers", workers)
     with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
-                             initializer=simr.configure_logging, initargs=(args.log_level,)) as pool:
+                             initializer=simr.configure_logging, initargs=(args.log_level, False)) as pool:
         return simr.run(models, request, output=args.output, map=pool.map)
 
 
