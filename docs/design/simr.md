@@ -380,4 +380,5 @@ A simulation or image entry that `model.json` doesn't have is a `KeyError`, an u
 
 ## Where to see it
 - `examples/notebooks/simr_tour.ipynb`: a hands-on tour.
-- `tests/test_simr.py`: one section per step of the rebuild.
+- `examples/notebooks/image_tour.ipynb`: images through `simr`, saved and loaded (its last sections).
+- `tests/test_simr.py`: one section per step of the rebuild, ending with MDRN-3's image steps.

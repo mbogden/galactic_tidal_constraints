@@ -1,8 +1,9 @@
 # Architecture
 
-> **Status: this is the plan, and it's still in testing and development.** Most of this code doesn't
-> exist yet, and details may change as it's written. Decisions and rules are in
-> [PLAN.md](../PLAN.md).
+> **Status: this is the plan, and it's still in testing and development.** Built so far: the
+> Simulator and Image Creator stages and the `simr` workflow that runs them (see the design docs in
+> [design/](design/)). Fitness, the applications and the optimizer are still plans, and details may
+> change as they're written. Decisions and rules are in [PLAN.md](../PLAN.md).
 
 This project simulates galaxy collisions, turns them into images, and scores how well they match a
 target. This page describes how the code is organized to do that: its levels, and what passes
@@ -61,13 +62,16 @@ unclear.
 A stage does one thing per call, takes data in and returns data out, and never touches disk or
 parallelization.
 
-| Stage | Input | Output |
-|---|---|---|
-| **Simulator** | One model's encounter parameters | An orbit or particles |
-| **Image Creator** | Particles | One image |
-| **Fitness Function** | An image or orbit, plus the target | One float |
+| Stage | Input | Output | Built |
+|---|---|---|---|
+| **Simulator** | One model's encounter parameters | An orbit or particles | `simr/simulation.py` ([spam_physics.md](spam_physics.md)) |
+| **Image Creator** | One particle set, plus its model (which sets the frame) | One image, `float32` in [0, 1] | `simr/image_creator.py` ([design/image_creator.md](design/image_creator.md)) |
+| **Fitness Function** | An image or orbit, plus the target | One float | Not yet |
 
 - SPAM stays replaceable behind the Simulator stage.
+- The Image Creator is target-free: its config sets the pixels the two galaxies' centers land on, and
+  higher-level code decides whether those come from a target image. The same frame maps an orbit into
+  the image's pixels.
 - The Fitness Function holds several methods, including orbit and image comparison.
 
 ## Models and stage lists

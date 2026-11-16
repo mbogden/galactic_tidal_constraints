@@ -86,3 +86,7 @@ Kept as their own small functions so later options slot in:
 - The `(2, height, width)` counts before combining: separate galaxy images, per-galaxy factors.
 - `_view_rotation`: other view planes.
 - `_blur`: could become `scipy.ndimage.gaussian_filter(mode="constant")` if scipy is ever added; same kernel.
+
+## Where to see it
+- `examples/notebooks/image_tour.ipynb`: a hands-on tour, from the frame to saving and loading.
+- `tests/test_image_creator.py`: the stage on its own; `tests/test_simr.py`: through `simr`.

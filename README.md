@@ -20,7 +20,7 @@ what tidal features can tell us about how galaxies interact. Formerly `galaxyJSP
   saves and reuses images (`image.model`, `image.unperturbed`).
 - **Running on Babbage**, MTSU's Slurm cluster, with the project's image.
 
-**Next:** image creation, fitness functions, the optimizer and the TNG application.
+**Next:** fitness functions, the optimizer and the TNG application.
 
 ## SPAM
 Collisions are simulated with SPAM, by John Wallin and collaborators, through a modified fork of the
@@ -62,7 +62,8 @@ request, the output folder and catalog, failures, modes) is in
 [docs/design/simr.md](docs/design/simr.md).
 
 The notebooks in [`examples/notebooks/`](examples/notebooks/) are the guided way in:
-`simulator_tour.ipynb` for the Simulator stage and `simr_tour.ipynb` for the workflow.
+`simulator_tour.ipynb` for the Simulator stage, `simr_tour.ipynb` for the workflow and
+`image_tour.ipynb` for the Image Creator (on its own, through `simr`, and saving and loading images).
 
 ## Docs
 | Doc | What it covers |
