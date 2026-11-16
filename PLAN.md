@@ -218,7 +218,7 @@ One Docker image, run with Apptainer on the cluster.
 | `docs/configuration.md` | Config fields, stage lists, how they combine, the 4D score array | When the fields are real, or when that section outgrows the architecture doc |
 | `docs/design/simr.md` | The `simr` module's functions, inputs and outputs | Exists; updated with each `simr` step |
 | `docs/design/<stage>.md` | The same for each stage | Before each stage is written |
-| `docs/running_experiments.md` | A how-to for setting up an experiment and launching runs on Babbage | Once there's something to run |
+| `docs/running_on_babbage.md` | A how-to for setting up an experiment and launching runs on Babbage | Exists (CPU only) |
 
 ## Code standards
 - **No import side effects:** importing a module only defines things (functions, classes,
