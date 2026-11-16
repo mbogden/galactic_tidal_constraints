@@ -6,8 +6,9 @@ This file records what has been decided. Items are added one at a time as they a
 
 ## Scope
 - Start by building around TNG → SPAM: simulate and optimize, for the TNG vs SPAM paper.
-- Port only what that paper needs. The scope grows with the code. Image creation and
-  machine scoring come later.
+- Port only what that paper needs. The scope grows with the code. Machine scoring comes later.
+  A basic Image Creator comes first (MDRN-3, 2026-11-16), so `simr` and fitness are designed with
+  a working image in mind; it isn't a full port of the old one.
 - New code is defined as it is written, starting with MDRN-1. It isn't based on an audit of the
   old code's use cases, or compared against the old code.
 
@@ -125,6 +126,28 @@ One config tree for everything that can change a result, plus a few runtime flag
   entries that differ only in `seed`. Why: [docs/spam_physics.md](docs/spam_physics.md), `seed`.
 
 Details and an example are in [docs/architecture.md](docs/architecture.md).
+
+## Image stage (decided 2026-11-16)
+A basic Image Creator, `simr/image_creator.py`, numpy only. Details: [docs/design/image_creator.md](docs/design/image_creator.md).
+- **Target-free:** an `ImageConfig` sets the image size and the pixels the two galaxies' centers
+  land on. Higher-level code decides whether those come from a target image. Centers may lie
+  outside the image (that's how to zoom in on one galaxy); two equal centers are a config error.
+- **The frame** is one matrix per model, built from the model's parameters (primary at the origin,
+  secondary at `x, y, z`), not from the particles, so every image of a model, and its orbit, share
+  it exactly. It chains a view rotation (the identity for now: look down z onto x–y, as the old
+  code did), dropping the line of sight, an in-plane rotation and scale, a flip of y (rows count
+  down) and a shift. Integer pixel positions are pixel centers, as in `matplotlib.imshow`.
+- **The image:** frame the particles → count each galaxy on its own, with per-particle weights
+  (all 1 for now) → add the two → blur → brightness → divide by the max. A `float32` array in
+  [0, 1]. Blur is Gaussian, set by `blur_sigma` in pixels (0 = none) and `blur_truncate` (kernel
+  radius in sigmas, 4: scipy's name and default); light past the edges is lost. Brightness is
+  `linear` or `log` (log(1 + n)).
+- **Checks:** the particles must have `n1 + n2 + 1` rows, and the last (the secondary's center)
+  must be within 10% of the model's position and velocity (a run ends 1–2 steps past now: up to
+  3.8% across JSPAM's 62 archive models). A secondary that lands on the primary in the image
+  can't be framed. Each is an error for that image.
+- **Viewing:** `to_png` writes an image as an 8-bit grayscale PNG, using only the standard library.
+- Not yet: radial brightness, luminosity balance, separate galaxy images, other view planes.
 
 ## Parallelization
 Code takes a `map` function (default: built-in `map`). The application picks it once from `--mode`:
