@@ -689,3 +689,24 @@ def test_a_worker_that_really_dies(tmp_path, monkeypatch):
 
 def test_available_cpus():
     assert simr.available_cpus() >= 1
+
+
+# --- Step 12c: the MPI rank in log lines ----------------------------------------------------------------
+@pytest.mark.parametrize("variable", simr.MPI_RANK_VARIABLES)
+def test_log_lines_name_the_mpi_rank(monkeypatch, variable):
+    for name in simr.MPI_RANK_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(variable, "3")
+    seen = {}
+    monkeypatch.setattr(simr.logging, "basicConfig", lambda **kwargs: seen.update(kwargs))
+    simr.configure_logging("DEBUG")
+    assert seen == {"level": "DEBUG", "format": simr.LOG_FORMAT.replace("%(processName)s", "rank 3")}
+
+
+def test_log_lines_name_the_process_without_mpi(monkeypatch):
+    for name in simr.MPI_RANK_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    seen = {}
+    monkeypatch.setattr(simr.logging, "basicConfig", lambda **kwargs: seen.update(kwargs))
+    simr.configure_logging()
+    assert seen["format"] == simr.LOG_FORMAT

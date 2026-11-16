@@ -1,11 +1,15 @@
 """The command line for SIMR.
 
     python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--config config.json]
-        [--mode solo|local] [--workers N] [--log-level INFO]
+        [--mode solo|local|mpi] [--workers N] [--log-level INFO]
+
+With MPI (`uv sync --group mpi`), rank 0 runs the command and every other rank is a worker:
+
+    mpirun -n N python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi --models ... --output ...
 
 Exit codes: 0 when the run ran (even if some simulations failed: they're in the catalog and the log), 1 when
 it couldn't run or finish (a bad models file, config or output, or a worker that died), 2 when it ran but
-every simulation failed.
+every simulation failed. Under MPI a worker that crashes usually ends the whole job instead; a rerun resumes.
 """
 
 import argparse
@@ -34,9 +38,11 @@ def main(argv: list[str] | None = None) -> int:
         request = _read_config(args.config)
         if args.mode == "local":
             result = _run_local(models, request, args)
+        elif args.mode == "mpi":
+            result = _run_mpi(models, request, args)
         else:
             result = simr.run(models, request, output=args.output)
-    except (OSError, ValueError, simr.SimrRunError) as error:  # a short message, no traceback
+    except (OSError, ValueError, ImportError, simr.SimrRunError) as error:  # a short message, no traceback
         logger.error("%s", error)
         return COULD_NOT_RUN
 
@@ -58,6 +64,26 @@ def _run_local(models, request, args) -> simr.SimrResult:
         return simr.run(models, request, output=args.output, map=pool.map)
 
 
+def _run_mpi(models, request, args) -> simr.SimrResult:
+    """The run on MPI ranks, launched with `mpirun -n N python -m mpi4py.futures -m ...`: rank 0 runs this
+    and the other N-1 ranks wait for tasks. Workers set up their logging as they start."""
+    try:
+        from mpi4py import MPI
+        from mpi4py.futures import MPIPoolExecutor
+    except ImportError:
+        raise ImportError("--mode mpi needs mpi4py: uv sync --group mpi") from None
+    launch = "mpirun -n N python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi ..."
+    ranks, rank = MPI.COMM_WORLD.Get_size(), MPI.COMM_WORLD.Get_rank()
+    if rank != 0:  # with -m mpi4py.futures, only rank 0 runs this
+        raise ValueError(f"rank {rank} is running the command: launch with {launch}")
+    if ranks < 2:
+        raise ValueError(f"--mode mpi needs 2 or more ranks (1 runs the command, the rest are workers): "
+                         f"launch with {launch}")
+    logger.info("mpi mode: %d workers", ranks - 1)
+    with MPIPoolExecutor(initializer=simr.configure_logging, initargs=(args.log_level,)) as pool:
+        return simr.run(models, request, output=args.output, map=pool.map)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m galactic_tidal_constraints.simr",
@@ -68,8 +94,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True,
                         help="a folder (catalog.json, plus model folders for run.save) or a .json catalog file")
     parser.add_argument("--config", help="JSON request, listing only what differs from the defaults")
-    parser.add_argument("--mode", default="solo", choices=["solo", "local"],
-                        help="solo: one process (the default); local: a pool of processes on this machine")
+    parser.add_argument("--mode", default="solo", choices=["solo", "local", "mpi"],
+                        help="solo: one process (the default); local: a pool of processes on this machine; "
+                             "mpi: MPI ranks, launched with mpirun ... python -m mpi4py.futures -m ...")
     parser.add_argument("--workers", type=int,
                         help="with --mode local: how many processes (default: the CPUs this job may use)")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])

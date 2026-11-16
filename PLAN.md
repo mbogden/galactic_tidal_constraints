@@ -161,6 +161,10 @@ progress reporting later if needed.
   this job may use, which respects Slurm's limit). Under MPI every rank but one is a worker.
 - `run.return` works with a pool, but returned data travels back to the main process and stays in its
   memory; at scale, save instead.
+- MPI (decided 2026-11-16): `mpi4py` is an optional dependency group, built from source against the
+  installed MPI. Log lines name the rank, read from the launcher's environment (`OMPI_COMM_WORLD_RANK`,
+  `PMI_RANK`), so `simr` never imports `mpi4py`. A worker crash under MPI usually ends the whole job;
+  that's accepted, and a rerun resumes from what's saved.
 
 ## Environment
 One Docker image, run with Apptainer on the cluster.

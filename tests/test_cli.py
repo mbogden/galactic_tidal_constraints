@@ -1,6 +1,9 @@
 """Tests for the SIMR command line (simr/__main__.py)."""
 
 import json
+import os
+import re
+import shutil
 import subprocess
 import sys
 
@@ -141,4 +144,55 @@ def test_workers_needs_local_mode(files, capsys):
     with pytest.raises(SystemExit) as stop:
         main(files() + ["--workers", "2"])
     assert stop.value.code == 2
+    assert "--workers is for --mode local" in capsys.readouterr().err
+
+
+# Step 12c: MPI
+@pytest.mark.slow
+def test_mpi_mode_matches_solo(tmp_path, files, caplog):
+    pytest.importorskip("mpi4py")
+    if shutil.which("mpirun") is None:
+        pytest.skip("no mpirun")
+    config = {"run": {"save": ["sim.orbit", "sim.timing"]}, "simulator": {**SMALL, "no_pass": "error"}}
+    args = files(models=(MODEL, FIRST_APPROACH, MODEL.replace("301.0", "302.0")), config=config, output="mpi")
+    # Docker runs as root, which OpenMPI refuses unless told otherwise; no effect elsewhere.
+    env = {**os.environ, "OMPI_ALLOW_RUN_AS_ROOT": "1", "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM": "1"}
+    result = subprocess.run(["mpirun", "-n", "3", "--oversubscribe", sys.executable, "-m", "mpi4py.futures",
+                             "-m", "galactic_tidal_constraints.simr", *args, "--mode", "mpi"],
+                            capture_output=True, text=True, env=env, timeout=300)
+    assert result.returncode == 0, result.stderr
+    assert "mpi mode: 2 workers" in result.stderr
+    assert "[rank 0]" in result.stderr
+    assert re.search(r"\[rank [12]\] .*failed", result.stderr)  # the failing model, logged by its worker
+
+    assert main(files(models=(MODEL, FIRST_APPROACH, MODEL.replace("301.0", "302.0")), config=config,
+                      output="solo")) == 0
+    [mpi_run], [solo_run] = (simr.load_catalog(tmp_path / name)["runs"] for name in ("mpi", "solo"))
+    assert mpi_run["status"] == solo_run["status"] == {"sim": [["ran"], ["failed"], ["ran"]]}
+    assert mpi_run["finished"] is not None
+    for model in ("model_000000", "model_000002"):  # the two that ran
+        mpi_data = simr.load_simulation(tmp_path / "mpi" / model, "sim_00")
+        solo_data = simr.load_simulation(tmp_path / "solo" / model, "sim_00")
+        np.testing.assert_array_equal(mpi_data["sim.orbit"], solo_data["sim.orbit"])
+
+
+def test_mpi_mode_without_mpi4py_exits_1(files, caplog, monkeypatch):
+    monkeypatch.setitem(sys.modules, "mpi4py", None)  # makes `import mpi4py` fail
+    assert main(files() + ["--mode", "mpi"]) == 1
+    assert "--mode mpi needs mpi4py: uv sync --group mpi" in caplog.text
+
+
+def test_mpi_mode_without_mpirun_exits_1(tmp_path, files):
+    pytest.importorskip("mpi4py")
+    # In a subprocess: starting MPI inside pytest's own process would be slow and can't be undone.
+    result = subprocess.run([sys.executable, "-m", "galactic_tidal_constraints.simr", *files(), "--mode", "mpi"],
+                            capture_output=True, text=True)
+    assert result.returncode == 1
+    assert "--mode mpi needs 2 or more ranks" in result.stderr
+    assert not (tmp_path / "runs").exists()  # nothing was written
+
+
+def test_workers_isnt_for_mpi_mode(files, capsys):
+    with pytest.raises(SystemExit):
+        main(files() + ["--mode", "mpi", "--workers", "2"])
     assert "--workers is for --mode local" in capsys.readouterr().err

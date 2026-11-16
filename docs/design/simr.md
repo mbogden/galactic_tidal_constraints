@@ -132,6 +132,29 @@ with ProcessPoolExecutor(max_workers=simr.available_cpus(), mp_context=multiproc
 - "spawn" starts workers fresh, as MPI does. A script that uses it needs the usual
   `if __name__ == "__main__":` guard.
 
+### With MPI
+An MPI pool's `map` works the same way, with MPI ranks as the workers, so a run can span nodes.
+`mpi4py` is an optional group (`uv sync --group mpi`), built from source so it uses the installed MPI.
+It's launched with `mpi4py.futures`: rank 0 runs the script (or the command line) and every other rank
+waits for tasks.
+
+```bash
+mpirun -n 64 python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi --models ... --output ...
+```
+```python
+from mpi4py.futures import MPIPoolExecutor   # in a script started with: mpirun -n N python -m mpi4py.futures script.py
+
+with MPIPoolExecutor(initializer=simr.configure_logging) as pool:   # N - 1 workers
+    result = simr.run(models, request, output="runs", map=pool.map)
+```
+
+- **Log lines** name the rank (`[rank 3]`) instead of the process. `configure_logging` reads it from
+  the variable the launcher sets (`OMPI_COMM_WORLD_RANK` for OpenMPI, `PMI_RANK` for MPICH), so `simr`
+  never imports `mpi4py`.
+- **A worker that crashes** under MPI usually makes `mpirun` end the whole job, rank 0 included, so no
+  `SimrRunError` is raised. The catalog keeps its last write (at most a minute old) with
+  `"finished": null`, and a rerun reuses everything already saved.
+
 ## Failures and status
 A simulation (one model on one simulator entry) **fails as a whole** when computing any requested item
 raises an error, or when any simulated array holds NaN or inf. `sim.timing` isn't checked: it
@@ -246,7 +269,8 @@ A run without `save` writes only the catalog: its models and its record, no mode
 
 ## The command line
 ```bash
-python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--config config.json]     [--mode solo|local] [--workers N] [--log-level INFO]
+python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--config config.json]     [--mode solo|local|mpi] [--workers N] [--log-level INFO]
+mpirun -n N python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi ...
 ```
 
 | Flag | |
@@ -254,7 +278,7 @@ python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--
 | `--models` | Required. The models file (below) |
 | `--output` | Required: a folder or a `.json` catalog file, so every run is recorded |
 | `--config` | Optional. The request as JSON, listing only what differs from the defaults; without it, one default simulator entry. `run.return` is ignored with a warning (nothing comes back in memory), so one config works in a notebook and here |
-| `--mode` | `solo` (the default): one process. `local`: a pool of processes on this machine |
+| `--mode` | `solo` (the default): one process. `local`: a pool of processes on this machine. `mpi`: MPI ranks, launched as above: rank 0 runs the command, the other N-1 are workers. Without `mpi4py`, with one rank, or without `-m mpi4py.futures` it stops with exit code 1 |
 | `--workers` | With `--mode local`: how many processes (default: the CPUs this job may use) |
 | `--log-level` | `DEBUG`, `INFO` (the default), `WARNING` or `ERROR` |
 
@@ -268,7 +292,7 @@ isn't a number, is an error naming the line. `simr.read_models(path)` reads one 
 | Code | Meaning |
 |---|---|
 | 0 | The run ran, even if some simulations failed (they're in the catalog and the log) |
-| 1 | It couldn't run or finish: a bad models file, config or output, or a worker that died (a short message, no traceback) |
+| 1 | It couldn't run or finish: a bad models file, config or output, or a worker that died (a short message, no traceback). Under MPI a crashed worker usually ends the job with `mpirun`'s own error code |
 | 2 | It ran, but every simulation failed: almost always a setup mistake |
 
 Until fitness exists, a run computes only what `run.save` asks for, so a command-line run without

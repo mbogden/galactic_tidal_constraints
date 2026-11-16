@@ -245,11 +245,17 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
 LOG_FORMAT = "%(asctime)s %(levelname)s [%(processName)s] %(name)s: %(message)s"
 
 
+# Where MPI launchers put each process's rank: OpenMPI's mpirun, then MPICH/Intel MPI.
+MPI_RANK_VARIABLES = ("OMPI_COMM_WORLD_RANK", "PMI_RANK")
+
+
 def configure_logging(level: str | int = "INFO") -> None:
     """Set up logging for an application: once in the main process, and once in each worker a pool starts
-    (as its initializer). The process name in every line tells interleaved workers apart. simr itself never
-    calls this."""
-    logging.basicConfig(level=level, format=LOG_FORMAT)
+    (as its initializer). Every line names its process, to tell interleaved workers apart: the MPI rank
+    ("rank 3") when an MPI launcher set one, else the process name. simr itself never calls this."""
+    rank = next((os.environ[name] for name in MPI_RANK_VARIABLES if name in os.environ), None)
+    log_format = LOG_FORMAT if rank is None else LOG_FORMAT.replace("%(processName)s", f"rank {rank}")
+    logging.basicConfig(level=level, format=log_format)
 
 
 def available_cpus() -> int:

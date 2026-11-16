@@ -16,6 +16,10 @@ dependencies = [
 [dependency-groups]
 dev = ["pytest"]
 notebook = ["jupyterlab", "matplotlib"]  # uv sync --group notebook
+mpi = ["mpi4py"]  # uv sync --group mpi; for simr --mode mpi; needs an MPI library (mpicc)
+
+[tool.uv]
+no-binary-package = ["mpi4py"]  # built from source, so it links to the installed MPI (OpenMPI 4.1.6)
 
 [tool.hatch.metadata]
 allow-direct-references = true  # lets the jspam dependency point at a git commit
