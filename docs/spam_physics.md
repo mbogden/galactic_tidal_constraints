@@ -1,8 +1,14 @@
 # SPAM physics notes
 
 What SPAM's parameters and options actually do, worked out by reading the Fortran in
-[JSPAM](https://github.com/mbogden/JSPAM) (`fortran/`, branch `sim-v2-branch`) and checked by running it.
-Routine names are given so they can be found again; line numbers drift.
+[JSPAM](https://github.com/mbogden/JSPAM) (`fortran/`, branch `simr-branch`) and checked by running it.
+
+**Verified against JSPAM commit
+[`9b11eae`](https://github.com/mbogden/JSPAM/tree/9b11eae44be38204510ed6af4d5111b3f564446f)**
+(2026-11-17). If `pyproject.toml` pins a different commit, parts of this page may be out of date.
+Routine names are given so they can be found again; line numbers drift, so only a few hard-coded
+constants link to their lines at that commit. The fork's edits to Wallin's Fortran are listed in its
+README, [Changes from the original](https://github.com/mbogden/JSPAM/tree/simr-branch#changes-from-the-original).
 
 ## What SPAM is
 A restricted three-body code. The two galaxy centers are the only bodies with mass. Disk particles are
@@ -32,7 +38,7 @@ so internal radius = 10 × r. `r_scale`, `h_bulge` and `h_disk` are in internal 
   never read. So a model in `sim` is 14 values, and `sim` appends fixed ones for SPAM.
   [More](#parameters-that-do-nothing)
 - **Every galaxy has the same size**, whatever its mass. `rout` only sets how far out particles are
-  placed. A per-galaxy unit galaxy is planned (sim-v2 step 5b).
+  placed. A unit galaxy for each galaxy is a possible future option.
 - **Wallin's mass normalization makes the mass-model values change a galaxy's total mass.** `sim` uses
   `"total"` instead, so `mass1` and `mass2` are true totals. [More](#normalization-what-the-unit-galaxy-is-divided-by)
 - **`r_scale` resizes the whole galaxy** and, outside the core, scales the force by
@@ -84,7 +90,8 @@ the extended and point-mass potentials agree.
 **Quirks:**
 - **Every galaxy has the same size.** `df_index` takes `rout` but doesn't use it, so a small companion
   has the same mass profile, in length, as the primary.
-- **The force stops falling at r = 10.** `df_index` caps at the last table row, so beyond 10 SPAM units
+- **The force stops falling at r = 10.** `df_index` caps at the last table row
+  ([df_module.f90](https://github.com/mbogden/JSPAM/blob/9b11eae44be38204510ed6af4d5111b3f564446f/fortran/df_module.f90#L531-L533)), so beyond 10 SPAM units
   the pull is constant (M/100) instead of falling as 1/r². This only matters for very wide orbits at
   the start of a run. Inside r = 10, the force matches plain gravity from the enclosed mass to within
   0.2%, except inside r = 0.05, where it's deliberately smoothed.
@@ -106,7 +113,8 @@ every close pass on it. One time unit is about 87 Myr. How `sim` chooses the sta
 2. Picks a start: for a bound orbit, near the last apocenter it found (if any); otherwise the closest
    approach's time minus a **lead** of `10 × rout1 / speed at closest approach`.
 3. `create_collision` overrides it: a start earlier than **−12**, or within one step of 0, becomes **−5**
-   (reported as `start_fallback`).
+   (reported as `start_fallback`;
+   [init_module.f90](https://github.com/mbogden/JSPAM/blob/9b11eae44be38204510ed6af4d5111b3f564446f/fortran/init_module.f90#L161-L168)).
 
 A run then takes `int(−t_start / 0.001) + 2` steps, ending 1 to 2 steps past now. The orbit uses the
 same potential, mass model and dynamical friction as the particles, and doesn't depend on them, so
@@ -152,7 +160,7 @@ was chosen (`normalization`, `heat_mode`, `start`) or a value changed (`lnl`).
 | `lnl` | 0.1 | 0.001 |
 | `heat1`, `heat2` | 0, 0 | 0, 0 |
 | `heat_mode` | `"centered"` | `"wallin"` |
-| `n1`, `n2` | 1000, 1000 | 1000, 500 (`basic_run`) |
+| `n1`, `n2` | 1000, 1000 | 1000, 1000 (`basic_run` with a model string; its built-in test collision uses 1000, 500) |
 | `start`, `start_pass`, `no_pass` | `"pass"`, 1, −5 | `"wallin"` (SPAM's search) |
 | `seed` | 0 | none: random every run |
 
@@ -162,13 +170,14 @@ These shape the unit galaxy, so they change every force in the run.
 #### `normalization`: what the unit galaxy is divided by
 - **Code:** at the end of `init_distribution`, every table (masses, densities, dispersions, forces) is
   divided by `norm`. `"wallin"`: `norm` = 7.13333, Wallin's sum of the default masses
-  (5.8 + 1.0 + 0.3333). `"total"`: `norm` = the table's own total, `mass_total(nmax)`.
+  (5.8 + 1.0 + 0.3333). `"total"`: `norm` = the table's own total, `mass_total(nmax)`
+  ([df_module.f90](https://github.com/mbogden/JSPAM/blob/9b11eae44be38204510ed6af4d5111b3f564446f/fortran/df_module.f90#L449-L451)).
 - **Physics:** whether `mass1` and `mass2` are the galaxies' real total masses.
   - `"total"`: always. The unit galaxy has mass 1, and the five shape values only change how the mass
     is distributed.
   - `"wallin"`: only approximately. The true total at the defaults is 7.101 (the halo's tail past r = 2
     is cut off), so the unit galaxy is 0.9955, and changing a mass changes the total. For example,
-    `m_halo` 11.6 gives 1.81, so the galaxy pulls 1.8× harder than `mass1` says.
+    `m_halo` 11.6 gives 1.80, so the galaxy pulls 1.8× harder than `mass1` says.
 
 #### `r_scale`: the halo's core radius, and the size of everything
 - **Code:** `rchalo` in `init_distribution`. It sets the halo's profile (core radius `rchalo`, truncated
@@ -213,7 +222,8 @@ These shape the unit galaxy, so they change every force in the run.
 - **Physics:** a massive body moving through a halo pulls a wake behind it, which drags on it, so orbits
   shrink and galaxies eventually merge. Real values of ln Λ are around 2 to 10. Wallin's 0.001 makes
   friction about 0.1% of gravity; over a run it changes the orbit speed by roughly 1%. `sim` uses 0.1,
-  100 times stronger (and the value the old Python code set in `set_spam_parameters`).
+  100 times stronger: a provisional value, chosen so friction actually affects the orbit, until fits
+  to TNG targets set a better default.
 - **Quirk:** the density table is 0 past r = 2, so friction only acts while the secondary is inside
   r = 2. For wide encounters `lnl` has no effect at all.
 
@@ -232,7 +242,7 @@ These shape the unit galaxy, so they change every force in the run.
   a run starting before pass 2 shows two passes with that caveat. For pass 1 the start matches SPAM's
   when SPAM finds the same pass (within a step, −6.915 against −6.914 for the SDSS model).
 - **Quirks:** the lead keeps SPAM's short-lead issue (it uses the pass's speed, the fastest point); a
-  distance-based lead is a planned option. A start can be before −30 (pass 2 at −27 plus a lead of 4):
+  distance-based lead is a possible option. A start can be before −30 (pass 2 at −27 plus a lead of 4):
   that works, since placement doesn't need the search path, but `search_orbit` won't reach it. A pair
   still approaching now has no recent pass, so pass 1 is an older one, or there is none.
 - **No pass (`no_pass`):** when the chosen pass doesn't exist back to −30 (a first approach, a pass older
@@ -248,7 +258,8 @@ These change how the disks are sampled, not the forces.
 
 #### `heat1`, `heat2`, `heat_mode`: random motion in each disk
 - **Code:** at the end of `profile` (setup_module.f90), after the disk is rotated into the simulation's
-  frame, each velocity component gets `(randm() - heat_offset) * heat`. `heat_offset`
+  frame, each velocity component gets `(randm() - heat_offset) * heat`
+  ([setup_module.f90](https://github.com/mbogden/JSPAM/blob/9b11eae44be38204510ed6af4d5111b3f564446f/fortran/setup_module.f90#L718-L720)). `heat_offset`
   (parameters_module.f90) is 0 for `"wallin"` and 0.5 for `"centered"`.
 - **Physics:** a velocity dispersion, as in a real disk's stars: a heated disk is thicker and its tidal
   features are fuzzier. The kicks are uniform, not Gaussian, and their spread (width `heat`) is the
