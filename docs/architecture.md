@@ -64,7 +64,7 @@ parallelization.
 
 | Stage | Input | Output | Built |
 |---|---|---|---|
-| **Simulator** | One model's encounter parameters | An orbit or particles | `simr/simulation.py` ([spam_physics.md](spam_physics.md)) |
+| **Simulator** | One model's encounter parameters | An orbit or particles | `simr/simulation.py` ([modules/simulation.md](modules/simulation.md), [spam_physics.md](spam_physics.md)) |
 | **Image Creator** | One particle set, plus its model (which sets the frame) | One image, `float32` in [0, 1] | `simr/image_creator.py` ([modules/image_creator.md](modules/image_creator.md)) |
 | **Fitness Function** | An image or orbit, plus the target | One float | Not yet |
 

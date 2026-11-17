@@ -81,6 +81,7 @@ The notebooks in [`examples/notebooks/`](examples/notebooks/) are the guided way
 | [architecture.md](docs/architecture.md) | The planned structure of the whole project (a plan; partly built) |
 | [spam_physics.md](docs/spam_physics.md) | SPAM's physics and every setting the Simulator stage exposes, with code and open questions |
 | [modules/simr.md](docs/modules/simr.md) | How `simr` works: inputs, results, saving and reuse, the catalog, the command line |
+| [modules/simulation.md](docs/modules/simulation.md) | How the Simulator stage works: a model, `SimulatorConfig`, the functions and what they return, costs |
 | [modules/image_creator.md](docs/modules/image_creator.md) | How the Image Creator works: the config, the pixel frame, the image steps |
 | [guides/running_spam.md](docs/guides/running_spam.md) | Compile and run SPAM itself, from Python or as the Fortran program |
 | [guides/running_on_babbage.md](docs/guides/running_on_babbage.md) | Set up an experiment and run `simr` on Babbage |

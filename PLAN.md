@@ -260,7 +260,7 @@ how-to guides.
 | `docs/configuration.md` | Config fields, stage lists, how they combine, the 4D score array | When the fields are real, or when that section outgrows the architecture doc |
 | `docs/spam_physics.md` | What SPAM's parameters and options do, our defaults vs Wallin's, open questions | Exists |
 | `docs/modules/simr.md` | The `simr` module's functions, inputs and outputs | Exists; updated with each `simr` step |
-| `docs/modules/simulation.md` | The Simulator stage's functions, inputs and outputs | To write |
+| `docs/modules/simulation.md` | The Simulator stage's functions, inputs and outputs | Exists |
 | `docs/modules/image_creator.md` | The Image Creator's config, pixel frame and steps | Exists |
 | `docs/modules/<module>.md` | The same for each later module | With the module or after it |
 | `docs/guides/running_spam.md` | Compile and run SPAM itself, from Python or as the Fortran program | Exists |

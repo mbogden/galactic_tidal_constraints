@@ -3,7 +3,7 @@
 `simr` runs the simulations a request asks for, for many models, and hands back only the data the
 request names. With an output it records every run in a catalog, and it can save data to an output
 folder and load it back. It sits one level
-above the Simulator stage (`simr/simulation.py`, imported as `sim`), which runs one simulation at a
+above the Simulator stage ([`simr/simulation.py`](simulation.md), imported as `sim`), which runs one simulation at a
 time and knows nothing about disk.
 
 ```python
