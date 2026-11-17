@@ -18,7 +18,7 @@
 #SBATCH --time=04:00:00
 #SBATCH --output=/home/%u/galStuff/logs/%x-%j.log
 
-SIF=${SIF:-$HOME/galStuff/images/gtc-base-image-v1.sif}
+SIF=${SIF:-$HOME/galStuff/images/gtc-base-image-v2.sif}
 REPO=${REPO:-$HOME/galStuff/galactic_tidal_constraints}
 MODULES="apptainer gnu12/12.4.0 openmpi4/4.1.6"
 

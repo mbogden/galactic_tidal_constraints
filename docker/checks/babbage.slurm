@@ -2,7 +2,7 @@
 # gtc-base-image checks on Babbage: Fortran, then MPI with 2 ranks via host mpirun.
 # Host mpirun works on Babbage; srun can't start this image's MPI (tested 2026-10-28).
 # The admin's example also uses host mpiexec.
-# Usage: sbatch babbage.slurm               (SIF defaults to ~/galStuff/images/gtc-base-image-v1.sif)
+# Usage: sbatch babbage.slurm               (SIF defaults to ~/galStuff/images/gtc-base-image-v2.sif)
 #        SIF=/path/to/img.sif sbatch babbage.slurm
 #        sbatch --nodes=2 --ntasks-per-node=1 babbage.slurm    (MPI across 2 nodes)
 #SBATCH --job-name=gtc-base-image-checks
@@ -12,7 +12,7 @@
 #SBATCH --time=00:20:00
 #SBATCH --output=/home/%u/galStuff/logs/%x-%j.log
 
-SIF=${SIF:-$HOME/galStuff/images/gtc-base-image-v1.sif}
+SIF=${SIF:-$HOME/galStuff/images/gtc-base-image-v2.sif}
 CHECKS=/opt/gtc/checks
 status=0
 
