@@ -100,9 +100,10 @@ One config tree for everything that can change a result, plus a few runtime flag
   .json> [--config <file>] [--log-level <level>]`. An output is required, so every run leaves its
   models, configs and statuses on disk. The config is optional and lists only what differs from the
   defaults (the catalog records the full, filled-in config). `run.save` is optional; `run.return`
-  is ignored with a warning (nothing comes back in memory), so one config works in a notebook and
-  on the command line. No separate `config.py`: `simr` checks the request (keys, values and types,
-  from the dataclasses' type hints) for the command line and notebooks alike.
+  is ignored, with a warning if it names anything (nothing comes back in memory), so one config
+  works in a notebook and on the command line. No separate `config.py`: `simr` checks the request
+  (keys, values and types, from the dataclasses' type hints) for the command line and notebooks
+  alike.
 - Exit codes: 0 when the run ran (even if some simulations failed; they're in the catalog and the
   log), 1 when it couldn't run (a bad models file, config or output; a short message, no
   traceback), 2 when it ran but every simulation failed (almost always a setup mistake).
@@ -263,7 +264,7 @@ how-to guides.
 | Doc | What goes in it | When |
 |---|---|---|
 | `docs/architecture.md` | The levels (experiment, run, workflow, stage), and what passes between them | Exists |
-| `docs/configuration.md` | Config fields, stage lists, how they combine, the 4D score array | When the fields are real, or when that section outgrows the architecture doc |
+| `docs/configuration.md` | The config's sections, how stage lists combine, checks, what's recorded, examples (fields stay in each stage's doc) | Exists; a row per stage as stages are added |
 | `docs/spam_physics.md` | What SPAM's parameters and options do, our defaults vs Wallin's, open questions | Exists |
 | `docs/modules/simr.md` | The `simr` module's functions, inputs and outputs | Exists; updated with each `simr` step |
 | `docs/modules/simulation.md` | The Simulator stage's functions, inputs and outputs | Exists |

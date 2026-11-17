@@ -83,6 +83,14 @@ def test_run_return_is_ignored_with_a_warning(tmp_path, files, caplog):
     assert simr.load_catalog(tmp_path / "runs")["runs"][0]["run"] == {"return": [], "save": ["sim.timing"]}
 
 
+def test_an_empty_run_return_gives_no_warning(tmp_path, files, caplog):
+    """An empty run.return asks for nothing, so dropping it loses nothing and isn't warned about."""
+    config = {"run": {"return": [], "save": ["sim.timing"]}, "simulator": SMALL}
+    assert main(files(config=config)) == 0
+    assert "run.return" not in caplog.text
+    assert simr.load_catalog(tmp_path / "runs")["runs"][0]["run"] == {"return": [], "save": ["sim.timing"]}
+
+
 # Until fitness exists, a run computes only what run.save asks for, so these save sim.timing (the cheapest).
 FAILING = {"run": {"save": ["sim.timing"]}, "simulator": {**SMALL, "no_pass": "error"}}
 

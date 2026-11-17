@@ -21,7 +21,7 @@ A NumPy array of shape `(N, 14)`, one model per row, in `sim.PARAM_NAMES` order 
 One model of shape `(14,)` also works. Rows must be finite.
 
 ### The request
-A plain dict, shaped like the config file to come:
+A plain dict, the same as a config file ([configuration.md](../configuration.md) has the sections, checks and examples):
 
 ```python
 request = {
@@ -333,7 +333,7 @@ mpirun -n N python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode m
 |---|---|
 | `--models` | Required. The models file (below) |
 | `--output` | Required: a folder or a `.json` catalog file, so every run is recorded |
-| `--config` | Optional. The request as JSON, listing only what differs from the defaults; without it, one default simulator entry. `run.return` is ignored with a warning (nothing comes back in memory), so one config works in a notebook and here |
+| `--config` | Optional. The request as JSON, listing only what differs from the defaults; without it, one default simulator entry. `run.return` is ignored, with a warning if it names anything (nothing comes back in memory), so one config works in a notebook and here |
 | `--mode` | `solo` (the default): one process. `local`: a pool of processes on this machine. `mpi`: MPI ranks, launched as above: rank 0 runs the command, the other N-1 are workers. Without `mpi4py`, with one rank, or without `-m mpi4py.futures` it stops with exit code 1 |
 | `--workers` | With `--mode local`: how many processes (default: the CPUs this job may use) |
 | `--log-level` | `DEBUG`, `INFO` (the default), `WARNING` or `ERROR` |

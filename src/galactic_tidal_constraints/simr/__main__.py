@@ -104,8 +104,9 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _read_config(path: str | None) -> dict:
-    """The request from a JSON file, or the defaults with none. run.return is dropped with a warning:
-    nothing comes back in memory here, and dropping it lets one config work in notebooks and here."""
+    """The request from a JSON file, or the defaults with none. run.return is dropped: nothing comes back
+    in memory here, and dropping it lets one config work in notebooks and here. Only a non-empty one is
+    warned about; an empty list asks for nothing, so nothing is lost."""
     if path is None:
         return {}
     with open(path, encoding="utf-8") as f:
@@ -117,7 +118,8 @@ def _read_config(path: str | None) -> dict:
         raise ValueError(f"{path} must hold a JSON object (the request), not {type(request).__name__}")
     run_section = request.get("run")
     if isinstance(run_section, dict) and "return" in run_section:
-        logger.warning("run.return is ignored on the command line: nothing is returned in memory")
+        if run_section["return"]:
+            logger.warning("run.return is ignored on the command line: nothing is returned in memory")
         request = {**request, "run": {key: value for key, value in run_section.items() if key != "return"}}
     return request
 
