@@ -5,13 +5,16 @@ is in [JSPAM](https://github.com/mbogden/JSPAM), a fork of
 [John Wallin's original](https://github.com/jfwallin/JSPAM). We use its Fortran version.
 
 There are two ways to run it: from Python, by installing the `jspam` package, or as the plain Fortran
-program from the command line. This project will use the Python package.
+program from the command line. This project uses the Python package.
 
 ## Run it from Python
 Install it directly from GitHub. You need Python 3.12 or newer, git, `gfortran` and a C compiler:
 ```bash
 pip install git+https://github.com/mbogden/JSPAM.git@simr-branch
 ```
+This installs the newest commit on the fork's `simr-branch`. This project installs the commit pinned
+in `pyproject.toml` instead; `uv sync` does that for you ([README](../README.md#install), Install).
+
 The fork's [README](https://github.com/mbogden/JSPAM/tree/simr-branch#use) has a short example.
 
 This project's base image has everything needed, so you can use it instead:

@@ -324,7 +324,8 @@ A run without `save` writes only the catalog: its models and its record, no mode
 
 ## The command line
 ```bash
-python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--config config.json]     [--mode solo|local|mpi] [--workers N] [--log-level INFO]
+python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--config config.json] \
+    [--mode solo|local|mpi] [--workers N] [--log-level INFO]
 mpirun -n N python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi ...
 ```
 

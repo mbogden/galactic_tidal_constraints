@@ -255,8 +255,13 @@ One Docker image, run with Apptainer on the cluster.
 | `docs/architecture.md` | The levels (experiment, run, workflow, stage), and what passes between them | Exists |
 | `docs/configuration.md` | Config fields, stage lists, how they combine, the 4D score array | When the fields are real, or when that section outgrows the architecture doc |
 | `docs/design/simr.md` | The `simr` module's functions, inputs and outputs | Exists; updated with each `simr` step |
-| `docs/design/<stage>.md` | The same for each stage | Before each stage is written |
+| `docs/design/image_creator.md` | The Image Creator's config, pixel frame and steps | Exists |
+| `docs/design/simulation.md` | The Simulator stage's functions, inputs and outputs | To write |
+| `docs/design/<stage>.md` | The same for each later stage | Before each stage is written |
+| `docs/spam_physics.md` | What SPAM's parameters and options do, our defaults vs Wallin's, open questions | Exists |
+| `docs/running_spam.md` | Compile and run SPAM itself, from Python or as the Fortran program | Exists |
 | `docs/running_on_babbage.md` | A how-to for setting up an experiment and launching runs on Babbage | Exists (CPU only) |
+| `docs/docker_image.md` | Build, check, tag and push the image; pull it as a `.sif`; run in it | To write |
 
 ## Code standards
 - **No import side effects:** importing a module only defines things (functions, classes,
@@ -265,8 +270,6 @@ One Docker image, run with Apptainer on the cluster.
   Avoid module-level mutable state; pass values in as arguments.
 - **Type hints** on function signatures (arguments and return values), checked by the editor
   (VS Code / Pylance). No strict type checker for now. Array shapes go in the docstring.
-- **`ruff`** for linting (`ruff check`) and formatting (`ruff format`), configured in
-  `pyproject.toml`.
 
 ### Testing
 `pytest`, with tests in `tests/`.
