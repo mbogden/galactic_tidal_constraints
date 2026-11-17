@@ -3,14 +3,14 @@
 How to set up an experiment and run `simr` on Babbage, MTSU's Slurm cluster, with this project's
 image. Other Slurm clusters with Apptainer work the same way, with their own modules and partitions.
 
-What `simr` does with its inputs, and what it writes, is in [design/simr.md](design/simr.md).
+What `simr` does with its inputs, and what it writes, is in [modules/simr.md](../modules/simr.md).
 
 ## How it fits together
 - **The image** (`gtc-base-image:v2`, pulled as an Apptainer `.sif`) has the tools: Python 3.12,
   gfortran, OpenMPI 4.1.6 (the same version as Babbage's), `uv` and git.
 - **The repo's `.venv`**, built inside the image, has this package, `jspam` (at the commit pinned in
   `pyproject.toml`) and `mpi4py`. The venv uses the image's Python, so it only works inside the image.
-- **The job scripts** in [`examples/slurm/`](../examples/slurm/) load Babbage's modules, start the
+- **The job scripts** in [`examples/slurm/`](../../examples/slurm/) load Babbage's modules, start the
   command inside the image with the host's `mpirun`, and begin each log with a header: node, image
   build, modules, branch and commit, and the command.
 
@@ -54,7 +54,7 @@ mkdir -p ~/galStuff/my-exp && cd ~/galStuff/my-exp
 ```
 It needs:
 - **A models file:** one model per line, the 14 SPAM parameters comma-separated
-  ([design/simr.md](design/simr.md#the-command-line)).
+  ([modules/simr.md](../modules/simr.md#the-command-line)).
 - **A config** (optional): only what differs from the defaults. For example, to save each
   simulation's particles with 2,000 particles per disk:
   ```json
@@ -98,7 +98,7 @@ as a job array, each line on its own whole node:
 ```bash
 $REPO/examples/slurm/submit_array.sh commands.txt 5       # at most 5 at once
 ```
-See [`example_commands.txt`](../examples/slurm/example_commands.txt). Each line runs under
+See [`example_commands.txt`](../../examples/slurm/example_commands.txt). Each line runs under
 `run_node.slurm`, so the same rules apply: a `--mode local` line needs
 `--ntasks-per-node=1` (passed after the max-at-once number) and the binding setting in your
 environment.
@@ -115,7 +115,7 @@ simr: 64 simulations: 64 ran, 0 reused, 0 failed, 0 empty (nothing requested)
 === exit 0 after 21 s
 ```
 The run's record (statuses, times, errors, code versions) is in `runs/catalog.json`
-([design/simr.md](design/simr.md#the-output-catalog)). `simr`'s exit codes are 0 (ran), 1 (couldn't
+([modules/simr.md](../modules/simr.md#the-output-catalog)). `simr`'s exit codes are 0 (ran), 1 (couldn't
 run or finish) and 2 (every simulation failed).
 
 ## If a job stops early

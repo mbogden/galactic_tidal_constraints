@@ -34,7 +34,7 @@ original code:
 The project runs inside its image, [`ogdenm12/gtc-base-image:v2`](https://hub.docker.com/r/ogdenm12/gtc-base-image)
 (recipe: [docker/Dockerfile](docker/Dockerfile)). It has Python, uv, gfortran and OpenMPI 4.1.6.
 Use Docker on your own machine and Apptainer on clusters
-([docs/running_on_babbage.md](docs/running_on_babbage.md)). From the repo's root:
+([docs/guides/running_on_babbage.md](docs/guides/running_on_babbage.md)). From the repo's root:
 ```bash
 docker run --rm -it -v "$PWD:/src:ro" ogdenm12/gtc-base-image:v2 bash -lc \
   "cp -r /src /work && cd /work && uv sync --locked --group mpi && bash"
@@ -69,7 +69,7 @@ uv run python -m galactic_tidal_constraints.simr --models models.txt --config co
 ```
 A models file has one model per line: SPAM's 14 parameters, comma-separated. Everything else (the
 request, the output folder and catalog, failures, modes) is in
-[docs/design/simr.md](docs/design/simr.md).
+[docs/modules/simr.md](docs/modules/simr.md).
 
 The notebooks in [`examples/notebooks/`](examples/notebooks/) are the guided way in:
 `simulator_tour.ipynb` for the Simulator stage, `simr_tour.ipynb` for the workflow and
@@ -78,18 +78,20 @@ The notebooks in [`examples/notebooks/`](examples/notebooks/) are the guided way
 ## Docs
 | Doc | What it covers |
 |---|---|
-| [design/simr.md](docs/design/simr.md) | How `simr` works: inputs, results, saving and reuse, the catalog, the command line |
-| [design/image_creator.md](docs/design/image_creator.md) | How the Image Creator works: the config, the pixel frame, the image steps |
-| [spam_physics.md](docs/spam_physics.md) | SPAM's physics and every setting the Simulator stage exposes, with code and open questions |
-| [running_spam.md](docs/running_spam.md) | Compile and run SPAM itself, from Python or as the Fortran program |
-| [running_on_babbage.md](docs/running_on_babbage.md) | Set up an experiment and run `simr` on Babbage |
 | [architecture.md](docs/architecture.md) | The planned structure of the whole project (a plan; partly built) |
+| [spam_physics.md](docs/spam_physics.md) | SPAM's physics and every setting the Simulator stage exposes, with code and open questions |
+| [modules/simr.md](docs/modules/simr.md) | How `simr` works: inputs, results, saving and reuse, the catalog, the command line |
+| [modules/image_creator.md](docs/modules/image_creator.md) | How the Image Creator works: the config, the pixel frame, the image steps |
+| [guides/running_spam.md](docs/guides/running_spam.md) | Compile and run SPAM itself, from Python or as the Fortran program |
+| [guides/running_on_babbage.md](docs/guides/running_on_babbage.md) | Set up an experiment and run `simr` on Babbage |
 
 ## Repo layout
 ```
 src/galactic_tidal_constraints/
 └── simr/            simulation.py (Simulator stage), simr.py (workflow), image_creator.py (Image Creator), __main__.py (command line)
-docs/                the docs above
+docs/                the docs above: overview and references at the top
+├── modules/         one per code module
+└── guides/          how-to guides
 examples/
 ├── notebooks/       guided tours
 ├── slurm/           Slurm job scripts for Babbage

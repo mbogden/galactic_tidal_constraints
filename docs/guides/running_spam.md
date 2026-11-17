@@ -13,7 +13,7 @@ Install it directly from GitHub. You need Python 3.12 or newer, git, `gfortran` 
 pip install git+https://github.com/mbogden/JSPAM.git@simr-branch
 ```
 This installs the newest commit on the fork's `simr-branch`. This project installs the commit pinned
-in `pyproject.toml` instead; `uv sync` does that for you ([README](../README.md#install), Install).
+in `pyproject.toml` instead; `uv sync` does that for you ([README](../../README.md#install), Install).
 
 The fork's [README](https://github.com/mbogden/JSPAM/tree/simr-branch#use) has a short example.
 

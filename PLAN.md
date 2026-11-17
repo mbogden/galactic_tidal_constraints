@@ -128,7 +128,7 @@ One config tree for everything that can change a result, plus a few runtime flag
 Details and an example are in [docs/architecture.md](docs/architecture.md).
 
 ## Image stage (decided 2026-11-16)
-A basic Image Creator, `simr/image_creator.py`, numpy only. Details: [docs/design/image_creator.md](docs/design/image_creator.md).
+A basic Image Creator, `simr/image_creator.py`, numpy only. Details: [docs/modules/image_creator.md](docs/modules/image_creator.md).
 - **Target-free:** an `ImageConfig` sets the image size and the pixels the two galaxies' centers
   land on. Higher-level code decides whether those come from a target image. Centers may lie
   outside the image (that's how to zoom in on one galaxy); two equal centers are a config error.
@@ -238,30 +238,34 @@ One Docker image, run with Apptainer on the cluster.
   └── examples/                         ← example configs, a generic Slurm template, curated notebooks
   ```
   - Only `src/galactic_tidal_constraints/` is installed; everything else stays in the repo.
-  - Modules are added only when their code is ported: one file per component, split into a
+  - Modules are added only when their code is needed: one file per component, split into a
     subpackage only when it grows.
   - Applications start as runnable modules (`python -m galactic_tidal_constraints.<module>`);
     a short command can come later.
   - Committed notebooks have their outputs stripped.
 - **Data:** never in git; it lives outside the repo.
-- **Design notes:** before a module is ported, a short note in `docs/design/<module>.md`:
-  purpose, main functions with inputs and outputs, what it ports or changes from the old
-  code, known issues. Mention future features only when they shape the current design;
-  other ideas don't go in design notes.
+- **Module docs:** every module has a short doc in `docs/modules/<module>.md`: purpose, main
+  functions with inputs and outputs, known issues. Make sure one exists; it can be written with
+  the module or after it. Mention future features only when they shape the current design;
+  other ideas don't go in module docs.
 
 ## Documentation
+`docs/` has three parts: the top level for the overview and references (architecture,
+configuration, SPAM's physics), `docs/modules/` for one doc per code module, and `docs/guides/` for
+how-to guides.
+
 | Doc | What goes in it | When |
 |---|---|---|
 | `docs/architecture.md` | The levels (experiment, run, workflow, stage), and what passes between them | Exists |
 | `docs/configuration.md` | Config fields, stage lists, how they combine, the 4D score array | When the fields are real, or when that section outgrows the architecture doc |
-| `docs/design/simr.md` | The `simr` module's functions, inputs and outputs | Exists; updated with each `simr` step |
-| `docs/design/image_creator.md` | The Image Creator's config, pixel frame and steps | Exists |
-| `docs/design/simulation.md` | The Simulator stage's functions, inputs and outputs | To write |
-| `docs/design/<stage>.md` | The same for each later stage | Before each stage is written |
 | `docs/spam_physics.md` | What SPAM's parameters and options do, our defaults vs Wallin's, open questions | Exists |
-| `docs/running_spam.md` | Compile and run SPAM itself, from Python or as the Fortran program | Exists |
-| `docs/running_on_babbage.md` | A how-to for setting up an experiment and launching runs on Babbage | Exists (CPU only) |
-| `docs/docker_image.md` | Build, check, tag and push the image; pull it as a `.sif`; run in it | To write |
+| `docs/modules/simr.md` | The `simr` module's functions, inputs and outputs | Exists; updated with each `simr` step |
+| `docs/modules/simulation.md` | The Simulator stage's functions, inputs and outputs | To write |
+| `docs/modules/image_creator.md` | The Image Creator's config, pixel frame and steps | Exists |
+| `docs/modules/<module>.md` | The same for each later module | With the module or after it |
+| `docs/guides/running_spam.md` | Compile and run SPAM itself, from Python or as the Fortran program | Exists |
+| `docs/guides/running_on_babbage.md` | A how-to for setting up an experiment and launching runs on Babbage | Exists (CPU only) |
+| `docs/guides/docker_image.md` | Build, check, tag and push the image; pull it as a `.sif`; run in it | To write |
 
 ## Code standards
 - **No import side effects:** importing a module only defines things (functions, classes,

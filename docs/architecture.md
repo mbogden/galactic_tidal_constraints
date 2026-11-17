@@ -1,8 +1,8 @@
 # Architecture
 
 > **Status: this is the plan, and it's still in testing and development.** Built so far: the
-> Simulator and Image Creator stages and the `simr` workflow that runs them (see the design docs in
-> [design/](design/)). Fitness, the applications and the optimizer are still plans, and details may
+> Simulator and Image Creator stages and the `simr` workflow that runs them (see the module docs in
+> [modules/](modules/)). Fitness, the applications and the optimizer are still plans, and details may
 > change as they're written. Decisions and rules are in [PLAN.md](../PLAN.md).
 
 This project simulates galaxy collisions, turns them into images, and scores how well they match a
@@ -65,7 +65,7 @@ parallelization.
 | Stage | Input | Output | Built |
 |---|---|---|---|
 | **Simulator** | One model's encounter parameters | An orbit or particles | `simr/simulation.py` ([spam_physics.md](spam_physics.md)) |
-| **Image Creator** | One particle set, plus its model (which sets the frame) | One image, `float32` in [0, 1] | `simr/image_creator.py` ([design/image_creator.md](design/image_creator.md)) |
+| **Image Creator** | One particle set, plus its model (which sets the frame) | One image, `float32` in [0, 1] | `simr/image_creator.py` ([modules/image_creator.md](modules/image_creator.md)) |
 | **Fitness Function** | An image or orbit, plus the target | One float | Not yet |
 
 - SPAM stays replaceable behind the Simulator stage.

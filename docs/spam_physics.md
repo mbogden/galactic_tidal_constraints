@@ -98,7 +98,7 @@ A run starts from the pair **now** (t = 0) and has to begin before their encount
 undisturbed when it happens. `sim.get_timing` reports the start, `sim.simulate_orbit` returns the
 secondary's path from it, and `sim.search_orbit` and `sim.find_passes` show the path back to −30 and
 every close pass on it. One time unit is about 87 Myr. How `sim` chooses the start is under
-[`start`, `start_pass`](#start-start_pass-when-the-run-starts); this section is SPAM's own way.
+[`start`, `start_pass`](#start-start_pass-no_pass-when-the-run-starts); this section is SPAM's own way.
 
 **Code:** `getTStart` (setup_module.f90), called from `create_collision` (init_module.f90):
 1. Runs only the two centers **backward** from now in steps of 0.001, out to t = −30 (the window), and
