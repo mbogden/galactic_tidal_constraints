@@ -41,7 +41,8 @@ docker run --rm -it -v "$PWD:/src:ro" ogdenm12/gtc-base-image:v2 bash -lc \
 ```
 The repo is mounted read-only and copied into the container, so the container's `.venv` stays out
 of your checkout. In Git Bash on Windows, put `MSYS_NO_PATHCONV=1` before `docker run`, or Git Bash
-rewrites the `/src` path.
+rewrites the `/src` path. To work on the repo in place, run notebooks or save data, see
+[docs/guides/docker_image.md](docs/guides/docker_image.md).
 
 Without the image: Python 3.12 or newer, git, `gfortran` and a C compiler (Linux, macOS or WSL).
 With [uv](https://docs.astral.sh/uv/), from the repo's root:
@@ -85,6 +86,7 @@ The notebooks in [`examples/notebooks/`](examples/notebooks/) are the guided way
 | [modules/image_creator.md](docs/modules/image_creator.md) | How the Image Creator works: the config, the pixel frame, the image steps |
 | [guides/running_spam.md](docs/guides/running_spam.md) | Compile and run SPAM itself, from Python or as the Fortran program |
 | [guides/running_on_babbage.md](docs/guides/running_on_babbage.md) | Set up an experiment and run `simr` on Babbage |
+| [guides/docker_image.md](docs/guides/docker_image.md) | Run in the project's image (copies, working in place, notebooks, saving data, Apptainer), check it, and make a new tag |
 
 ## Repo layout
 ```

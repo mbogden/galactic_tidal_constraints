@@ -210,6 +210,12 @@ One Docker image, run with Apptainer on the cluster.
 - Ubuntu 24.04
 - OpenMPI 4.1.6, matching the cluster
 - Built locally, pushed to Docker Hub, pulled on the cluster with `apptainer pull`
+- **Tags** (a guideline while the code is modernized): a tag names one exact image, and a pushed tag
+  is never overwritten. For now the image holds only the tools, so any Dockerfile change gets the next
+  tag; this package and its dependencies stay in `uv.lock`, built into an environment inside the image
+  with `uv sync`, and need no new tag. Once there's a working version, a tag may also build in
+  `uv.lock`'s dependencies, so a run's image records exactly what it used. Steps:
+  [docs/guides/docker_image.md](docs/guides/docker_image.md).
 
 ### Packaging and install
 - **Packaging:** `pyproject.toml` + `uv`. The lockfile is part of reproducibility.
@@ -265,7 +271,7 @@ how-to guides.
 | `docs/modules/<module>.md` | The same for each later module | With the module or after it |
 | `docs/guides/running_spam.md` | Compile and run SPAM itself, from Python or as the Fortran program | Exists |
 | `docs/guides/running_on_babbage.md` | A how-to for setting up an experiment and launching runs on Babbage | Exists (CPU only) |
-| `docs/guides/docker_image.md` | Build, check, tag and push the image; pull it as a `.sif`; run in it | To write |
+| `docs/guides/docker_image.md` | Build, check, tag and push the image; pull it as a `.sif`; run in it | Exists |
 
 ## Code standards
 - **No import side effects:** importing a module only defines things (functions, classes,
