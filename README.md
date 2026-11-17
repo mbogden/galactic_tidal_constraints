@@ -31,15 +31,25 @@ original code:
   package at the commit pinned in `pyproject.toml`
 
 ## Install
-You need Python 3.12 or newer, git, `gfortran` and a C compiler (Linux, macOS or WSL). With
-[uv](https://docs.astral.sh/uv/), from the repo's root:
+The project runs inside its image, [`ogdenm12/gtc-base-image:v2`](https://hub.docker.com/r/ogdenm12/gtc-base-image)
+(recipe: [docker/Dockerfile](docker/Dockerfile)). It has Python, uv, gfortran and OpenMPI 4.1.6.
+Use Docker on your own machine and Apptainer on clusters
+([docs/running_on_babbage.md](docs/running_on_babbage.md)). From the repo's root:
+```bash
+docker run --rm -it -v "$PWD:/src:ro" ogdenm12/gtc-base-image:v2 bash -lc \
+  "cp -r /src /work && cd /work && uv sync --locked --group mpi && bash"
+```
+The repo is mounted read-only and copied into the container, so the container's `.venv` stays out
+of your checkout. In Git Bash on Windows, put `MSYS_NO_PATHCONV=1` before `docker run`, or Git Bash
+rewrites the `/src` path.
+
+Without the image: Python 3.12 or newer, git, `gfortran` and a C compiler (Linux, macOS or WSL).
+With [uv](https://docs.astral.sh/uv/), from the repo's root:
 ```bash
 uv sync                       # the package, jspam (compiled on install) and pytest
 uv sync --group notebook      # also JupyterLab and matplotlib, for the notebooks
 uv sync --group mpi           # also mpi4py, for --mode mpi (needs an MPI library)
 ```
-No compilers? The project's image, `ogdenm12/gtc-base-image:v2`, has them all
-([docs/running_spam.md](docs/running_spam.md) shows how to start it).
 
 ## Quick start
 From Python:
@@ -89,10 +99,18 @@ tests/               pytest tests
 ```
 
 ## Tests
+In the image, from the repo's root:
+```bash
+docker run --rm -v "$PWD:/src:ro" ogdenm12/gtc-base-image:v2 bash -lc \
+  "cp -r /src /work && cd /work && uv sync --locked --group mpi && uv run pytest"
+```
+Inside a running container (or without the image):
 ```bash
 uv run pytest                  # everything
 uv run pytest -m "not slow"    # skip the long tests
 ```
+`test_original_jspam` needs Docker on the host, so it skips inside the container. To run that check,
+run `bash examples/spam/check_original_jspam.sh` on the host (Git Bash on Windows).
 
 ## License
 Licensed under the Academic Free License version 3.0. See [LICENSE](LICENSE). This project's use of

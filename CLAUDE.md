@@ -17,4 +17,6 @@ galaxy-collision simulations, scoring and optimization) as an installable, repro
 - Add a dependency only when code needs it.
 - SPAM's Fortran lives in the JSPAM fork (`mbogden/JSPAM`, branch `simr-branch`), not here. Change it
   there and push, then update the pinned commit in `pyproject.toml` and `uv.lock`.
+- Run tests and code inside the project's image (Docker locally, Apptainer on clusters), as the
+  README's Install and Tests sections show. Not natively or in WSL.
 - Follow the decisions in `PLAN.md`. Don't add tools or structure that aren't listed there without asking.
