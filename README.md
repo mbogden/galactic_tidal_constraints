@@ -80,6 +80,7 @@ The notebooks in [`examples/notebooks/`](examples/notebooks/) are the guided way
 | Doc | What it covers |
 |---|---|
 | [architecture.md](docs/architecture.md) | The planned structure of the whole project (a plan; partly built) |
+| [configuration.md](docs/configuration.md) | How to write a config: its sections, how lists combine, the checks, what's recorded, and examples |
 | [spam_physics.md](docs/spam_physics.md) | SPAM's physics and every setting the Simulator stage exposes, with code and open questions |
 | [modules/simr.md](docs/modules/simr.md) | How `simr` works: inputs, results, saving and reuse, the catalog, the command line |
 | [modules/simulation.md](docs/modules/simulation.md) | How the Simulator stage works: a model, `SimulatorConfig`, the functions and what they return, costs |
@@ -96,6 +97,7 @@ docs/                the docs above: overview and references at the top
 ├── modules/         one per code module
 └── guides/          how-to guides
 examples/
+├── configs/         example configs and a models file
 ├── notebooks/       guided tours
 ├── slurm/           Slurm job scripts for Babbage
 └── spam/            a check that the original SPAM runs correctly

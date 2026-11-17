@@ -75,21 +75,22 @@ parallelization.
 - The Fitness Function holds several methods, including orbit and image comparison.
 
 ## Models and stage lists
-- Encounter parameters are the one hard input every run needs, and they're their own list.
+- Encounter parameters are the one hard input every run needs. They're their own input, a list of
+  models kept apart from the config: the models say what to simulate, the config says how.
 - Each stage can have one entry or a list. A list can appear only directly under a stage; anything
   deeper is an ordinary value, like an image size.
 - Lists combine as every combination, and higher-level code keeps that to a sensible size.
 - A list's index is its entry's name.
 
-For example, with field names that aren't final:
+For example, two models with this config (`fitness` is planned, not built):
 ```json
 {
-  "models":    [ [14 values], [14 values] ],
   "simulator": [ {...} ],
   "image":     [ {...}, {...} ],
   "fitness":   [ {...}, {...} ]
 }
 ```
+How to write a config today, with real examples: [configuration.md](configuration.md).
 
 ## Score array
 SIMR and the workflow always return a 4D array, with no automatic reduction, so batches always join

@@ -1,0 +1,30 @@
+{
+  "run": {"return": [], "save": []},
+  "simulator": {
+    "seed": 0,
+    "n1": 1000,
+    "n2": 1000,
+    "heat1": 0.0,
+    "heat2": 0.0,
+    "heat_mode": "centered",
+    "lnl": 0.1,
+    "r_scale": 10.0,
+    "m_halo": 5.8,
+    "m_bulge": 0.3333,
+    "h_bulge": 0.2,
+    "h_disk": 1.0,
+    "normalization": "total",
+    "start": "pass",
+    "start_pass": 1,
+    "no_pass": -5.0
+  },
+  "image": {
+    "width": 128,
+    "height": 128,
+    "primary_center": [48.0, 64.0],
+    "secondary_center": [80.0, 64.0],
+    "blur_sigma": 0.0,
+    "blur_truncate": 4.0,
+    "brightness": "linear"
+  }
+}
