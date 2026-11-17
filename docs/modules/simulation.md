@@ -1,7 +1,7 @@
 # Simulator stage (`simr/simulation.py`)
 
 The Simulator stage runs one SPAM simulation. It takes values and returns arrays: 
-no saving/reading to diskspace, no pools or MPI, no state kept between calls. 
+no saving/reading to disk space, no pools or MPI, no state kept between calls. 
 It's the only module that imports `jspam` (`PLAN.md`, One door to SPAM), 
 and every call passes the whole config through, so nothing carries over from one run to the
 next. `simr` runs it for many models, as the `sim.*` items ([simr.md](simr.md)).
