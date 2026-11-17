@@ -344,10 +344,13 @@ left unchanged in the code, and to be decided while fitting TNG targets. A chang
 option, with Wallin's behavior kept (`PLAN.md`, Physics fixes).
 
 - **Should the force keep falling past r = 10?** Past the tables' end (about 150 kpc), the pull is
-  constant instead of falling as 1/r²: a·r² should stay 1.99, but it's 2.87 at r = 12, 7.96 at r = 20
-  and 49.8 at r = 50. Only separations beyond 10 are affected, mostly early in a run on a wide orbit,
-  where too much pull bends the orbit's history (Wallin's SDSS example is at r = 18.9 now). A fix:
-  plain 1/r² beyond the table. Details: [The extended potential](#the-extended-potential-what-we-run).
+  constant instead of falling as 1/r². For a mass-1 galaxy, a·r² should stay 1, but it's 1.44 at
+  r = 12, 4.0 at r = 20 and 25 at r = 50 (measured 2026-11-17, `"total"` normalization). The orbit
+  between the centers feels `mass1 + mass2` times this (`diffq_nbi` adds both galaxies' pulls), and
+  disk particles use the same table lookup. Only separations beyond 10 are affected, mostly early in a
+  run on a wide orbit, where too much pull bends the orbit's history; Wallin's SDSS example is at
+  r = 18.9 now, so its pull at the end of a run is about 3.6× too strong. A fix: plain 1/r² beyond the
+  table. Details: [The extended potential](#the-extended-potential-what-we-run).
 - **Should `r_scale` change only the size?** It stretches the whole galaxy and also multiplies the
   force outside the core by (10 / `r_scale`)², so it works partly as a strength knob. That matters
   wherever `r_scale` is read as "halo size": an optimizer exploring it, or bounds taken from TNG50 halos
