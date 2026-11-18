@@ -35,6 +35,7 @@ needs), so asking only for `sim.orbit` never runs particles.
 | `sim.particles` | Every particle at the end of the run | |
 | `sim.unperturbed` | The starting disks placed around today's centers, as if the galaxies never met | |
 | `sim.orbit` | The secondary's center at every step | Fast: no particles |
+| `sim.search_orbit` | The secondary's center from now back to t = −30, the path every run's start lies on | Fast: no particles. About 30,001 rows (~840 KB saved) |
 | `sim.timing` | When the run starts, and why (a dict) | Always recorded in `model.json` when a simulation is saved; it has no `.npy` file |
 | `img.model` | The model image | Needs `sim.particles`, which is made (or loaded) even if not asked for |
 | `img.unperturbed` | The unperturbed image, in the same frame | Needs `sim.unperturbed` |

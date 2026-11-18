@@ -995,3 +995,29 @@ def test_a_stopped_run_resumes_its_images(tmp_path):
         simr.run(MODELS, image_request(["img.model"]), output=tmp_path, map=dying_map)
     again = simr.run(MODELS, image_request(["img.model"]), output=tmp_path)
     assert again.status["img"].tolist() == [[["reused", "reused"]], [["ran", "ran"]]]
+
+
+# --- MDRN-4 step 1: sim.search_orbit as an item -------------------------------------------------------
+
+
+def test_search_orbit_matches_calling_sim_directly():
+    result = simr.run(MODELS, request(["sim.search_orbit"]))
+    assert result.data["sim.search_orbit"].shape == (2, 1)
+    expected = sim.search_orbit(HEAVIER, SimulatorConfig(**SMALL)).astype(np.float32)
+    np.testing.assert_array_equal(result.data["sim.search_orbit"][1, 0], expected)
+    assert result.data["sim.search_orbit"][0, 0].dtype == np.float32
+
+
+def test_search_orbit_spans_now_back_to_minus_30():
+    path = simr.run(PARAMS, request(["sim.search_orbit"])).data["sim.search_orbit"][0, 0]
+    assert path.shape[1] == 7
+    assert path[0, 6] == 0.0  # row 0 is now
+    np.testing.assert_allclose(path[-1, 6], -30.0, atol=0.01)
+
+
+def test_search_orbit_saves_and_loads_back(tmp_path):
+    simr.run(PARAMS, save_request(["sim.search_orbit"]), output=tmp_path)
+    folder = tmp_path / "model_000000"
+    assert (folder / "simulations/sim_00_search_orbit.npy").exists()
+    loaded = simr.load_simulation(folder, "sim_00")["sim.search_orbit"]
+    np.testing.assert_array_equal(loaded, sim.search_orbit(PARAMS, SimulatorConfig(**SMALL)).astype(np.float32))

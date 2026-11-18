@@ -56,6 +56,7 @@ The Simulator stage can hand back:
 | `sim.particles` | `sim.simulate_particles`: every particle at the end, `(n1 + n2 + 1, 6)` |
 | `sim.unperturbed` | `sim.unperturbed_particles`: the same disks at today's centers, `(n1 + n2 + 1, 6)` |
 | `sim.orbit` | `sim.simulate_orbit`: the secondary's center at every step, `(n_steps + 1, 7)` |
+| `sim.search_orbit` | `sim.search_orbit`: the secondary's center from now back to t = −30, the path every run's start lies on, `(about 30001, 7)` |
 | `sim.timing` | the dict from `sim.get_timing` (start time, steps, which pass) |
 
 The Image Creator stage can hand back (`simr.IMAGE_DATA`; each made with `img.create_image`, from the

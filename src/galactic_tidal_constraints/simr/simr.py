@@ -99,19 +99,26 @@ def _orbit(params, config):
     return sim.simulate_orbit(params, config).astype(np.float32)
 
 
+def _search_orbit(params, config):
+    return sim.search_orbit(params, config).astype(np.float32)
+
+
 def _timing(params, config):
     return sim.get_timing(params, config)
 
 
 # The data the Simulator stage can hand back, by name. Each is indexed [model, simulator].
-#   sim.particles:   every particle at the end of the run, (n1 + n2 + 1, 6), float32
-#   sim.unperturbed: the same disks placed at today's centers with no steps, (n1 + n2 + 1, 6), float32
-#   sim.orbit:       the secondary's center at every step, (n_steps + 1, 7), float32
-#   sim.timing:      the dict from `sim.get_timing` (start time, steps, which pass)
+#   sim.particles:    every particle at the end of the run, (n1 + n2 + 1, 6), float32
+#   sim.unperturbed:  the same disks placed at today's centers with no steps, (n1 + n2 + 1, 6), float32
+#   sim.orbit:        the secondary's center at every step, (n_steps + 1, 7), float32
+#   sim.search_orbit: the secondary's center from now back to t = -30, the path every run's start lies
+#                     on, (about 30001, 7), float32
+#   sim.timing:       the dict from `sim.get_timing` (start time, steps, which pass)
 SIM_DATA = {
     "sim.particles": _particles,
     "sim.unperturbed": _unperturbed,
     "sim.orbit": _orbit,
+    "sim.search_orbit": _search_orbit,
     "sim.timing": _timing,
 }
 
