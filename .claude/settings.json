@@ -33,21 +33,17 @@
       "PowerShell(git reset --hard *)"
     ],
     "ask": [
-      "Bash(docker run *)",
-      "Bash(docker build *)",
+      "Bash(docker rm *)",
+      "Bash(docker container rm *)",
       "Bash(git push *)",
-      "PowerShell(docker run *)",
-      "PowerShell(docker build *)",
+      "PowerShell(docker rm *)",
+      "PowerShell(docker container rm *)",
       "PowerShell(git push *)",
       "PowerShell(Remove-Item * -Recurse*)"
     ],
     "allow": [
-      "Bash(docker ps *)",
-      "Bash(docker images *)",
-      "Bash(docker logs *)",
-      "PowerShell(docker ps *)",
-      "PowerShell(docker images *)",
-      "PowerShell(docker logs *)"
+      "Bash(docker *)",
+      "PowerShell(docker *)"
     ]
   }
 }
