@@ -225,3 +225,6 @@ Machine_Score/nn_models/
 
 # Obsidian vault settings (folders opened in Obsidian)
 .obsidian/
+
+# The per-step review notebook: remade each build step, reviewed, never committed
+examples/notebooks/next_step.ipynb
