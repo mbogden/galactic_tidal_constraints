@@ -41,7 +41,7 @@ unclear.
 - The run keeps those tables and its final score array in its data folder.
 - The application chooses how to split the work across processes. Shrinking batches are one example,
   and suit SPAM, where a simulation can take from a second to over a minute.
-- Meta scores, such as weighted averages of other scores, are computed here from the returned
+- Composite scores, such as weighted averages of other scores, are computed here from the returned
   array, so weights can change without re-simulating. A score that needs more than the base scores
   is a normal fitness method.
 

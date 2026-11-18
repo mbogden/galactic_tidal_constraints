@@ -51,7 +51,7 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
   different config is neither used nor changed. Code versions are recorded but not compared;
   higher-level code can check them.
 - **Applications** live in the repo. Each owns its run's tables and final scores, and chooses how to
-  parallelize. Meta scores are computed here.
+  parallelize. Composite scores are computed here.
 - **Failures:** a failed model returns `NaN` and writes the error to the log. In `simr`, a
   simulation (one model on one simulator entry) fails as a whole when computing any requested item
   raises an error or a simulated array holds NaN or inf; the run moves on. Its cells hold `None`,
