@@ -817,10 +817,10 @@ def test_images_use_saved_particles(tmp_path):
 
 
 def test_the_catalog_records_the_image_entries(tmp_path):
-    simr.run(MODELS, {**request(["img.model"]), "image": [{}, {"brightness": "log"}]}, output=tmp_path)
+    simr.run(MODELS, {**request(["img.model"]), "image": [{}, {"brightness": "linear"}]}, output=tmp_path)
     [record] = simr.load_catalog(tmp_path)["runs"]
-    assert [entry["brightness"] for entry in record["image"]] == ["linear", "log"]
-    assert record["image"][0]["primary_center"] == [48.0, 64.0]
+    assert [entry["brightness"] for entry in record["image"]] == ["log", "linear"]
+    assert record["image"][0]["primary_center"] == [32.0, 64.0]
     assert record["status"]["img"] == [[["ran", "ran"]], [["ran", "ran"]]]
 
 

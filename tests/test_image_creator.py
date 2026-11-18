@@ -32,7 +32,8 @@ def test_config_defaults_and_lists_become_tuples():
     config = ImageConfig(primary_center=[10, 20], secondary_center=[30, 20])
     assert config.primary_center == (10.0, 20.0)
     assert config.secondary_center == (30.0, 20.0)
-    assert ImageConfig().width == 128 and ImageConfig().brightness == "linear"
+    assert ImageConfig().width == 128 and ImageConfig().brightness == "log"
+    assert (ImageConfig().primary_center, ImageConfig().secondary_center) == ((32.0, 64.0), (96.0, 64.0))
 
 
 @pytest.mark.parametrize(
@@ -72,8 +73,8 @@ def test_centers_land_on_their_pixels(centers):
 def test_sky_up_is_image_up_and_not_mirrored():
     # Secondary along +x lands to the right (default centers): +y must point up (smaller row), not down
     up, right = img.to_pixels(np.array([[0.0, 5.0, 0.0], [5.0, 0.0, 0.0]]), EAST, ImageConfig())
-    assert up[1] < 64 and np.isclose(up[0], 48)
-    assert right[0] > 48 and np.isclose(right[1], 64)
+    assert up[1] < 64 and np.isclose(up[0], 32)
+    assert right[0] > 32 and np.isclose(right[1], 64)
 
 
 def test_frame_keeps_shapes():
@@ -114,7 +115,8 @@ def test_to_pixels_reads_only_the_first_three_columns():
 
 
 def test_particles_land_in_their_pixels():
-    config = ImageConfig(width=40, height=30, primary_center=(10, 15), secondary_center=(30, 15))
+    config = ImageConfig(width=40, height=30, primary_center=(10, 15), secondary_center=(30, 15),
+                         brightness="linear")  # counts stay counts, so the pixel values below are exact
     # One unit of sky is 2 pixels here (10 units apart, 20 pixels)
     particles = fake_particles(EAST, [[0, 0, 0], [0, 0, 0], [1, 0, 0]], [[10, 0, 0], [10, 2, 0]])
     result = img.create_image(particles, EAST, 3, 2, config)

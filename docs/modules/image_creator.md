@@ -24,11 +24,11 @@ Only what exists today is described here. Decisions behind it are in [PLAN.md](.
 | Field | Default | Meaning |
 |---|---|---|
 | `width`, `height` | 128, 128 | Image size in pixels |
-| `primary_center` | (48, 64) | The (column, row) pixel the primary's center lands on |
-| `secondary_center` | (80, 64) | The same for the secondary. Either may lie outside the image (to zoom in on one galaxy); the two can't be equal |
+| `primary_center` | (32, 64) | The (column, row) pixel the primary's center lands on |
+| `secondary_center` | (96, 64) | The same for the secondary. Either may lie outside the image (to zoom in on one galaxy); the two can't be equal |
 | `blur_sigma` | 0 | Gaussian blur's standard deviation in pixels; 0 = none |
 | `blur_truncate` | 4 | The kernel reaches this many sigmas each side (scipy's name and default) |
-| `brightness` | `"linear"` | `"linear"` (the counts) or `"log"` (log(1 + counts)), applied after the blur |
+| `brightness` | `"log"` | `"log"` (log(1 + counts)) or `"linear"` (the counts), applied after the blur |
 
 Frozen, checked when made (a bad value is a `ValueError`). Centers given as lists, as JSON writes them,
 become tuples of floats.

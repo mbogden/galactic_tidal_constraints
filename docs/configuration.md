@@ -71,7 +71,7 @@ Types follow JSON:
 - A whole number is fine for a number field (JSON may write `10.0` as `10`), but a field that takes a
   whole number (`n1`, `seed`) rejects `1000.0`.
 - `true` and `false` are never numbers.
-- A pair, such as an image center, is a list of 2: `[48, 64]`.
+- A pair, such as an image center, is a list of 2: `[32, 64]`.
 
 ## What's recorded
 - With an output, the run's record in `catalog.json` holds every entry's **full** config, defaults
@@ -119,8 +119,8 @@ take the names [above](#data-names):
     "normalization": "total", "start": "pass", "start_pass": 1, "no_pass": -5.0
   },
   "image": {
-    "width": 128, "height": 128, "primary_center": [48.0, 64.0], "secondary_center": [80.0, 64.0],
-    "blur_sigma": 0.0, "blur_truncate": 4.0, "brightness": "linear"
+    "width": 128, "height": 128, "primary_center": [32.0, 64.0], "secondary_center": [96.0, 64.0],
+    "blur_sigma": 0.0, "blur_truncate": 4.0, "brightness": "log"
   }
 }
 ```
