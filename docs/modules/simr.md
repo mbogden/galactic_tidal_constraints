@@ -31,6 +31,8 @@ request = {
     },
     "simulator": [{"lnl": 0.1}, {"lnl": 0.01}],  # one dict or a list; each becomes a SimulatorConfig
     "image": [{}, {"blur_sigma": 1.0}],          # one dict or a list; each becomes an ImageConfig
+    "sim_metrics": [{"method": "closest_approach", "inputs": ["sim.search_orbit"], "select": "distance"}],
+    "img_metrics": [{"method": "absolute_difference", "inputs": ["img.model", "img.unperturbed"]}],
 }
 ```
 
@@ -40,9 +42,16 @@ request = {
 | `run.save` | `[]` | Names of the data to save. Independent of `return`: a run can do both |
 | `simulator` | one `SimulatorConfig()` | A dict (keys are `SimulatorConfig` fields) or a `SimulatorConfig`, or a list of them |
 | `image` | one `ImageConfig()` | A dict (keys are `ImageConfig` fields) or an `ImageConfig`, or a list of them. Centers are lists in JSON (`[column, row]`). See [image_creator.md](image_creator.md) |
+| `sim_metrics` | none | Metric entries whose inputs are `sim.*` items: one dict or a list ([] is also none). See [metrics.md](metrics.md) and [configuration.md](../configuration.md#metric-entries) |
+| `img_metrics` | none | Metric entries with at least one `img.*` input, likewise |
 
 **Every model runs on every simulator entry, and every simulation is imaged with every image
-entry.** Unknown keys, unknown names, wrong types and bad values are errors that say where the
+entry.** Every `sim_metrics` entry runs on every simulation, and every `img_metrics` entry on every
+(simulation, image) pair; metrics always come back in the result (they aren't part of `return`), and
+`simr` computes (or loads) the items they name even when nothing else asks for them, so an orbit-only
+request with `sim_metrics` never builds an image. Entries are checked against the metrics table
+(`metrics.METHODS`) before anything runs; an entry naming a method with a `setup` step is a
+`NotImplementedError` until the DL step wires setup in. Unknown keys, unknown names, wrong types and bad values are errors that say where the
 problem is (e.g. `simulator[0].lnl must be a number: '0.1'`, `simulator[1]: lnl can't be negative`,
 `image[0].primary_center must be a list of 2 (a number, a number)`), raised before anything runs.
 Types are checked against the config's type hints; an integer is fine for a number field (JSON writes
@@ -101,8 +110,11 @@ catalog). It's a folder or a `.json` file, told apart by name, so it works befor
 | `simulators` | The simulator entries as `SimulatorConfig`s, every default filled in: entry s is simulator s |
 | `images` | The image entries as `ImageConfig`s, likewise: entry i is image i |
 | `data` | One entry per name in `return`, and nothing else |
+| `sim_metrics` | Each `sim_metrics` entry's value per simulation, an object array `[model, simulator, entry]`: a float (a scalar method, or `select`), a dict (a descriptive method), or `None` (failed or skipped). Shape `(N, S, 0)` with no entries |
+| `img_metrics` | Likewise per image: `[model, simulator, image, entry]` |
+| `sim_metric_configs`, `img_metric_configs` | The filled-in entries (`method`, `inputs`, `select` — `None` when absent — and `params` with every default), so `sim_metrics[..., k]` is entry `sim_metric_configs[k]` |
 | `ids` | Each row's model id in the output's catalog, or `None` without an output (see The output catalog) |
-| `status`, `seconds`, `errors` | Per stage (`"sim"`, `"img"`), indexed like its data; see Failures and status |
+| `status`, `seconds`, `errors` | Per stage (`"sim"`, `"img"`, `"sim_metrics"`, `"img_metrics"`), indexed like its data or values; see Failures and status |
 
 Each `data` entry is a NumPy object array of cells, indexed by the levels its stage depends on:
 `[model, simulator]` for `sim.*`, `[model, simulator, image]` for `img.*`. A cell holds that
@@ -192,9 +204,11 @@ Each outcome comes back per stage, indexed like the data:
 
 | Field | Each cell |
 |---|---|
-| `result.status["sim"][m, s]` | `"ran"`, `"reused"` (saved, and nothing had to be computed), `"failed"`, or `"empty"` (nothing was asked of it: nothing returned or saved, and no image needs it) |
+| `result.status["sim"][m, s]` | `"ran"`, `"reused"` (saved, and nothing had to be computed), `"failed"`, or `"empty"` (nothing was asked of it: nothing returned or saved, and no image or metric needs it) |
 | `result.status["img"][m, s, i]` | `"ran"`, `"reused"` (saved, and nothing had to be made), `"failed"`, `"skipped"` (its simulation failed), or `"empty"` (no image was asked for) |
-| `result.seconds[stage][...]` | Wall time, loading included. A simulation's time doesn't include its images |
+| `result.status["sim_metrics"][m, s, k]` | `"ran"`, `"failed"` (the method raised, returned NaN or inf, or didn't match its declaration; the simulation is unaffected), or `"skipped"` (its simulation failed). With no entries there are no cells |
+| `result.status["img_metrics"][m, s, i, k]` | The same per image; `"skipped"` also when the image it needs failed |
+| `result.seconds[stage][...]` | Wall time, loading included. A simulation's time doesn't include its images or metrics; each metric cell is timed on its own |
 | `result.errors[stage][...]` | `"Type: message"` for a failure, else `None` |
 
 ```python
@@ -309,7 +323,7 @@ The catalog (a folder's `catalog.json`, or a `.json` output) is the output's tab
   | `run` | Its `return` and `save` lists |
   | `simulator` | The full simulator configs |
   | `image` | The full image configs |
-  | `fitness` | Empty until that stage exists |
+  | `sim_metrics`, `img_metrics` | The filled-in metric entries (the values themselves aren't saved yet) |
   | `model_ids` | Row m's model id |
   | `status`, `seconds`, `errors` | As in the result, as lists; added when the run ends |
 
@@ -352,9 +366,10 @@ isn't a number, is an error naming the line. `simr.read_models(path)` reads one 
 | 1 | It couldn't run or finish: a bad models file, config or output, or a worker that died (a short message, no traceback). Under MPI a crashed worker usually ends the job with `mpirun`'s own error code |
 | 2 | It ran, but every simulation failed: almost always a setup mistake |
 
-Until the metrics stage exists, a run computes only what `run.save` asks for, so a command-line run without
-`run.save` records its models and configs but simulates nothing: each simulation's status is
-`"empty"`.
+A command-line run computes what `run.save` and the metric sections ask for; with neither, it records
+its models and configs but simulates nothing (each simulation's status is `"empty"`). Metric values
+aren't saved yet: a config with metric entries gets one warning saying the values are computed and
+their statuses and configs recorded, but the values themselves discarded.
 
 ## Loading
 | Function | Returns |

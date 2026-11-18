@@ -307,13 +307,17 @@ def test_a_run_without_save_writes_only_the_catalog(tmp_path):
     assert [p.name for p in tmp_path.iterdir()] == ["catalog.json"]
     [record] = simr.load_catalog(tmp_path)["runs"]
     assert record["run"] == {"return": ["sim.orbit"], "save": []}
-    assert record["status"] == {"sim": [["ran"], ["ran"]], "img": [[["empty"]], [["empty"]]]}  # no images asked for
+    assert record["status"] == {"sim": [["ran"], ["ran"]], "img": [[["empty"]], [["empty"]]],  # no images asked for
+                                "sim_metrics": [[[]], [[]]], "img_metrics": [[[[]]], [[[]]]]}  # no metric entries
 
 
 def test_nothing_requested_is_empty(tmp_path):
     result = simr.run(MODELS, request([]), output=tmp_path)
     assert result.status["sim"].tolist() == [["empty"], ["empty"]]
-    assert simr.load_catalog(tmp_path)["runs"][0]["status"] == {"sim": [["empty"], ["empty"]], "img": [[["empty"]], [["empty"]]]}
+    assert simr.load_catalog(tmp_path)["runs"][0]["status"] == {
+        "sim": [["empty"], ["empty"]], "img": [[["empty"]], [["empty"]]],
+        "sim_metrics": [[[]], [[]]], "img_metrics": [[[[]]], [[[]]]],
+    }
 
 
 def test_a_model_the_folder_doesnt_have_is_computed_and_added_to_the_catalog(tmp_path):
@@ -334,7 +338,8 @@ def test_catalog_lists_the_models_and_the_run(tmp_path):
     assert record["run"] == {"return": [], "save": ["sim.orbit"]}
     assert record["simulator"] == [asdict(SimulatorConfig(**SMALL)), asdict(SimulatorConfig(**SMALL, lnl=0.01))]
     assert record["image"] == [json.loads(json.dumps(asdict(ImageConfig())))]  # the default entry
-    assert record["fitness"] == []
+    assert record["sim_metrics"] == [] and record["img_metrics"] == []
+    assert "fitness" not in record  # replaced by the metric sections
     assert record["model_ids"] == ["000000", "000001"]
     assert record["code"] == simr.code_versions()
 
@@ -449,15 +454,18 @@ def test_reused_only_when_everything_came_from_disk(tmp_path):
 def test_status_seconds_and_errors_have_the_datas_shape():
     result = simr.run(MODELS, request(["sim.orbit"], simulator=[SMALL, SMALL]))
     for field in (result.status, result.seconds, result.errors):
-        assert list(field) == ["sim", "img"] and field["sim"].shape == (2, 2)
+        assert list(field) == ["sim", "img", "sim_metrics", "img_metrics"] and field["sim"].shape == (2, 2)
         assert field["img"].shape == (2, 2, 1)  # one default image entry
+        assert field["sim_metrics"].shape == (2, 2, 0)  # no metric entries
+        assert field["img_metrics"].shape == (2, 2, 1, 0)
     assert (result.seconds["sim"] > 0).all()
 
 
 def test_the_catalog_records_each_simulations_status(tmp_path):
     simr.run(np.stack([PARAMS, FIRST_APPROACH]), save_request(["sim.orbit"], simulator=FAILING), output=tmp_path)
     [record] = simr.load_catalog(tmp_path)["runs"]
-    assert record["status"] == {"sim": [["ran"], ["failed"]], "img": [[["empty"]], [["empty"]]]}
+    assert record["status"] == {"sim": [["ran"], ["failed"]], "img": [[["empty"]], [["empty"]]],
+                                "sim_metrics": [[[]], [[]]], "img_metrics": [[[[]]], [[[]]]]}
     assert record["errors"]["sim"][0] == [None] and record["errors"]["sim"][1][0].startswith("ValueError")
     assert len(record["seconds"]["sim"]) == 2 and record["finished"] is not None
 
@@ -669,7 +677,8 @@ def test_a_broken_pool_records_what_finished_and_raises(tmp_path, caplog):
     assert "1 of 2 models unfinished: ['000001']" in caplog.text
     [record] = simr.load_catalog(tmp_path)["runs"]
     assert record["finished"] is None
-    assert record["status"] == {"sim": [["ran"], [None]], "img": [[["empty"]], [[None]]]}
+    assert record["status"] == {"sim": [["ran"], [None]], "img": [[["empty"]], [[None]]],
+                                "sim_metrics": [[[]], [[]]], "img_metrics": [[[[]]], [[[]]]]}
     again = simr.run(MODELS, save_request(["sim.orbit"]), output=tmp_path)  # a rerun resumes
     assert again.status["sim"][:, 0].tolist() == ["reused", "ran"]
 
@@ -1021,3 +1030,193 @@ def test_search_orbit_saves_and_loads_back(tmp_path):
     assert (folder / "simulations/sim_00_search_orbit.npy").exists()
     loaded = simr.load_simulation(folder, "sim_00")["sim.search_orbit"]
     np.testing.assert_array_equal(loaded, sim.search_orbit(PARAMS, SimulatorConfig(**SMALL)).astype(np.float32))
+
+
+# --- MDRN-4 step 2b: the metrics stage in simr ---------------------------------------------------------
+
+from galactic_tidal_constraints.simr import metrics  # noqa: E402
+
+SIM_METRICS = [
+    {"method": "closest_approach", "inputs": ["sim.search_orbit"]},
+    {"method": "closest_approach", "inputs": ["sim.search_orbit"], "select": "distance"},
+]
+IMG_METRICS = [{"method": "absolute_difference", "inputs": ["img.model", "img.unperturbed"]}]
+
+
+def metric_request(returned=(), sim_metrics=SIM_METRICS, img_metrics=IMG_METRICS, simulator=SMALL):
+    return {"run": {"return": list(returned)}, "simulator": simulator,
+            "sim_metrics": sim_metrics, "img_metrics": img_metrics}
+
+
+def test_metric_values_match_calling_metrics_directly():
+    result = simr.run(MODELS, metric_request(returned=["img.model", "img.unperturbed"]))
+    assert result.sim_metrics.shape == (2, 1, 2)
+    assert result.img_metrics.shape == (2, 1, 1, 1)
+    path = sim.search_orbit(HEAVIER, SimulatorConfig(**SMALL)).astype(np.float32)
+    expected = metrics.closest_approach(path)
+    value = result.sim_metrics[1, 0, 0]
+    assert value["t"] == expected["t"] and value["distance"] == expected["distance"]
+    assert result.sim_metrics[1, 0, 1] == expected["distance"]
+    assert isinstance(result.sim_metrics[1, 0, 1], float)
+    difference = metrics.absolute_difference(
+        result.data["img.model"][1, 0, 0], result.data["img.unperturbed"][1, 0, 0]
+    )
+    assert result.img_metrics[1, 0, 0, 0] == difference
+
+
+def test_filled_in_entries_record_all_four_keys():
+    result = simr.run(PARAMS, metric_request())
+    assert result.sim_metric_configs == [
+        {"method": "closest_approach", "inputs": ["sim.search_orbit"], "select": None, "params": {}},
+        {"method": "closest_approach", "inputs": ["sim.search_orbit"], "select": "distance", "params": {}},
+    ]
+    assert result.img_metric_configs == [
+        {"method": "absolute_difference", "inputs": ["img.model", "img.unperturbed"], "select": None, "params": {}},
+    ]
+
+
+def test_metrics_force_computation_without_returning_data():
+    result = simr.run(PARAMS, metric_request(img_metrics=[]))
+    assert result.data == {}
+    assert result.status["sim"].tolist() == [["ran"]]  # not "empty": the metrics needed the search orbit
+    assert result.status["img"].tolist() == [[["empty"]]]  # no img metrics, no images
+    assert result.img_metrics.shape == (1, 1, 1, 0)
+    assert result.sim_metrics[0, 0, 0]["distance"] > 0
+
+
+def test_img_metrics_alone_compute_their_images():
+    result = simr.run(PARAMS, metric_request(sim_metrics=[]))
+    assert result.data == {}
+    assert result.status["img"].tolist() == [[["ran"]]]
+    assert result.status["img_metrics"].tolist() == [[[["ran"]]]]
+    assert 0.0 <= result.img_metrics[0, 0, 0, 0] <= 1.0
+
+
+def test_empty_metric_sections_are_allowed():
+    result = simr.run(PARAMS, {"run": {"return": ["sim.orbit"]}, "simulator": SMALL,
+                               "sim_metrics": [], "img_metrics": []})
+    assert result.sim_metrics.shape == (1, 1, 0)
+    assert result.img_metrics.shape == (1, 1, 1, 0)
+    assert result.status["sim_metrics"].size == 0 and result.status["img_metrics"].size == 0
+
+
+def test_a_failed_simulation_skips_its_metrics():
+    request = metric_request(simulator=[SMALL, FAILING])
+    result = simr.run(np.stack([FIRST_APPROACH, FIRST_APPROACH]), request)
+    assert result.status["sim"][0].tolist() == ["ran", "failed"]
+    assert result.status["sim_metrics"][0].tolist() == [["ran", "ran"], ["skipped", "skipped"]]
+    assert result.status["img_metrics"][0].tolist() == [[["ran"]], [["skipped"]]]
+    assert result.sim_metrics[0, 1, 0] is None and result.img_metrics[0, 1, 0, 0] is None
+
+
+def test_a_failed_metric_is_recorded_and_everything_else_moves_on(monkeypatch):
+    from dataclasses import replace
+
+    def broken(orbit):
+        raise RuntimeError("boom")
+
+    monkeypatch.setitem(metrics.METHODS, "closest_approach",
+                        replace(metrics.METHODS["closest_approach"], function=broken))
+    result = simr.run(PARAMS, metric_request(returned=["sim.orbit"]))
+    assert result.status["sim"].tolist() == [["ran"]]  # the simulation is unaffected
+    assert result.status["sim_metrics"].tolist() == [[["failed", "failed"]]]
+    assert result.errors["sim_metrics"][0, 0, 0] == "RuntimeError: boom"
+    assert result.sim_metrics[0, 0, 0] is None
+    assert result.status["img_metrics"].tolist() == [[[["ran"]]]]  # the image metric still ran
+
+
+def test_a_nan_metric_value_is_a_failure(monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setitem(metrics.METHODS, "absolute_difference",
+                        replace(metrics.METHODS["absolute_difference"], function=lambda a, b: float("nan")))
+    result = simr.run(PARAMS, metric_request(sim_metrics=[]))
+    assert result.status["img"].tolist() == [[["ran"]]]  # the image is unaffected
+    assert result.status["img_metrics"].tolist() == [[[["failed"]]]]
+    assert "nan" in result.errors["img_metrics"][0, 0, 0, 0]
+
+
+def test_the_catalog_records_the_metric_entries_and_statuses(tmp_path):
+    simr.run(PARAMS, metric_request(), output=tmp_path)
+    [record] = simr.load_catalog(tmp_path)["runs"]
+    assert "fitness" not in record
+    assert [entry["method"] for entry in record["sim_metrics"]] == ["closest_approach", "closest_approach"]
+    assert record["img_metrics"][0]["inputs"] == ["img.model", "img.unperturbed"]
+    assert record["status"]["sim_metrics"] == [[["ran", "ran"]]]
+    assert record["status"]["img_metrics"] == [[[["ran"]]]]
+
+
+def test_metrics_come_back_the_same_through_a_pool():
+    from concurrent.futures import ProcessPoolExecutor
+
+    solo = simr.run(MODELS, metric_request())
+    with ProcessPoolExecutor(max_workers=2) as pool:
+        pooled = simr.run(MODELS, metric_request(), map=pool.map)
+    for m in range(len(MODELS)):
+        assert solo.sim_metrics[m, 0, 1] == pooled.sim_metrics[m, 0, 1]
+        assert solo.img_metrics[m, 0, 0, 0] == pooled.img_metrics[m, 0, 0, 0]
+    assert pooled.status["sim_metrics"].tolist() == solo.status["sim_metrics"].tolist()
+
+
+def test_metrics_use_saved_arrays_instead_of_computing(tmp_path, monkeypatch):
+    simr.run(PARAMS, save_request(["sim.search_orbit"]), output=tmp_path)
+    fresh = simr.run(PARAMS, metric_request(img_metrics=[]))
+    for item in ("sim.particles", "sim.unperturbed", "sim.orbit", "sim.search_orbit"):
+        monkeypatch.setitem(simr.SIM_DATA, item, _not_computed)
+    reused = simr.run(PARAMS, metric_request(img_metrics=[]), output=tmp_path)
+    assert reused.status["sim"].tolist() == [["reused"]]
+    assert reused.status["sim_metrics"].tolist() == [[["ran", "ran"]]]
+    assert reused.sim_metrics[0, 0, 1] == fresh.sim_metrics[0, 0, 1]
+
+
+def test_a_metric_cell_is_timed_on_its_own():
+    result = simr.run(PARAMS, metric_request())
+    assert result.seconds["sim_metrics"].shape == (1, 1, 2)
+    assert (result.seconds["sim_metrics"] >= 0).all()
+    assert (result.seconds["img_metrics"] >= 0).all()
+
+
+@pytest.mark.parametrize(
+    ("section", "entries", "message"),
+    [
+        ("sim_metrics", [{"method": "nope", "inputs": []}], "unknown method"),
+        ("sim_metrics", [{"inputs": ["sim.orbit"]}], 'needs a "method"'),
+        ("sim_metrics", [{"method": "closest_approach"}], "takes 1 input"),
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.orbit", "sim.orbit"]}], "takes 1 input"),
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.timing"]}], "isn't a metric input"),
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["tng_orbit"]}], "isn't a metric input"),
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.particles"]}],
+         "takes a orbit here, but sim.particles is a particles"),
+        ("sim_metrics", [{"method": "absolute_difference", "inputs": ["img.model", "img.unperturbed"]}],
+         "belongs in img_metrics"),
+        ("img_metrics", [{"method": "closest_approach", "inputs": ["sim.search_orbit"]}],
+         "belongs in sim_metrics"),
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.orbit"], "select": "position"}],
+         "isn't a single-float output"),
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.orbit"], "select": "nope"}],
+         "isn't a single-float output"),
+        ("img_metrics", [{"method": "absolute_difference", "inputs": ["img.model", "img.model"],
+                          "select": "distance"}], "is a scalar method"),
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.orbit"], "params": {"h": 1}}],
+         "unknown settings"),
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.orbit"], "extra": 1}],
+         "unknown keys in sim_metrics"),
+        ("sim_metrics", ["closest_approach"], "must be a dict"),
+        ("sim_metrics", "closest_approach", "must be a metric entry"),
+    ],
+)
+def test_bad_metric_entries_name_the_problem(section, entries, message):
+    with pytest.raises(ValueError, match=message):
+        simr.run(PARAMS, {"simulator": SMALL, section: entries})
+
+
+def test_a_method_with_a_setup_step_is_not_supported_yet():
+    from dataclasses import replace
+
+    original = metrics.METHODS["closest_approach"]
+    metrics.METHODS["closest_approach"] = replace(original, setup=lambda: None)
+    try:
+        with pytest.raises(NotImplementedError, match="setup step"):
+            simr.run(PARAMS, metric_request(img_metrics=[]))
+    finally:
+        metrics.METHODS["closest_approach"] = original

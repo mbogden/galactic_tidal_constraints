@@ -24,6 +24,7 @@ Inputs are declared by kind, not by item, so the same method works on arrays fro
   image:     (height, width) float32 in [0, 1] (`img.*`)
 """
 
+import math
 from dataclasses import dataclass
 from typing import Callable
 
@@ -138,6 +139,42 @@ def table() -> dict[str, dict]:
         }
         for name, m in METHODS.items()
     }
+
+
+def compute(method: str, inputs: list[np.ndarray], select: str | None = None, params: dict | None = None):
+    """Run one registered method on its input arrays and check the value against its declaration.
+
+    Args:
+        method: a name from `METHODS`.
+        inputs: the input arrays, one per declared kind, in order.
+        select: for a descriptive method, the single-float output to return instead of the dict.
+        params: settings passed to the method as keyword arguments (defaults for those left out come
+            from the entry that was filled in against the declaration, not from here).
+
+    Returns:
+        The method's float (a scalar method, or `select`), or its dict (a descriptive method).
+
+    Raises:
+        ValueError: the value doesn't match the declaration, or holds NaN or inf — a metric failure.
+        Whatever the method itself raises is not caught.
+    """
+    m = METHODS[method]
+    value = m.function(*inputs, **(params or {}))
+    if m.kind == "scalar":
+        if not isinstance(value, (int, float, np.floating, np.integer)) or isinstance(value, bool):
+            raise ValueError(f"{method} returned {type(value).__name__}, not one float")
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError(f"{method} returned {value}")
+        return value
+    if not isinstance(value, dict) or set(value) != set(m.outputs or {}):
+        raise ValueError(f"{method} must return a dict with exactly the keys {sorted(m.outputs or {})}")
+    for key, shape in (m.outputs or {}).items():
+        if np.shape(value[key]) != shape:
+            raise ValueError(f"{method}[{key!r}] must have shape {shape}: got {np.shape(value[key])}")
+        if not np.isfinite(np.asarray(value[key], dtype=float)).all():
+            raise ValueError(f"{method}[{key!r}] holds NaN or inf")
+    return float(value[select]) if select is not None else value
 
 
 @metric(

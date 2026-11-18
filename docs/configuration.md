@@ -22,8 +22,10 @@ it: `--models`, `--output`, `--mode`, `--workers` and `--log-level`
 | `run` | `return`: data to hand back in memory (Python only). `save`: data to write to the output folder. Both are lists of names (below) | Nothing returned or saved | [modules/simr.md](modules/simr.md#data-names) |
 | `simulator` | One `SimulatorConfig` entry, or a list of them | One default entry | [modules/simulation.md](modules/simulation.md#simulatorconfig) |
 | `image` | One `ImageConfig` entry, or a list of them | One default entry | [modules/image_creator.md](modules/image_creator.md#imageconfig) |
+| `sim_metrics` | One metric entry (below), or a list of them: metrics whose inputs are `sim.*` items | No metrics (an empty list `[]` also means that) | [modules/metrics.md](modules/metrics.md) |
+| `img_metrics` | The same, for metrics with at least one `img.*` input | No metrics | [modules/metrics.md](modules/metrics.md) |
 
-The `sim_metrics` and `img_metrics` sections come with the metrics stage. What each simulator setting does physically is in
+What each simulator setting does physically is in
 [spam_physics.md](spam_physics.md#the-settings-we-expose-simulatorconfig).
 
 ### Data names
@@ -45,14 +47,46 @@ Shapes and details: [modules/simr.md](modules/simr.md#data-names).
 On the command line `run.return` is ignored, as nothing comes back in memory there, so one config works
 in a notebook and on the command line. A non-empty `run.return` gets a warning; an empty one doesn't.
 
+### Metric entries
+A metric entry names a method from the metrics table ([modules/metrics.md](modules/metrics.md)) and the
+items it takes, in the order and kinds the method declares:
+
+```json
+"sim_metrics": [
+  {"method": "closest_approach", "inputs": ["sim.search_orbit"]},
+  {"method": "closest_approach", "inputs": ["sim.search_orbit"], "select": "distance"}
+],
+"img_metrics": [
+  {"method": "absolute_difference", "inputs": ["img.model", "img.unperturbed"]}
+]
+```
+
+| Key | Meaning |
+|---|---|
+| `method` | A name from the metrics table |
+| `inputs` | The items the method takes, one per declared kind, in order |
+| `select` (optional) | One single-float output of a descriptive method: the entry's value becomes that float instead of the dict |
+| `params` (optional) | The method's settings; everything left out takes the method's default |
+
+Metrics are computed whenever their sections list entries and always come back in the result; they
+aren't part of `run.return`, and their values aren't saved yet (saving is a later step; on the command
+line a warning says so). `simr` computes (or loads) the items an entry needs even when nothing else asks
+for them. An entry with an `img.*` input goes in `img_metrics` (one per simulation and image entry);
+an entry using only `sim.*` items goes in `sim_metrics` (one per simulation). `sim.timing` isn't a
+metric input.
+
 ## Lists and combinations
 - **Every model runs on every simulator entry, and every simulation is imaged with every image entry.**
   So 2 models, 2 simulator entries and 2 image entries make 4 simulations and 8 images.
 - A list can appear only directly under a section; anything deeper is an ordinary value, like an image
   center.
+- **Every metric entry runs on every cell:** each `sim_metrics` entry on every simulation, each
+  `img_metrics` entry on every (simulation, image) pair, with no per-entry filters.
 - **An entry's position is its name:** simulator entry 0 is `sim_00`, image entry 1 is `img_0001`. Data
-  is indexed the same way: `[model, simulator]` for `sim.*`, `[model, simulator, image]` for `img.*`
-  (later, metrics: `[model, simulator, image, metric]`, see [architecture.md](architecture.md#metric-array)).
+  is indexed the same way: `[model, simulator]` for `sim.*`, `[model, simulator, image]` for `img.*`,
+  and the metric values add an entry axis: `sim_metrics[model, simulator, entry]`,
+  `img_metrics[model, simulator, image, entry]`
+  (see [architecture.md](architecture.md#metric-arrays-two-levels)).
 - Combinations multiply quickly; keeping them to a sensible size is up to whoever writes the config.
 
 ## Checks
@@ -65,7 +99,11 @@ Everything is checked before anything runs, and an error says where the problem 
 | A name instead of a list | `run.save must be a list of names, e.g. ["sim.orbit"]` |
 | A wrong type | `simulator[0].lnl must be a number: '0.1'` |
 | A bad value | `simulator[0]: lnl can't be negative: -1` |
-| An empty list | `simulator is an empty list` |
+| An empty list | `simulator is an empty list` (an empty **metric** section is fine: no metrics) |
+| An unknown method | `sim_metrics[0].method: unknown method 'closest'. Known: […]` |
+| A wrong metric input | `sim_metrics[0].inputs[0]: closest_approach takes a orbit here, but sim.particles is a particles` |
+| An `img.*` input at the wrong level | `sim_metrics[0].inputs[0]: an img.* input belongs in img_metrics, not sim_metrics` |
+| A `select` that isn't one float | `sim_metrics[1].select: 'position' isn't a single-float output of closest_approach. Choices: ['t', 'distance']` |
 
 Types follow JSON:
 - A whole number is fine for a number field (JSON may write `10.0` as `10`), but a field that takes a

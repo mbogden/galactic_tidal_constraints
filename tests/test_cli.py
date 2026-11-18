@@ -44,8 +44,9 @@ def test_a_run_records_its_catalog(tmp_path, files):
     assert main(files(config={"simulator": SMALL})) == 0
     catalog = simr.load_catalog(tmp_path / "runs")
     assert len(catalog["models"]) == 1
-    # Nothing saved or returned: nothing to do (until fitness)
-    assert catalog["runs"][0]["status"] == {"sim": [["empty"]], "img": [[["empty"]]]}
+    # Nothing saved or returned, no metrics listed: nothing to do
+    assert catalog["runs"][0]["status"] == {"sim": [["empty"]], "img": [[["empty"]]],
+                                            "sim_metrics": [[[]]], "img_metrics": [[[[]]]]}
 
 
 def test_the_config_is_optional(tmp_path, files):
@@ -89,6 +90,16 @@ def test_an_empty_run_return_gives_no_warning(tmp_path, files, caplog):
     assert main(files(config=config)) == 0
     assert "run.return" not in caplog.text
     assert simr.load_catalog(tmp_path / "runs")["runs"][0]["run"] == {"return": [], "save": ["sim.timing"]}
+
+
+def test_metrics_run_with_a_warning_that_values_arent_saved(tmp_path, files, caplog):
+    config = {"simulator": SMALL,
+              "sim_metrics": [{"method": "closest_approach", "inputs": ["sim.orbit"], "select": "distance"}]}
+    assert main(files(config=config)) == 0
+    assert "metric values aren't saved yet" in caplog.text
+    record = simr.load_catalog(tmp_path / "runs")["runs"][0]
+    assert record["sim_metrics"][0]["select"] == "distance"
+    assert record["status"]["sim_metrics"] == [[["ran"]]]
 
 
 # Until fitness exists, a run computes only what run.save asks for, so these save sim.timing (the cheapest).

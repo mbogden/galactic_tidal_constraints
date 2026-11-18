@@ -166,6 +166,84 @@ def test_mismatched_shapes_are_an_error_naming_them():
         metrics.absolute_difference(np.zeros((2, 2), dtype=np.float32), np.zeros((2, 3), dtype=np.float32))
 
 
+# --- MDRN-4 step 2b: compute ----------------------------------------------------------------------------
+
+from contextlib import contextmanager  # noqa: E402
+
+
+@contextmanager
+def registered(function, **declaration):
+    """A method registered for one test, never left in METHODS."""
+    metrics.metric(**declaration)(function)
+    try:
+        yield
+    finally:
+        metrics.METHODS.pop(function.__name__, None)
+
+
+def test_compute_runs_a_scalar_method():
+    a = np.array([[0.0, 0.5], [1.0, 0.25]], dtype=np.float32)
+    b = np.zeros((2, 2), dtype=np.float32)
+    value = metrics.compute("absolute_difference", [a, b])
+    assert value == metrics.absolute_difference(a, b)
+    assert isinstance(value, float)
+
+
+def test_compute_select_returns_one_float():
+    full = metrics.compute("closest_approach", [ORBIT])
+    assert set(full) == {"t", "distance", "position", "velocity"}
+    value = metrics.compute("closest_approach", [ORBIT], select="distance")
+    assert value == full["distance"]
+    assert isinstance(value, float)
+
+
+def test_compute_rejects_a_nonfinite_scalar():
+    def bad_scalar(a, b):
+        return float("nan")
+
+    with registered(bad_scalar, kind="scalar", inputs=("image", "image"), best="low", range=(0, 1)):
+        with pytest.raises(ValueError, match="returned nan"):
+            metrics.compute("bad_scalar", [ORBIT, ORBIT])
+
+
+def test_compute_rejects_a_scalar_that_isnt_a_number():
+    def not_a_number(a, b):
+        return {"oops": 1.0}
+
+    with registered(not_a_number, kind="scalar", inputs=("image", "image"), best="low", range=(0, 1)):
+        with pytest.raises(ValueError, match="not one float"):
+            metrics.compute("not_a_number", [ORBIT, ORBIT])
+
+
+def test_compute_accepts_numpy_scalars():
+    def numpy_scalar(a, b):
+        return np.float32(0.5)
+
+    with registered(numpy_scalar, kind="scalar", inputs=("image", "image"), best="low", range=(0, 1)):
+        value = metrics.compute("numpy_scalar", [ORBIT, ORBIT])
+    assert value == 0.5 and isinstance(value, float)
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ({"t": 1.0}, "exactly the keys"),  # a missing key
+        ({"t": 1.0, "position": np.zeros(2), "extra": 0.0}, "exactly the keys"),  # an extra key
+        (3.0, "exactly the keys"),  # not a dict at all
+        ({"t": 1.0, "position": np.zeros(3)}, "must have shape"),
+        ({"t": float("inf"), "position": np.zeros(2)}, "holds NaN or inf"),
+        ({"t": 1.0, "position": np.array([0.0, np.nan])}, "holds NaN or inf"),
+    ],
+)
+def test_compute_checks_a_descriptive_value_against_its_declaration(value, message):
+    def bad_descriptor(orbit):
+        return value
+
+    with registered(bad_descriptor, kind="descriptive", inputs=("orbit",), outputs={"t": (), "position": (2,)}):
+        with pytest.raises(ValueError, match=message):
+            metrics.compute("bad_descriptor", [ORBIT])
+
+
 # --- MDRN-4 step 2a: the module doc's table -------------------------------------------------------------
 
 

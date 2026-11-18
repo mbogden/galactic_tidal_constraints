@@ -36,6 +36,19 @@ a descriptive method the reverse), and recorded in `metrics.METHODS` as a `Metri
 `metrics.table()` returns the same information as plain, JSON-ready data, for `simr`'s early checks
 and for higher-level programs.
 
+`metrics.compute(method, inputs, select=None, params=None)` runs one method on its input arrays and
+checks the value against the declaration: a scalar must be one finite float; a descriptive dict must
+have exactly the declared keys with the declared shapes and no NaN or inf anywhere. A value that fails
+is a `ValueError` — in `simr`, a metric failure. With `select`, the named single-float output comes
+back instead of the dict.
+
+## In `simr`
+The `sim_metrics` and `img_metrics` config sections list entries (`method`, `inputs`, optional
+`select` and `params`), checked against the table before anything runs; the values come back in
+`SimrResult.sim_metrics` `[model, simulator, entry]` and `.img_metrics` `[model, simulator, image,
+entry]`, with per-cell status, time and error. Details:
+[simr.md](simr.md#the-result) and [configuration.md](../configuration.md#metric-entries).
+
 ## Input kinds
 A method declares its inputs by kind, not by item, so the same method works on arrays from any
 source (a `simr` item, or an external array once those exist), as long as the shape fits:

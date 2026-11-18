@@ -42,8 +42,8 @@ def main(argv: list[str] | None = None) -> int:
             result = _run_mpi(models, request, args)
         else:
             result = simr.run(models, request, output=args.output)
-    except (OSError, ValueError, ImportError, simr.SimrRunError) as error:  # a short message, no traceback
-        logger.error("%s", error)
+    except (OSError, ValueError, ImportError, NotImplementedError, simr.SimrRunError) as error:
+        logger.error("%s", error)  # a short message, no traceback
         return COULD_NOT_RUN
 
     status = result.status["sim"]
@@ -121,6 +121,9 @@ def _read_config(path: str | None) -> dict:
         if run_section["return"]:
             logger.warning("run.return is ignored on the command line: nothing is returned in memory")
         request = {**request, "run": {key: value for key, value in run_section.items() if key != "return"}}
+    if request.get("sim_metrics") or request.get("img_metrics"):
+        logger.warning("metric values aren't saved yet (that's a later step): they're computed, and their"
+                       " statuses and configs are recorded in the catalog, but the values are discarded here")
     return request
 
 

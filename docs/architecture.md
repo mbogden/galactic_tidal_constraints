@@ -82,7 +82,7 @@ parallelization.
 - Lists combine as every combination, and higher-level code keeps that to a sensible size.
 - A list's index is its entry's name.
 
-For example, two models with this config (`img_metrics` is planned, not built):
+For example, two models with this config:
 ```json
 {
   "simulator": [ {...} ],
@@ -92,13 +92,15 @@ For example, two models with this config (`img_metrics` is planned, not built):
 ```
 How to write a config today, with real examples: [configuration.md](configuration.md).
 
-## Metric array
-SIMR and the workflow always return a 4D array, with no automatic reduction, so batches always join
-cleanly along the model axis:
+## Metric arrays: two levels
+SIMR and the workflow return the metrics as full arrays, with no automatic reduction, so batches
+always join cleanly along the model axis. There are two levels, so nothing is copied, NaN-padded or
+counted twice:
 ```
-img_metrics[model, simulator, image, metric]
+sim_metrics[model, simulator, entry]          metrics whose inputs are sim.* items (orbits, particles)
+img_metrics[model, simulator, image, entry]   metrics with any img.* input
 ```
-- The example above returns shape `(2, 1, 2, 2)`.
-- A single entry is an axis of length 1. Application and analysis code reduce the array where they
-  use it.
+- The example above returns `img_metrics` of shape `(2, 1, 2, 2)`.
+- A single entry is an axis of length 1. Application and analysis code reduce the arrays where they
+  use them.
 - Workflows can still send other float arrays where needed.

@@ -114,8 +114,10 @@ One config tree for everything that can change a result, plus a few runtime flag
 - A model is SPAM's first 14 parameters (`x` to `theta2`). We only use the extended potential, which
   never reads the last 8 (`epsilon1/2`, the six `rscale`), so they aren't tracked anywhere. `sim`
   appends fixed values for them when it calls `jspam`. Why: [docs/spam_physics.md](docs/spam_physics.md).
-- SIMR and the workflow always return a 4D array, with no automatic reduction:
-  `img_metrics[model, simulator, image, metric]`.
+- SIMR and the workflow return the metrics as full arrays, with no automatic reduction, on two levels
+  (so nothing is copied, NaN-padded or counted twice): `sim_metrics[model, simulator, entry]` for
+  metrics whose inputs are `sim.*` items, and `img_metrics[model, simulator, image, entry]` for
+  metrics with any `img.*` input.
 - Other data is kept only when a run asks for it by name. The `run` section has two lists of
   `stage.item` names (e.g. `sim.particles`, `sim.orbit`, later `img.model`): `return` (passed back
   in memory) and `save` (written to disk). They're independent; a run can do both. Each stage

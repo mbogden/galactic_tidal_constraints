@@ -7,15 +7,26 @@ A request is a plain dict, shaped like the config file (Step 11):
         "run": {"return": ["sim.orbit", "sim.particles", "img.model"]},
         "simulator": [{"lnl": 0.1}, {"lnl": 0.01}],   # one dict or a list; each becomes a SimulatorConfig
         "image": [{}, {"blur_sigma": 1.0}],           # one dict or a list; each becomes an ImageConfig
+        "sim_metrics": [{"method": "closest_approach", "inputs": ["sim.search_orbit"], "select": "distance"}],
+        "img_metrics": [{"method": "absolute_difference", "inputs": ["img.model", "img.unperturbed"]}],
     }
     result = run(models, request)
     result.data["sim.orbit"][12, 1]       # model 12's orbit from simulator entry 1
-    result.data["img.model"][12, 1, 0]  # its image from image entry 0
+    result.data["img.model"][12, 1, 0]    # its image from image entry 0
+    result.sim_metrics[12, 1, 0]          # its closest-approach distance (entry 0 of sim_metrics)
+    result.img_metrics[12, 1, 0, 0]       # its image difference (entry 0 of img_metrics)
 
 Every model runs on every simulator entry, with that entry's seed (`SimulatorConfig.seed`, 0 by default),
 and every simulation is imaged with every image entry. Only what `return` and `save` name is computed:
 asking only for "sim.orbit" never runs particles, and an image computes (or loads) only the particles it
 needs. Simulated arrays and images come back as float32 (`PLAN.md`, Precision).
+
+Metrics (the Metrics stage, `simr/metrics.py`) are computed whenever their sections list entries, and
+always come back in the result; they aren't part of run.return and aren't saved yet. Every `sim_metrics`
+entry runs on every simulation, and every `img_metrics` entry on every (simulation, image) pair, with no
+per-entry filters. A metric's inputs are simr items; simr computes (or loads) what they need even when
+nothing else asks for those items, so an orbit-only request with `sim_metrics` never builds an image.
+Entries are checked against the metrics table (`metrics.METHODS`) before anything runs.
 
 With an output (`run(..., output=...)`), every run is recorded in a catalog, whether or not it saves data.
 The output is a folder or a `.json` file, told apart by name:
@@ -80,6 +91,7 @@ from pathlib import Path
 import numpy as np
 
 from galactic_tidal_constraints.simr import image_creator as img
+from galactic_tidal_constraints.simr import metrics
 from galactic_tidal_constraints.simr import simulation as sim
 from galactic_tidal_constraints.simr.image_creator import ImageConfig
 from galactic_tidal_constraints.simr.simulation import SimulatorConfig
@@ -144,8 +156,18 @@ IMAGE_DATA = {
 # While a run collects results, its statuses are written to the catalog at most this often (and at the end).
 CATALOG_WRITE_SECONDS = 60.0
 
-REQUEST_KEYS = ("run", "simulator", "image")
+REQUEST_KEYS = ("run", "simulator", "image", "sim_metrics", "img_metrics")
 RUN_KEYS = ("return", "save")
+METRIC_ENTRY_KEYS = ("method", "inputs", "select", "params")
+
+# The input kind (metrics.INPUT_KINDS) each simulator item satisfies as a metric input; img.* items are
+# all "image", and sim.timing (a dict) is no metric input at all.
+SIM_INPUT_KINDS = {
+    "sim.orbit": "orbit",
+    "sim.search_orbit": "orbit",
+    "sim.particles": "particles",
+    "sim.unperturbed": "particles",
+}
 
 
 @dataclass
@@ -161,13 +183,26 @@ class SimrResult:
             object array indexed by the levels its stage depends on: [model, simulator] for "sim.*",
             [model, simulator, image] for "img.*". Each cell holds that run's array (or dict, for
             "sim.timing"), or None if it failed or was skipped.
+        sim_metrics: each `sim_metrics` entry's value for each simulation, an object array indexed
+            [model, simulator, entry]: a float (a scalar method, or `select`), a dict (a descriptive
+            method), or None (failed or skipped). Metrics always come back when the request lists them;
+            they aren't part of run.return. Shape (N, S, 0) with no entries.
+        img_metrics: likewise for each `img_metrics` entry per image, [model, simulator, image, entry].
+        sim_metric_configs, img_metric_configs: the filled-in entries, each `{"method", "inputs",
+            "select" (None when absent), "params"}` with every setting's default filled in, so
+            `sim_metrics[..., k]` is `sim_metric_configs[k]` (and the same at the image level).
         ids: with an output, each row's model id in its catalog (in a folder, its data goes in
             `model_<id>`). All None without an output.
-        status, seconds, errors: per stage ("sim", "img"), each indexed like that stage's data:
+        status, seconds, errors: per stage ("sim", "img", "sim_metrics", "img_metrics"), each indexed
+            like that stage's data or values:
             status: "ran", "reused" (saved, and nothing had to be computed), "failed",
-                "skipped" ("img" only: its simulation failed), or "empty" (nothing was requested from
-                the stage, so there was nothing to do).
-            seconds: wall time, loading included. A simulation's time doesn't include its images.
+                "skipped" (the simulation, or for an image metric the image, it needs failed), or
+                "empty" (nothing was requested from the stage, so there was nothing to do; metric
+                cells are never "empty": with no entries there are no cells).
+                A metric cell is "failed" when its method raised, returned NaN or inf, or returned
+                something that doesn't match its declaration; its simulation and image are unaffected.
+            seconds: wall time, loading included. A simulation's time doesn't include its images or
+                metrics; each metric cell is timed on its own.
             errors: "Type: message" for a failure, else None. The traceback is in the log.
     """
 
@@ -175,6 +210,10 @@ class SimrResult:
     simulators: list[SimulatorConfig]
     images: list[ImageConfig]
     data: dict[str, np.ndarray]
+    sim_metrics: np.ndarray
+    img_metrics: np.ndarray
+    sim_metric_configs: list[dict]
+    img_metric_configs: list[dict]
     ids: list[str | None]
     status: dict[str, np.ndarray]
     seconds: dict[str, np.ndarray]
@@ -195,6 +234,9 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
                 pattern (see `SimulatorConfig.seed`).
             image (default one `ImageConfig()`): a dict or `ImageConfig`, or a list of them. Every
                 simulation gets every image entry. Centers can be given as lists ([column, row]).
+            sim_metrics, img_metrics (default none): metric entries, each a dict `{"method", "inputs",
+                "select" (optional), "params" (optional)}` (see the module docstring and
+                `metrics.METHODS`). One entry or a list; an empty list is allowed and means none.
         output: where to record the run: a folder (its `catalog.json`, plus model folders for the data
             run.save names, and saved data is loaded from there instead of computed) or a `.json` catalog
             file (no model data). A folder is needed when run.save names something; optional otherwise.
@@ -212,11 +254,12 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
 
     A run with an output adds a record to the catalog's "runs" when it starts and completes it when it ends:
     "started", "finished" (None if the run never got there), "code", "run" (its return and save lists),
-    "simulator" and "image" (the full configs), "fitness" (empty until that stage exists), "model_ids"
-    (row m's model id), and at the end "status", "seconds" and "errors" (as in the result, as lists).
+    "simulator" and "image" (the full configs), "sim_metrics" and "img_metrics" (the filled-in entries),
+    "model_ids" (row m's model id), and at the end "status", "seconds" and "errors" (as in the result, as
+    lists). Metric values aren't saved yet; saving them is a later step.
     """
     models = _check_models(models)
-    returned, saved, configs, image_configs = _read_request(request)
+    returned, saved, configs, image_configs, sim_entries, img_entries = _read_request(request)
     catalog_file, root = output_paths(output) if output is not None else (None, None)
     if saved and root is None:
         where = "no output was given" if output is None else f"{output} is a catalog file, not a folder"
@@ -233,14 +276,21 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
             "run": {"return": returned, "save": saved},
             "simulator": [_json_ready(asdict(config)) for config in configs],
             "image": [_json_ready(asdict(config)) for config in image_configs],
-            "fitness": [],
+            "sim_metrics": sim_entries,
+            "img_metrics": img_entries,
             "model_ids": ids,
         }
         catalog["runs"].append(run_record)
         _write_catalog(catalog_file, catalog)
 
-    shapes = {"sim": (len(models), len(configs)), "img": (len(models), len(configs), len(image_configs))}
+    shapes = {
+        "sim": (len(models), len(configs)),
+        "img": (len(models), len(configs), len(image_configs)),
+        "sim_metrics": (len(models), len(configs), len(sim_entries)),
+        "img_metrics": (len(models), len(configs), len(image_configs), len(img_entries)),
+    }
     data = {name: np.empty(shapes[_stage(name)], dtype=object) for name in returned}
+    metric_values = {stage: np.full(shapes[stage], None, dtype=object) for stage in ("sim_metrics", "img_metrics")}
     status = {stage: np.empty(shape, dtype=object) for stage, shape in shapes.items()}
     seconds = {stage: np.zeros(shape) for stage, shape in shapes.items()}
     errors = {stage: np.full(shape, None, dtype=object) for stage, shape in shapes.items()}
@@ -253,6 +303,7 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     tasks = [
         _ModelTask(row=r[0], model_id=ids[r[0]], params=models[r[0]], configs=configs,
                    image_configs=image_configs, returned=returned, saved=saved,
+                   sim_metric_configs=sim_entries, img_metric_configs=img_entries,
                    folder=root / f"model_{ids[r[0]]}" if root is not None else None, versions=versions)
         for r in rows
     ]
@@ -264,6 +315,8 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
                 for item in returned:
                     for index, value in np.ndenumerate(outcome["data"][item]):
                         data[item][(m, *index)] = value  # cell by cell: numpy would try to merge equal-shape arrays
+                for stage in metric_values:
+                    metric_values[stage][m] = outcome["metrics"][stage]
                 for stage in shapes:
                     status[stage][m] = outcome["status"][stage]
                     seconds[stage][m] = outcome["seconds"][stage]
@@ -283,14 +336,21 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     counts = {word: int((status["sim"] == word).sum()) for word in ("ran", "reused", "failed", "empty")}
     logger.info("simr: %d simulations: %d ran, %d reused, %d failed, %d empty (nothing requested)",
                 status["sim"].size, *counts.values())
-    if any(_stage(name) == "img" for name in returned + saved):
+    if any(_stage(name) == "img" for name in returned + saved) or img_entries:
         counts = {word: int((status["img"] == word).sum()) for word in ("ran", "reused", "failed", "skipped")}
         logger.info("simr: %d images: %d ran, %d reused, %d failed, %d skipped (simulation failed)",
                     status["img"].size, *counts.values())
+    for stage, label in (("sim_metrics", "simulation-level"), ("img_metrics", "image-level")):
+        if status[stage].size:
+            counts = {word: int((status[stage] == word).sum()) for word in ("ran", "failed", "skipped")}
+            logger.info("simr: %d %s metric cells: %d ran, %d failed, %d skipped",
+                        status[stage].size, label, *counts.values())
     if catalog is not None:
         run_record["finished"] = _now()
         _record_status(catalog_file, catalog, run_record, status, seconds, errors)
-    return SimrResult(models=models, simulators=configs, images=image_configs, data=data, ids=ids,
+    return SimrResult(models=models, simulators=configs, images=image_configs, data=data,
+                      sim_metrics=metric_values["sim_metrics"], img_metrics=metric_values["img_metrics"],
+                      sim_metric_configs=sim_entries, img_metric_configs=img_entries, ids=ids,
                       status=status, seconds=seconds, errors=errors)
 
 
@@ -353,6 +413,8 @@ class _ModelTask:
     image_configs: list[ImageConfig]
     returned: list[str]
     saved: list[str]
+    sim_metric_configs: list[dict]
+    img_metric_configs: list[dict]
     folder: Path | None  # the model's folder, when the output is a folder
     versions: dict | None
 
@@ -362,19 +424,34 @@ def _run_model(task: _ModelTask) -> dict:
     compute the rest, save what's asked for, and catch each simulation's and image's failure. Touches only
     this model's folder, never the catalog.
 
-    Returns {"data": {item: array of values}, "status", "seconds", "errors": {stage: array}}, each array
-    shaped [simulator] for "sim" and [simulator, image] for "img".
+    Returns {"data": {item: array of values}, "metrics", "status", "seconds", "errors": {stage: array}},
+    each array shaped [simulator] for "sim", [simulator, image] for "img", and with an [entry] axis after
+    those for "sim_metrics" and "img_metrics".
     """
-    shapes = {"sim": (len(task.configs),), "img": (len(task.configs), len(task.image_configs))}
+    shapes = {
+        "sim": (len(task.configs),),
+        "img": (len(task.configs), len(task.image_configs)),
+        "sim_metrics": (len(task.configs), len(task.sim_metric_configs)),
+        "img_metrics": (len(task.configs), len(task.image_configs), len(task.img_metric_configs)),
+    }
     outcome = {
         "data": {item: np.empty(shapes[_stage(item)], dtype=object) for item in task.returned},
+        "metrics": {stage: np.full(shapes[stage], None, dtype=object) for stage in ("sim_metrics", "img_metrics")},
         "status": {stage: np.empty(shape, dtype=object) for stage, shape in shapes.items()},
         "seconds": {stage: np.zeros(shape) for stage, shape in shapes.items()},
         "errors": {stage: np.full(shape, None, dtype=object) for stage, shape in shapes.items()},
     }
     sim_returned = [item for item in task.returned if _stage(item) == "sim"]
     sim_saved = [item for item in task.saved if _stage(item) == "sim"]
-    image_items = list(dict.fromkeys(item for item in task.returned + task.saved if _stage(item) == "img"))
+    metric_sim_needs = [name for entry in task.sim_metric_configs for name in entry["inputs"]] + [
+        name for entry in task.img_metric_configs for name in entry["inputs"] if name in SIM_DATA
+    ]
+    metric_image_needs = [
+        name for entry in task.img_metric_configs for name in entry["inputs"] if name in IMAGE_DATA
+    ]
+    image_items = list(dict.fromkeys(
+        [item for item in task.returned + task.saved if _stage(item) == "img"] + metric_image_needs
+    ))
     image_saved = [item for item in task.saved if _stage(item) == "img"]
     folder = task.folder
     record = _open_record(folder, task.params) if folder is not None else None
@@ -396,9 +473,10 @@ def _run_model(task: _ModelTask) -> dict:
             [item for item in image_saved if item not in saved] if stored is not None and entry is not None else []
             for entry, saved in zip(image_entries, stored_images)
         ]
-        # The sim items wanted in memory: those returned, and those the images still to be made need
+        # The sim items wanted in memory: those returned, those the metrics use, and those the images
+        # still to be made need
         wanted = list(dict.fromkeys(
-            sim_returned
+            sim_returned + metric_sim_needs
             + [need for saved in stored_images for item in image_items if item not in saved
                for need in IMAGE_DATA[item][0]]
         ))
@@ -413,17 +491,22 @@ def _run_model(task: _ModelTask) -> dict:
             outcome["errors"]["sim"][s] = f"{type(error).__name__}: {error}"
             outcome["seconds"]["sim"][s] = time.perf_counter() - start
             outcome["status"]["img"][s] = "skipped" if image_items else "empty"
+            outcome["status"]["sim_metrics"][s] = "skipped"
+            outcome["status"]["img_metrics"][s] = "skipped"
             continue
         for item in sim_returned:
             outcome["data"][item][s] = values[item]
         if to_save:  # errors while writing aren't caught: they stop the run
             arrays = {item: values[item] for item in to_save if item != "sim.timing"}
             _save_simulation(folder, record, name, config, arrays, values.get("sim.timing"), task.versions)
-        if not sim_returned and not sim_saved and not image_items:
+        if not sim_returned and not sim_saved and not image_items and not task.sim_metric_configs:
             outcome["status"]["sim"][s] = "empty"  # the request asked for nothing, so there was nothing to do
         else:
             outcome["status"]["sim"][s] = "reused" if stored and not computed else "ran"  # reused: nothing computed
         outcome["seconds"]["sim"][s] = time.perf_counter() - start
+        for k, entry in enumerate(task.sim_metric_configs):
+            _run_metric(task, entry, [values[name] for name in entry["inputs"]],
+                        outcome, "sim_metrics", (s, k), f"simulator {s}, sim_metrics[{k}]")
         for i, image_config in enumerate(task.image_configs):
             if not image_items:
                 outcome["status"]["img"][s, i] = "empty"
@@ -433,7 +516,7 @@ def _run_model(task: _ModelTask) -> dict:
             try:
                 for item in image_items:
                     if item in stored_images[i]:
-                        if item in task.returned:
+                        if item in task.returned or item in metric_image_needs:
                             made[item] = stored_images[i][item]()
                     else:
                         made[item] = IMAGE_DATA[item][1](values, task.params, config, image_config)
@@ -443,6 +526,7 @@ def _run_model(task: _ModelTask) -> dict:
                 outcome["status"]["img"][s, i] = "failed"
                 outcome["errors"]["img"][s, i] = f"{type(error).__name__}: {error}"
                 outcome["seconds"]["img"][s, i] = time.perf_counter() - start
+                outcome["status"]["img_metrics"][s, i] = "skipped"
                 continue
             for item in task.returned:
                 if _stage(item) == "img":
@@ -452,7 +536,29 @@ def _run_model(task: _ModelTask) -> dict:
                 _save_images(folder, record, image_name(i), image_config, name, arrays)
             outcome["status"]["img"][s, i] = "ran" if image_computed else "reused"
             outcome["seconds"]["img"][s, i] = time.perf_counter() - start
+            for k, entry in enumerate(task.img_metric_configs):
+                arrays = [made[name] if name in IMAGE_DATA else values[name] for name in entry["inputs"]]
+                _run_metric(task, entry, arrays, outcome, "img_metrics", (s, i, k),
+                            f"simulator {s}, image {i}, img_metrics[{k}]")
     return outcome
+
+
+def _run_metric(task: "_ModelTask", entry: dict, arrays: list, outcome: dict, stage: str,
+                index: tuple, where: str) -> None:
+    """One metric cell: run the entry's method on its input arrays and record the value, status, time and
+    error. A failure (the method raised, or its value failed `metrics.compute`'s checks) is this cell's
+    alone: it's logged, and the simulation, image and other metrics move on."""
+    start = time.perf_counter()
+    try:
+        value = metrics.compute(entry["method"], arrays, select=entry["select"], params=entry["params"])
+    except Exception as error:
+        logger.exception("model %d (id %s), %s (%s) failed", task.row, task.model_id, where, entry["method"])
+        outcome["status"][stage][index] = "failed"
+        outcome["errors"][stage][index] = f"{type(error).__name__}: {error}"
+    else:
+        outcome["metrics"][stage][index] = value
+        outcome["status"][stage][index] = "ran"
+    outcome["seconds"][stage][index] = time.perf_counter() - start
 
 
 def _simulate(params, config, returned, to_save, stored) -> tuple[dict, bool]:
@@ -807,14 +913,82 @@ def _check_models(models) -> np.ndarray:
     return models.copy()  # the result keeps its own copy, so later edits to the caller's array don't reach it
 
 
-def _read_request(request: dict) -> tuple[list[str], list[str], list[SimulatorConfig], list[ImageConfig]]:
+def _read_request(
+    request: dict,
+) -> tuple[list[str], list[str], list[SimulatorConfig], list[ImageConfig], list[dict], list[dict]]:
     _reject_unknown("request", request, REQUEST_KEYS)
     run_section = request.get("run", {})
     _reject_unknown("run", run_section, RUN_KEYS)
     returned, saved = (_names(run_section, key) for key in ("return", "save"))
     configs = _stage_configs(request, "simulator", SimulatorConfig)
     image_configs = _stage_configs(request, "image", ImageConfig)
-    return returned, saved, configs, image_configs
+    sim_entries = _metric_entries(request, "sim_metrics")
+    img_entries = _metric_entries(request, "img_metrics")
+    return returned, saved, configs, image_configs, sim_entries, img_entries
+
+
+def _metric_entries(request: dict, section: str) -> list[dict]:
+    """A metric section's entries, filled in. One entry (a dict) or a list of them; a missing section or
+    an empty list means no metrics (unlike the stage sections, [] is allowed: a placeholder while a
+    config only computes simulations or images)."""
+    entries = request.get(section, [])
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not isinstance(entries, (list, tuple)):
+        raise ValueError(f"{section} must be a metric entry (a dict) or a list of them: {entries!r}")
+    return [_metric_entry(f"{section}[{i}]", entry, section) for i, entry in enumerate(entries)]
+
+
+def _metric_entry(where: str, entry, section: str) -> dict:
+    """One metric entry, checked against the metrics table before anything runs, with every setting's
+    default filled in. The filled-in entry always records all four keys."""
+    _reject_unknown(where, entry, METRIC_ENTRY_KEYS)
+    if "method" not in entry:
+        raise ValueError(f'{where} needs a "method": one of {list(metrics.METHODS)}')
+    method = metrics.METHODS.get(entry["method"])
+    if method is None:
+        raise ValueError(f"{where}.method: unknown method {entry['method']!r}. Known: {list(metrics.METHODS)}")
+    if method.setup is not None:
+        raise NotImplementedError(
+            f"{where}: {method.name} declares a setup step, which simr can't run yet (planned with DL metrics)"
+        )
+    inputs = entry.get("inputs", [])
+    if isinstance(inputs, str) or not isinstance(inputs, (list, tuple)) or len(inputs) != len(method.inputs):
+        raise ValueError(
+            f"{where}.inputs: {method.name} takes {len(method.inputs)} input(s), one per kind: {list(method.inputs)}"
+        )
+    for j, name in enumerate(inputs):
+        if section == "sim_metrics" and name in IMAGE_DATA:
+            raise ValueError(f"{where}.inputs[{j}]: an img.* input belongs in img_metrics, not sim_metrics")
+        kind = SIM_INPUT_KINDS.get(name, "image" if name in IMAGE_DATA else None)
+        if kind is None:
+            raise ValueError(
+                f"{where}.inputs[{j}]: {name!r} isn't a metric input. Known: {[*SIM_INPUT_KINDS, *IMAGE_DATA]}"
+            )
+        if kind != method.inputs[j]:
+            raise ValueError(
+                f"{where}.inputs[{j}]: {method.name} takes a {method.inputs[j]} here, but {name} is a {kind}"
+            )
+    if section == "img_metrics" and not any(name in IMAGE_DATA for name in inputs):
+        raise ValueError(f"{where}: no img.* input; a metric that uses only sim.* items belongs in sim_metrics")
+    select = entry.get("select")
+    if select is not None:
+        if method.kind != "descriptive":
+            raise ValueError(
+                f"{where}.select: {method.name} is a scalar method; select picks one float out of a descriptive one"
+            )
+        if select not in method.scalar_outputs:
+            raise ValueError(
+                f"{where}.select: {select!r} isn't a single-float output of {method.name}. "
+                f"Choices: {list(method.scalar_outputs)}"
+            )
+    params = entry.get("params", {})
+    if not isinstance(params, dict):
+        raise ValueError(f"{where}.params must be a dict: {params!r}")
+    unknown = [key for key in params if key not in method.settings]
+    if unknown:
+        raise ValueError(f"{where}.params: unknown settings {unknown}. {method.name} has: {list(method.settings)}")
+    return {"method": method.name, "inputs": list(inputs), "select": select, "params": {**method.settings, **params}}
 
 
 def _names(run_section: dict, key: str) -> list[str]:
