@@ -36,11 +36,14 @@ The project runs inside its image, [`ogdenm12/gtc-base-image:v2`](https://hub.do
 Use Docker on your own machine and Apptainer on clusters
 ([docs/guides/running_on_babbage.md](docs/guides/running_on_babbage.md)). From the repo's root:
 ```bash
-docker run --rm -it -v "$PWD:/src:ro" ogdenm12/gtc-base-image:v2 bash -lc \
+docker run --rm -it -v "$PWD:/src:ro" -v gtc-uv-cache:/root/.cache/uv ogdenm12/gtc-base-image:v2 bash -lc \
   "cp -r /src /work && cd /work && uv sync --locked --group mpi && bash"
 ```
 The repo is mounted read-only and copied into the container, so the container's `.venv` stays out
-of your checkout. In Git Bash on Windows, put `MSYS_NO_PATHCONV=1` before `docker run`, or Git Bash
+of your checkout. `-v gtc-uv-cache:/root/.cache/uv` keeps uv's cache in a Docker volume: without it,
+every container starts with an empty cache and `uv sync` re-downloads everything and rebuilds `jspam`
+from source (about 3 minutes); with it, repeat installs take about a second. In Git Bash on Windows,
+put `MSYS_NO_PATHCONV=1` before `docker run`, or Git Bash
 rewrites the `/src` path. To work on the repo in place, run notebooks or save data, see
 [docs/guides/docker_image.md](docs/guides/docker_image.md).
 
@@ -108,7 +111,7 @@ tests/               pytest tests
 ## Tests
 In the image, from the repo's root:
 ```bash
-docker run --rm -v "$PWD:/src:ro" ogdenm12/gtc-base-image:v2 bash -lc \
+docker run --rm -v "$PWD:/src:ro" -v gtc-uv-cache:/root/.cache/uv ogdenm12/gtc-base-image:v2 bash -lc \
   "cp -r /src /work && cd /work && uv sync --locked --group mpi && uv run pytest"
 ```
 Inside a running container (or without the image):

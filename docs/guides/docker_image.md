@@ -30,6 +30,14 @@ The README's [Install](../../README.md#install) and [Tests](../../README.md#test
 repo read-only and copy it inside the container. Nothing is written to your checkout, and the
 container's environment is gone when it exits. Best for running the tests as they are.
 
+**Always mount the uv cache volume** (`-v gtc-uv-cache:/root/.cache/uv`, as those commands do). Each
+`docker run --rm` starts with an empty cache, so without the volume every run re-downloads all wheels
+and rebuilds `jspam` from its Fortran source: about 3 minutes of installs before anything runs, every
+time. With the volume, the cache outlives the container and a repeat `uv sync` takes about a second
+(measured on ProArt-26: "Prepared 9 packages in 3m 05s" cold, 634 ms warm). The volume is created on
+first use; `docker volume rm gtc-uv-cache` resets it. uv's "Failed to hardlink files" warning is
+expected (the cache volume and `/work` are different filesystems, so files are copied) and harmless.
+
 ### Working in the repo
 To edit code or notebooks and keep the results, mount the repo itself and keep its environment in a
 Docker volume:
