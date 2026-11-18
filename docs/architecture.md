@@ -2,7 +2,7 @@
 
 > **Status: this is the plan, and it's still in testing and development.** Built so far: the
 > Simulator and Image Creator stages and the `simr` workflow that runs them (see the module docs in
-> [modules/](modules/)). Fitness, the applications and the optimizer are still plans, and details may
+> [modules/](modules/)). The metrics stage, the applications and the optimizer are still plans, and details may
 > change as they're written. Decisions and rules are in [PLAN.md](../PLAN.md).
 
 This project simulates galaxy collisions, turns them into images, and scores how well they match a
@@ -15,7 +15,7 @@ between them.
 | **Experiment** | One question ("Can X do Y?"), answered with many runs plus analysis between them | Slurm cluster, usually one run per node |
 | **Application / run** | The application is the code you launch; a run is one launch with one target and one config | One node, main process |
 | **Workflow** | Everything one process does for its batch, including disk reads and writes | One process |
-| **Stage** | One science step: Simulator, Image Creator or Fitness Function | Same process |
+| **Stage** | One science step: Simulator, Image Creator or Metrics | Same process |
 
 "Pipeline" isn't a structural term here. Say "simulation" or "stage" where "SPAM run" would be
 unclear.
@@ -25,8 +25,8 @@ unclear.
 2. The application expands the config into tables of models and stage settings.
 3. The application splits the work and sends each process a config dict for its slice.
 4. Each process runs a workflow, which calls the stages and reads or writes files as needed.
-5. Each workflow returns a score array, and the application joins them into the run's score array.
-6. The run saves its tables and scores, and the experiment analyzes results across runs.
+5. Each workflow returns a metric array, and the application joins them into the run's metric array.
+6. The run saves its tables and metrics, and the experiment analyzes results across runs.
 
 ## Experiment
 - Changes the config for each run. Each run is parallelized through Slurm.
@@ -37,17 +37,17 @@ unclear.
 ## Application and run
 - TNG, GZ comparison, DL training and Target GA each get their own application, and the code lives
   in the repo.
-- The application expands the config into model, simulator, image and fitness tables.
-- The run keeps those tables and its final score array in its data folder.
+- The application expands the config into model, simulator, image and metric tables.
+- The run keeps those tables and its final metric array in its data folder.
 - The application chooses how to split the work across processes. Shrinking batches are one example,
   and suit SPAM, where a simulation can take from a second to over a minute.
-- Composite scores, such as weighted averages of other scores, are computed here from the returned
-  array, so weights can change without re-simulating. A score that needs more than the base scores
-  is a normal fitness method.
+- Composite scores, such as weighted averages of metrics, are computed here from the returned
+  array, so weights can change without re-simulating. A combination that needs the arrays themselves,
+  not just the metric values, is a normal metric method.
 
 ## SIMR module and workflow
 - `simr` is a module with an optional main function. It holds the workflow and handles disk access.
-- Each simulation is reused for all its images and scores, because the simulation is the expensive
+- Each simulation is reused for all its images and metrics, because the simulation is the expensive
   part.
 - SIMR is in charge of disk reads and writes, including saving and resuming, using one standard
   per-model folder structure.
@@ -66,13 +66,13 @@ parallelization.
 |---|---|---|---|
 | **Simulator** | One model's encounter parameters | An orbit or particles | `simr/simulation.py` ([modules/simulation.md](modules/simulation.md), [spam_physics.md](spam_physics.md)) |
 | **Image Creator** | One particle set, plus its model (which sets the frame) | One image, `float32` in [0, 1] | `simr/image_creator.py` ([modules/image_creator.md](modules/image_creator.md)) |
-| **Fitness Function** | An image or orbit, plus the target | One float | Not yet |
+| **Metrics** | An image or orbit, plus the target | One float, or a dict for descriptive metrics | Not yet |
 
 - SPAM stays replaceable behind the Simulator stage.
 - The Image Creator is target-free: its config sets the pixels the two galaxies' centers land on, and
   higher-level code decides whether those come from a target image. The same frame maps an orbit into
   the image's pixels.
-- The Fitness Function holds several methods, including orbit and image comparison.
+- The metrics stage holds several methods, including orbit and image comparison.
 
 ## Models and stage lists
 - Encounter parameters are the one hard input every run needs. They're their own input, a list of
@@ -82,21 +82,21 @@ parallelization.
 - Lists combine as every combination, and higher-level code keeps that to a sensible size.
 - A list's index is its entry's name.
 
-For example, two models with this config (`fitness` is planned, not built):
+For example, two models with this config (`img_metrics` is planned, not built):
 ```json
 {
   "simulator": [ {...} ],
   "image":     [ {...}, {...} ],
-  "fitness":   [ {...}, {...} ]
+  "img_metrics": [ {...}, {...} ]
 }
 ```
 How to write a config today, with real examples: [configuration.md](configuration.md).
 
-## Score array
+## Metric array
 SIMR and the workflow always return a 4D array, with no automatic reduction, so batches always join
 cleanly along the model axis:
 ```
-scores[model, simulator, image, fitness]
+img_metrics[model, simulator, image, metric]
 ```
 - The example above returns shape `(2, 1, 2, 2)`.
 - A single entry is an axis of length 1. Application and analysis code reduce the array where they

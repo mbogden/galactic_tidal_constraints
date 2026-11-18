@@ -23,7 +23,7 @@ it: `--models`, `--output`, `--mode`, `--workers` and `--log-level`
 | `simulator` | One `SimulatorConfig` entry, or a list of them | One default entry | [modules/simulation.md](modules/simulation.md#simulatorconfig) |
 | `image` | One `ImageConfig` entry, or a list of them | One default entry | [modules/image_creator.md](modules/image_creator.md#imageconfig) |
 
-A `fitness` section comes with the Fitness stage. What each simulator setting does physically is in
+The `sim_metrics` and `img_metrics` sections come with the metrics stage. What each simulator setting does physically is in
 [spam_physics.md](spam_physics.md#the-settings-we-expose-simulatorconfig).
 
 ### Data names
@@ -51,7 +51,7 @@ in a notebook and on the command line. A non-empty `run.return` gets a warning; 
   center.
 - **An entry's position is its name:** simulator entry 0 is `sim_00`, image entry 1 is `img_0001`. Data
   is indexed the same way: `[model, simulator]` for `sim.*`, `[model, simulator, image]` for `image.*`
-  (later, scores: `[model, simulator, image, fitness]`, see [architecture.md](architecture.md#score-array)).
+  (later, metrics: `[model, simulator, image, metric]`, see [architecture.md](architecture.md#metric-array)).
 - Combinations multiply quickly; keeping them to a sensible size is up to whoever writes the config.
 
 ## Checks

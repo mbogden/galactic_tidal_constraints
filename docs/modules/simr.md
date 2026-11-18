@@ -74,7 +74,7 @@ as a simulation is done; everything after expects `float32`.
 ### Seeds
 The seed is part of each simulator entry (`SimulatorConfig.seed`, 0 by default), and `simr` uses it
 for every model. SPAM draws the same random numbers for any model, so with one seed every model's
-disks share one pattern, stretched by `rout` and tilted by `theta` and `phi`: score differences
+disks share one pattern, stretched by `rout` and tilted by `theta` and `phi`: metric differences
 between models come only from their parameters. To compare draws, list entries that differ only in
 `seed`. Details: [spam_physics.md](../spam_physics.md), `seed`.
 
@@ -351,7 +351,7 @@ isn't a number, is an error naming the line. `simr.read_models(path)` reads one 
 | 1 | It couldn't run or finish: a bad models file, config or output, or a worker that died (a short message, no traceback). Under MPI a crashed worker usually ends the job with `mpirun`'s own error code |
 | 2 | It ran, but every simulation failed: almost always a setup mistake |
 
-Until fitness exists, a run computes only what `run.save` asks for, so a command-line run without
+Until the metrics stage exists, a run computes only what `run.save` asks for, so a command-line run without
 `run.save` records its models and configs but simulates nothing: each simulation's status is
 `"empty"`.
 

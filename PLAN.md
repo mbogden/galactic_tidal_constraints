@@ -7,7 +7,7 @@ This file records what has been decided. Items are added one at a time as they a
 ## Scope
 - Start by building around TNG → SPAM: simulate and optimize, for the TNG vs SPAM paper.
 - Port only what that paper needs. The scope grows with the code. Machine scoring comes later.
-  A basic Image Creator comes first (MDRN-3, 2026-11-16), so `simr` and fitness are designed with
+  A basic Image Creator comes first (MDRN-3, 2026-11-16), so `simr` and the metrics stage are designed with
   a working image in mind; it isn't a full port of the old one.
 - New code is defined as it is written, starting with MDRN-1. It isn't based on an audit of the
   old code's use cases, or compared against the old code.
@@ -30,14 +30,14 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
   `simulations/` (`<simulation>_<item>.npy`, e.g. `simulations/sim_00_particles.npy`), later
   `images/`. `model.json` is the model's record: its 14 named parameters, and each simulation by
   name with its full config (seed included), timing, files and the code that made it (both repos'
-  commits and whether either had uncommitted changes); later images and fitness scores.
+  commits and whether either had uncommitted changes); later images and metrics.
 - **Write order:** each `.npy` is written atomically (to a temporary name, then renamed); only once
   it's in place is `model.json` updated to list it. An array counts as saved only if `model.json`
   lists it.
 - **Output catalog:** every run given an output writes a catalog, whether or not it saves data.
   It holds "models" (id → 14 parameters, every model a run there has used) and "runs" (one record
   per run: times, code versions, what was returned and saved, the full stage configs, the model id
-  of each row, each simulation's status, time and error, and later the scores). A run's models are
+  of each row, each simulation's status, time and error, and later the metrics). A run's models are
   matched exactly against the catalog; new ones get the next id at the bottom, so model folders
   (`model_<id>`) stay the same however runs order or overlap their models. The record is written
   when a run starts and again when it ends. One run at a time per output.
@@ -50,7 +50,7 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
   computed, nothing it has is written again, and arrays it's missing are computed and added. A
   different config is neither used nor changed. Code versions are recorded but not compared;
   higher-level code can check them.
-- **Applications** live in the repo. Each owns its run's tables and final scores, and chooses how to
+- **Applications** live in the repo. Each owns its run's tables and final fitness scores, and chooses how to
   parallelize. Composite scores are computed here.
 - **Failures:** a failed model returns `NaN` and writes the error to the log. In `simr`, a
   simulation (one model on one simulator entry) fails as a whole when computing any requested item
@@ -59,8 +59,8 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
   Errors while writing stop the run.
 - **Status:** each stage reports a status, time and error for each of its cells, indexed like its
   data (`result.status["sim"][m, s]`: `"ran"`, `"reused"` when nothing had to be computed,
-  `"failed"`, or `"empty"` when the request asked for nothing (no `return`, no `save`; until fitness
-  exists, that's a command-line run without `run.save`); later stages mark work that depends on a failure `"skipped"`). A run that saves adds
+  `"failed"`, or `"empty"` when the request asked for nothing (no `return`, no `save`; until the metrics
+  stage exists, that's a command-line run without `run.save`); later stages mark work that depends on a failure `"skipped"`). A run that saves adds
   them to its record in `catalog.json` when it ends.
 - **One door to SPAM:** only one module imports `jspam`. Each run's saved config records the commit
   of both repos and whether either has uncommitted changes.
@@ -74,12 +74,12 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
     recent close pass, with older passes as options and a fixed start time allowed. SPAM's search picks
     the closest pass back to −30, which on a repeating orbit is decided by rounding, then replaces a
     start before −12 with −5. With no such pass back to −30, start at −5 (reported as a fallback), so the
-    model still gets a score.
+    model still gets a fitness score.
   - Dynamical friction: `lnl` = 0.1 by default in `sim` (Wallin's 0.001 makes it almost nothing).
 
 ## Configuration
 One config tree for everything that can change a result, plus a few runtime flags.
-- Config tree: one section per component (`run`, `simulator`, `image`, `fitness`, `ga`, …); `run`
+- Config tree: one section per component (`run`, `simulator`, `image`, `sim_metrics`, `img_metrics`, `composite`, `ga`, …); `run`
   holds per-run values like the target and what to return or save.
 - Precedence: defaults in code (dataclasses) < JSON config file. No command-line overrides
   (dropped 2026-11-12): the config file is the whole run, and small changes are new config files.
@@ -89,7 +89,7 @@ One config tree for everything that can change a result, plus a few runtime flag
 - Runtime flags (`argparse`) don't change results and stay outside the tree: `--config`,
   `--log-level`, `--mode`, output folder.
 - Models are their own input, separate from the config: the config says how to simulate (and
-  later image and score), and the models say what. Either can then change while the other stays
+  later image and measure), and the models say what. Either can then change while the other stays
   fixed. On the command line they come from a text file (`--models models.txt`): one model per
   line, and the first 14 comma-separated values on the line are the model. Longer lines (SPAM's
   22-value strings, JSPAM's `archive/data.txt`) are accepted, and one log message says how many
@@ -115,15 +115,15 @@ One config tree for everything that can change a result, plus a few runtime flag
   never reads the last 8 (`epsilon1/2`, the six `rscale`), so they aren't tracked anywhere. `sim`
   appends fixed values for them when it calls `jspam`. Why: [docs/spam_physics.md](docs/spam_physics.md).
 - SIMR and the workflow always return a 4D array, with no automatic reduction:
-  `scores[model, simulator, image, fitness]`.
+  `img_metrics[model, simulator, image, metric]`.
 - Other data is kept only when a run asks for it by name. The `run` section has two lists of
   `stage.item` names (e.g. `sim.particles`, `sim.orbit`, later `image.model`): `return` (passed back
   in memory) and `save` (written to disk). They're independent; a run can do both. Each stage
-  publishes its names, and an unknown name is a config error. `simr` computes only what the scores,
-  `return` and `save` need, so with both lists empty only the scores come back.
+  publishes its names, and an unknown name is a config error. `simr` computes only what the metrics,
+  `return` and `save` need, so with both lists empty only the metrics come back.
 - The seed is part of `SimulatorConfig` (`seed`, 0 by default), and `simr` uses each simulator
   entry's seed for every model. SPAM's draws don't depend on the model, so all models share one
-  disk pattern and score differences come only from their parameters. Comparing seeds means
+  disk pattern and metric differences come only from their parameters. Comparing seeds means
   entries that differ only in `seed`. Why: [docs/spam_physics.md](docs/spam_physics.md), `seed`.
 
 Details and an example are in [docs/architecture.md](docs/architecture.md).

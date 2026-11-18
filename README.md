@@ -20,7 +20,7 @@ what tidal features can tell us about how galaxies interact. Formerly `galaxyJSP
   saves and reuses images (`image.model`, `image.unperturbed`).
 - **Running on Babbage**, MTSU's Slurm cluster, with the project's image.
 
-**Next:** fitness functions, the optimizer and the TNG application.
+**Next:** the metrics stage, the optimizer and the TNG application.
 
 ## SPAM
 Collisions are simulated with SPAM, by John Wallin and collaborators, through a modified fork of the

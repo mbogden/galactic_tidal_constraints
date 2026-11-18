@@ -248,7 +248,7 @@ These shape the unit galaxy, so they change every force in the run.
 - **No pass (`no_pass`):** when the chosen pass doesn't exist back to −30 (a first approach, a pass older
   than −30, or fewer passes than `start_pass`), the run starts at `no_pass`, −5 by default, close to what
   SPAM ends up doing. `get_timing` reports `start` = `"fallback"` and the reason. So such a model still
-  gets a run and a score instead of failing, which gives an optimizer something to rank. For a first
+  gets a run and a fitness score instead of failing, which gives an optimizer something to rank. For a first
   approach that run is physically right (the last few hundred Myr of the approach); for a pass older than
   −30 it misses the encounter, and should score badly. `no_pass="error"` raises a `ValueError` with the
   reason instead, before any particles are made.
@@ -282,7 +282,7 @@ These change how the disks are sampled, not the forces.
   `theta`, `phi` and the masses only stretch, tilt and spin it up. Galaxy 2's draws depend on `n1` (how
   many galaxy 1 took first), not on any parameter.
 - **Physics:** none. Different seeds give different, equally valid samples of the same disk. The orbit
-  has no random numbers, so it's identical for every seed. Sharing one draw across models means score
+  has no random numbers, so it's identical for every seed. Sharing one draw across models means metric
   differences come only from the parameters ("common random numbers"); the cost is that any quirk of
   that draw is in every model. Comparing a model across seeds measures it.
 
