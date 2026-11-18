@@ -45,7 +45,7 @@ def test_a_run_records_its_catalog(tmp_path, files):
     catalog = simr.load_catalog(tmp_path / "runs")
     assert len(catalog["models"]) == 1
     # Nothing saved or returned: nothing to do (until fitness)
-    assert catalog["runs"][0]["status"] == {"sim": [["empty"]], "image": [[["empty"]]]}
+    assert catalog["runs"][0]["status"] == {"sim": [["empty"]], "img": [[["empty"]]]}
 
 
 def test_the_config_is_optional(tmp_path, files):
@@ -60,15 +60,15 @@ def test_save_writes_model_data(tmp_path, files):
 
 
 def test_save_writes_images(tmp_path, files):
-    config = {"run": {"save": ["image.model"]}, "simulator": SMALL,
+    config = {"run": {"save": ["img.model"]}, "simulator": SMALL,
               "image": [{"primary_center": [32, 64], "secondary_center": [96, 64]}, {"blur_sigma": 0.75}]}
     assert main(files(config=config)) == 0
     images = simr.load_images(tmp_path / "runs" / "model_000000")
-    assert list(images) == [("sim_00", "img_0000", "image.model"), ("sim_00", "img_0001", "image.model")]
+    assert list(images) == [("sim_00", "img_0000", "img.model"), ("sim_00", "img_0001", "img.model")]
     [record] = simr.load_catalog(tmp_path / "runs")["runs"]
-    assert record["status"]["image"] == [[["ran", "ran"]]]
+    assert record["status"]["img"] == [[["ran", "ran"]]]
     assert main(files(config=config)) == 0  # again: everything is reused
-    assert simr.load_catalog(tmp_path / "runs")["runs"][1]["status"]["image"] == [[["reused", "reused"]]]
+    assert simr.load_catalog(tmp_path / "runs")["runs"][1]["status"]["img"] == [[["reused", "reused"]]]
 
 
 def test_a_json_output(tmp_path, files):

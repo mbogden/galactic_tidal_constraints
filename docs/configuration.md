@@ -36,8 +36,8 @@ needs), so asking only for `sim.orbit` never runs particles.
 | `sim.unperturbed` | The starting disks placed around today's centers, as if the galaxies never met | |
 | `sim.orbit` | The secondary's center at every step | Fast: no particles |
 | `sim.timing` | When the run starts, and why (a dict) | Always recorded in `model.json` when a simulation is saved; it has no `.npy` file |
-| `image.model` | The model image | Needs `sim.particles`, which is made (or loaded) even if not asked for |
-| `image.unperturbed` | The unperturbed image, in the same frame | Needs `sim.unperturbed` |
+| `img.model` | The model image | Needs `sim.particles`, which is made (or loaded) even if not asked for |
+| `img.unperturbed` | The unperturbed image, in the same frame | Needs `sim.unperturbed` |
 
 Shapes and details: [modules/simr.md](modules/simr.md#data-names).
 
@@ -50,7 +50,7 @@ in a notebook and on the command line. A non-empty `run.return` gets a warning; 
 - A list can appear only directly under a section; anything deeper is an ordinary value, like an image
   center.
 - **An entry's position is its name:** simulator entry 0 is `sim_00`, image entry 1 is `img_0001`. Data
-  is indexed the same way: `[model, simulator]` for `sim.*`, `[model, simulator, image]` for `image.*`
+  is indexed the same way: `[model, simulator]` for `sim.*`, `[model, simulator, image]` for `img.*`
   (later, metrics: `[model, simulator, image, metric]`, see [architecture.md](architecture.md#metric-array)).
 - Combinations multiply quickly; keeping them to a sensible size is up to whoever writes the config.
 
@@ -87,7 +87,7 @@ checks, and that `defaults.json` still equals the code's defaults (`tests/test_e
 ([compare_lnl.json](../examples/configs/compare_lnl.json)):
 ```json
 {
-  "run": {"save": ["sim.orbit", "sim.particles", "image.model"]},
+  "run": {"save": ["sim.orbit", "sim.particles", "img.model"]},
   "simulator": [
     {"lnl": 0.1},
     {"lnl": 0.001}

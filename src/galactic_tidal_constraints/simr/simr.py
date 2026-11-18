@@ -4,13 +4,13 @@ requested data.
 A request is a plain dict, shaped like the config file (Step 11):
 
     request = {
-        "run": {"return": ["sim.orbit", "sim.particles", "image.model"]},
+        "run": {"return": ["sim.orbit", "sim.particles", "img.model"]},
         "simulator": [{"lnl": 0.1}, {"lnl": 0.01}],   # one dict or a list; each becomes a SimulatorConfig
         "image": [{}, {"blur_sigma": 1.0}],           # one dict or a list; each becomes an ImageConfig
     }
     result = run(models, request)
     result.data["sim.orbit"][12, 1]       # model 12's orbit from simulator entry 1
-    result.data["image.model"][12, 1, 0]  # its image from image entry 0
+    result.data["img.model"][12, 1, 0]  # its image from image entry 0
 
 Every model runs on every simulator entry, with that entry's seed (`SimulatorConfig.seed`, 0 by default),
 and every simulation is imaged with every image entry. Only what `return` and `save` name is computed:
@@ -127,11 +127,11 @@ def _unperturbed_image(values, params, sim_config, image_config):
 # The data the Image Creator stage can hand back, by name: (the `sim` items it's made from, how). Each is
 # indexed [model, simulator, image]: float32 (height, width), values in [0, 1]. Asking for one makes simr
 # compute (or load) the `sim` items it needs, whether or not those are returned or saved.
-#   image.model:       the particles at the end of the run
-#   image.unperturbed: the same disks placed at today's centers with no steps, in the same frame
+#   img.model:       the particles at the end of the run
+#   img.unperturbed: the same disks placed at today's centers with no steps, in the same frame
 IMAGE_DATA = {
-    "image.model": (("sim.particles",), _model_image),
-    "image.unperturbed": (("sim.unperturbed",), _unperturbed_image),
+    "img.model": (("sim.particles",), _model_image),
+    "img.unperturbed": (("sim.unperturbed",), _unperturbed_image),
 }
 
 # While a run collects results, its statuses are written to the catalog at most this often (and at the end).
@@ -152,13 +152,13 @@ class SimrResult:
         images: the image entries (`ImageConfig`s), likewise: entry i is image i in `data`.
         data: one entry per name in the request's `return` list, and nothing else. Each is a numpy
             object array indexed by the levels its stage depends on: [model, simulator] for "sim.*",
-            [model, simulator, image] for "image.*". Each cell holds that run's array (or dict, for
+            [model, simulator, image] for "img.*". Each cell holds that run's array (or dict, for
             "sim.timing"), or None if it failed or was skipped.
         ids: with an output, each row's model id in its catalog (in a folder, its data goes in
             `model_<id>`). All None without an output.
-        status, seconds, errors: per stage ("sim", "image"), each indexed like that stage's data:
+        status, seconds, errors: per stage ("sim", "img"), each indexed like that stage's data:
             status: "ran", "reused" (saved, and nothing had to be computed), "failed",
-                "skipped" ("image" only: its simulation failed), or "empty" (nothing was requested from
+                "skipped" ("img" only: its simulation failed), or "empty" (nothing was requested from
                 the stage, so there was nothing to do).
             seconds: wall time, loading included. A simulation's time doesn't include its images.
             errors: "Type: message" for a failure, else None. The traceback is in the log.
@@ -232,7 +232,7 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
         catalog["runs"].append(run_record)
         _write_catalog(catalog_file, catalog)
 
-    shapes = {"sim": (len(models), len(configs)), "image": (len(models), len(configs), len(image_configs))}
+    shapes = {"sim": (len(models), len(configs)), "img": (len(models), len(configs), len(image_configs))}
     data = {name: np.empty(shapes[_stage(name)], dtype=object) for name in returned}
     status = {stage: np.empty(shape, dtype=object) for stage, shape in shapes.items()}
     seconds = {stage: np.zeros(shape) for stage, shape in shapes.items()}
@@ -276,10 +276,10 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     counts = {word: int((status["sim"] == word).sum()) for word in ("ran", "reused", "failed", "empty")}
     logger.info("simr: %d simulations: %d ran, %d reused, %d failed, %d empty (nothing requested)",
                 status["sim"].size, *counts.values())
-    if any(_stage(name) == "image" for name in returned + saved):
-        counts = {word: int((status["image"] == word).sum()) for word in ("ran", "reused", "failed", "skipped")}
+    if any(_stage(name) == "img" for name in returned + saved):
+        counts = {word: int((status["img"] == word).sum()) for word in ("ran", "reused", "failed", "skipped")}
         logger.info("simr: %d images: %d ran, %d reused, %d failed, %d skipped (simulation failed)",
-                    status["image"].size, *counts.values())
+                    status["img"].size, *counts.values())
     if catalog is not None:
         run_record["finished"] = _now()
         _record_status(catalog_file, catalog, run_record, status, seconds, errors)
@@ -356,9 +356,9 @@ def _run_model(task: _ModelTask) -> dict:
     this model's folder, never the catalog.
 
     Returns {"data": {item: array of values}, "status", "seconds", "errors": {stage: array}}, each array
-    shaped [simulator] for "sim" and [simulator, image] for "image".
+    shaped [simulator] for "sim" and [simulator, image] for "img".
     """
-    shapes = {"sim": (len(task.configs),), "image": (len(task.configs), len(task.image_configs))}
+    shapes = {"sim": (len(task.configs),), "img": (len(task.configs), len(task.image_configs))}
     outcome = {
         "data": {item: np.empty(shapes[_stage(item)], dtype=object) for item in task.returned},
         "status": {stage: np.empty(shape, dtype=object) for stage, shape in shapes.items()},
@@ -367,8 +367,8 @@ def _run_model(task: _ModelTask) -> dict:
     }
     sim_returned = [item for item in task.returned if _stage(item) == "sim"]
     sim_saved = [item for item in task.saved if _stage(item) == "sim"]
-    image_items = list(dict.fromkeys(item for item in task.returned + task.saved if _stage(item) == "image"))
-    image_saved = [item for item in task.saved if _stage(item) == "image"]
+    image_items = list(dict.fromkeys(item for item in task.returned + task.saved if _stage(item) == "img"))
+    image_saved = [item for item in task.saved if _stage(item) == "img"]
     folder = task.folder
     record = _open_record(folder, task.params) if folder is not None else None
     # Each image entry's saved record, or None when it was saved with a different config (not used or changed)
@@ -405,7 +405,7 @@ def _run_model(task: _ModelTask) -> dict:
             outcome["status"]["sim"][s] = "failed"
             outcome["errors"]["sim"][s] = f"{type(error).__name__}: {error}"
             outcome["seconds"]["sim"][s] = time.perf_counter() - start
-            outcome["status"]["image"][s] = "skipped" if image_items else "empty"
+            outcome["status"]["img"][s] = "skipped" if image_items else "empty"
             continue
         for item in sim_returned:
             outcome["data"][item][s] = values[item]
@@ -419,7 +419,7 @@ def _run_model(task: _ModelTask) -> dict:
         outcome["seconds"]["sim"][s] = time.perf_counter() - start
         for i, image_config in enumerate(task.image_configs):
             if not image_items:
-                outcome["status"]["image"][s, i] = "empty"
+                outcome["status"]["img"][s, i] = "empty"
                 continue
             start = time.perf_counter()
             made, image_computed = {}, False
@@ -433,18 +433,18 @@ def _run_model(task: _ModelTask) -> dict:
                         image_computed = True
             except Exception as error:  # a failed image: recorded, nothing saved, and the run moves on
                 logger.exception("model %d (id %s), simulator %d, image %d failed", task.row, task.model_id, s, i)
-                outcome["status"]["image"][s, i] = "failed"
-                outcome["errors"]["image"][s, i] = f"{type(error).__name__}: {error}"
-                outcome["seconds"]["image"][s, i] = time.perf_counter() - start
+                outcome["status"]["img"][s, i] = "failed"
+                outcome["errors"]["img"][s, i] = f"{type(error).__name__}: {error}"
+                outcome["seconds"]["img"][s, i] = time.perf_counter() - start
                 continue
             for item in task.returned:
-                if _stage(item) == "image":
+                if _stage(item) == "img":
                     outcome["data"][item][s, i] = made[item]
             if image_to_save[i]:  # errors while writing aren't caught: they stop the run
                 arrays = {item: made[item] for item in image_to_save[i]}
                 _save_images(folder, record, image_name(i), image_config, name, arrays)
-            outcome["status"]["image"][s, i] = "ran" if image_computed else "reused"
-            outcome["seconds"]["image"][s, i] = time.perf_counter() - start
+            outcome["status"]["img"][s, i] = "ran" if image_computed else "reused"
+            outcome["seconds"]["img"][s, i] = time.perf_counter() - start
     return outcome
 
 
@@ -537,10 +537,10 @@ def load_images(
     Args:
         simulation: e.g. "sim_00" (`simulation_name(0)`).
         image: e.g. "img_0001" (`image_name(1)`).
-        items: an item or a list of them, e.g. "image.model".
+        items: an item or a list of them, e.g. "img.model".
 
     Returns:
-        {(simulation, image, item): array}, sorted, e.g. {("sim_00", "img_0001", "image.model"): (128, 128)}.
+        {(simulation, image, item): array}, sorted, e.g. {("sim_00", "img_0001", "img.model"): (128, 128)}.
         {} when nothing saved matches.
 
     Raises:
@@ -582,7 +582,7 @@ def image_name(i: int) -> str:
 
 
 def image_file(simulation: str, image: str, item: str) -> str:
-    """Where one saved image goes in its model folder: "image.model" of "sim_00" with "img_0001" is
+    """Where one saved image goes in its model folder: "img.model" of "sim_00" with "img_0001" is
     "images/sim_00_img_0001_model.npy"."""
     return f"images/{simulation}_{image}_{item.split('.', 1)[1]}.npy"
 

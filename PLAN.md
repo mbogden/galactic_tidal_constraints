@@ -117,7 +117,7 @@ One config tree for everything that can change a result, plus a few runtime flag
 - SIMR and the workflow always return a 4D array, with no automatic reduction:
   `img_metrics[model, simulator, image, metric]`.
 - Other data is kept only when a run asks for it by name. The `run` section has two lists of
-  `stage.item` names (e.g. `sim.particles`, `sim.orbit`, later `image.model`): `return` (passed back
+  `stage.item` names (e.g. `sim.particles`, `sim.orbit`, later `img.model`): `return` (passed back
   in memory) and `save` (written to disk). They're independent; a run can do both. Each stage
   publishes its names, and an unknown name is a config error. `simr` computes only what the metrics,
   `return` and `save` need, so with both lists empty only the metrics come back.
@@ -149,8 +149,8 @@ A basic Image Creator, `simr/image_creator.py`, numpy only. Details: [docs/modul
   can't be framed. Each is an error for that image.
 - **Viewing:** `to_png` writes an image as an 8-bit grayscale PNG, using only the standard library.
 - **In `simr`** (decided 2026-11-16): an `image` section like `simulator` (one entry or a list; one
-  default `ImageConfig()` when it's missing). Items `image.model` (from `sim.particles`) and
-  `image.unperturbed` (from `sim.unperturbed`), indexed `[model, simulator, image]`; each declares the
+  default `ImageConfig()` when it's missing). Items `img.model` (from `sim.particles`) and
+  `img.unperturbed` (from `sim.unperturbed`), indexed `[model, simulator, image]`; each declares the
   `sim` items it's made from, which `simr` computes or loads even when they aren't returned or saved.
   Image statuses: `ran`, `failed` (the simulation is unaffected), `skipped` (its simulation failed),
   `empty` (none asked for). The exit code depends on the simulations only.

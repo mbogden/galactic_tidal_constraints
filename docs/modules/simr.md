@@ -63,8 +63,8 @@ simulation's own particles and that simulator's `n1` and `n2`):
 
 | Name | Made from | Each cell holds |
 |---|---|---|
-| `image.model` | `sim.particles` | The model image, `float32` `(height, width)` in [0, 1] |
-| `image.unperturbed` | `sim.unperturbed` | The unperturbed image, in the same frame |
+| `img.model` | `sim.particles` | The model image, `float32` `(height, width)` in [0, 1] |
+| `img.unperturbed` | `sim.unperturbed` | The unperturbed image, in the same frame |
 
 **Only what `return` and `save` name is computed.** Asking only for `sim.orbit` never runs
 particles. An image needs the `sim` items it's made from, so `simr` computes them (or loads them, if
@@ -101,15 +101,15 @@ catalog). It's a folder or a `.json` file, told apart by name, so it works befor
 | `images` | The image entries as `ImageConfig`s, likewise: entry i is image i |
 | `data` | One entry per name in `return`, and nothing else |
 | `ids` | Each row's model id in the output's catalog, or `None` without an output (see The output catalog) |
-| `status`, `seconds`, `errors` | Per stage (`"sim"`, `"image"`), indexed like its data; see Failures and status |
+| `status`, `seconds`, `errors` | Per stage (`"sim"`, `"img"`), indexed like its data; see Failures and status |
 
 Each `data` entry is a NumPy object array of cells, indexed by the levels its stage depends on:
-`[model, simulator]` for `sim.*`, `[model, simulator, image]` for `image.*`. A cell holds that
+`[model, simulator]` for `sim.*`, `[model, simulator, image]` for `img.*`. A cell holds that
 simulation's (or image's) own array, so orbits of different lengths fit side by side:
 
 ```python
 result.data["sim.orbit"][12, 1]         # model 12's orbit from simulator entry 1
-result.data["image.model"][12, 1, 0]    # its image from image entry 0
+result.data["img.model"][12, 1, 0]    # its image from image entry 0
 result.simulators[1].lnl                # what entry 1 was
 ```
 
@@ -192,7 +192,7 @@ Each outcome comes back per stage, indexed like the data:
 | Field | Each cell |
 |---|---|
 | `result.status["sim"][m, s]` | `"ran"`, `"reused"` (saved, and nothing had to be computed), `"failed"`, or `"empty"` (nothing was asked of it: nothing returned or saved, and no image needs it) |
-| `result.status["image"][m, s, i]` | `"ran"`, `"reused"` (saved, and nothing had to be made), `"failed"`, `"skipped"` (its simulation failed), or `"empty"` (no image was asked for) |
+| `result.status["img"][m, s, i]` | `"ran"`, `"reused"` (saved, and nothing had to be made), `"failed"`, `"skipped"` (its simulation failed), or `"empty"` (no image was asked for) |
 | `result.seconds[stage][...]` | Wall time, loading included. A simulation's time doesn't include its images |
 | `result.errors[stage][...]` | `"Type: message"` for a failure, else `None` |
 
@@ -247,8 +247,8 @@ each entry's full config, plus `files` pointing to what's on disk.
     "img_0000": {
       "config": {"width": 128, "height": 128, "primary_center": [32.0, 64.0], "...": "every ImageConfig field"},
       "files": {
-        "sim_00": {"image.model":       "images/sim_00_img_0000_model.npy",
-                   "image.unperturbed": "images/sim_00_img_0000_unperturbed.npy"}
+        "sim_00": {"img.model":       "images/sim_00_img_0000_model.npy",
+                   "img.unperturbed": "images/sim_00_img_0000_unperturbed.npy"}
       }
     }
   }
@@ -284,7 +284,7 @@ Images work the same way. A saved image is reused when **both** its image entry'
 simulation's config match this run's:
 - it's **loaded instead of made**, and no simulation runs just to make it again (its status is
   `"reused"`);
-- missing items (e.g. `image.unperturbed` asked for later) are made and added; that may need the
+- missing items (e.g. `img.unperturbed` asked for later) are made and added; that may need the
   simulation;
 - an image entry saved with a different config is neither used nor changed (a warning is logged), and
   neither is any image of a simulation saved with a different config. Nothing listed is ever
@@ -372,8 +372,8 @@ simr.load_images(folder)                                  # every saved image
 simr.load_images(folder, simulation="sim_00")             # all of sim_00's images
 simr.load_images(folder, image="img_0001")                # all images made with img_0001
 simr.load_images(folder, "sim_00", "img_0001")            # one simulation and image entry
-simr.load_images(folder, items="image.model")             # model images only (or a list of items)
-# {("sim_00", "img_0001", "image.model"): array (128, 128), ...}
+simr.load_images(folder, items="img.model")             # model images only (or a list of items)
+# {("sim_00", "img_0001", "img.model"): array (128, 128), ...}
 ```
 
 A simulation or image entry that `model.json` doesn't have is a `KeyError`, an unknown item a

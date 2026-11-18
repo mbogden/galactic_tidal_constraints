@@ -1,5 +1,5 @@
 {
-  "run": {"save": ["sim.orbit", "sim.particles", "image.model"]},
+  "run": {"save": ["sim.orbit", "sim.particles", "img.model"]},
   "simulator": [
     {"lnl": 0.1},
     {"lnl": 0.001}

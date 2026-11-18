@@ -54,7 +54,7 @@ def test_every_example_config_is_valid(path, caplog):
 
 def test_compare_lnl_runs_every_combination():
     _, saved, simulators, images = simr._read_request(load("compare_lnl.json"))
-    assert saved == ["sim.orbit", "sim.particles", "image.model"]
+    assert saved == ["sim.orbit", "sim.particles", "img.model"]
     assert [s.lnl for s in simulators] == [0.1, 0.001]
     assert images[0] == ImageConfig()
     assert (images[1].blur_sigma, images[1].brightness) == (1.0, "log")
