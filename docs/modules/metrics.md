@@ -62,3 +62,7 @@ This table is guarded by a test (`tests/test_metrics.py`) against `metrics.table
   shape; 0 is identical. Any two matching images work: model vs unperturbed reads as how perturbed
   the model is, and an image vs an external target (once externals exist) as how far from the target.
   Images of another shape are an error; matching frames is the caller's job.
+
+## Where to see it
+- `examples/notebooks/metrics_tour.ipynb`: a hands-on tour, each method on real arrays.
+- `tests/test_metrics.py`: the registry's checks and the methods on small synthetic arrays.
