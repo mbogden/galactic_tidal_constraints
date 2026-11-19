@@ -30,7 +30,11 @@ from typing import Callable
 
 import numpy as np
 
-INPUT_KINDS = ("orbit", "particles", "image")
+# Each input kind's array shape (None: any length). `compute` checks every input against its declared
+# kind before the method runs, so a wrong array fails cleanly wherever it came from (a simr item today,
+# an external array later).
+INPUT_SHAPES = {"orbit": (None, 7), "particles": (None, 6), "image": (None, None)}
+INPUT_KINDS = tuple(INPUT_SHAPES)
 KINDS = ("scalar", "descriptive")
 
 
@@ -155,10 +159,18 @@ def compute(method: str, inputs: list[np.ndarray], select: str | None = None, pa
         The method's float (a scalar method, or `select`), or its dict (a descriptive method).
 
     Raises:
-        ValueError: the value doesn't match the declaration, or holds NaN or inf — a metric failure.
-        Whatever the method itself raises is not caught.
+        ValueError: an input doesn't fit its kind's shape (`INPUT_SHAPES`), the value doesn't match
+        the declaration, or it holds NaN or inf — a metric failure. Whatever the method itself raises
+        is not caught.
     """
     m = METHODS[method]
+    for j, (kind, value) in enumerate(zip(m.inputs, inputs)):
+        shape = INPUT_SHAPES[kind]
+        if not isinstance(value, np.ndarray) or value.ndim != len(shape) or any(
+            want is not None and got != want for got, want in zip(value.shape, shape)
+        ):
+            got = value.shape if isinstance(value, np.ndarray) else type(value).__name__
+            raise ValueError(f"{method}: input {j} must be a {kind!r} array, shape {shape}: got {got}")
     value = m.function(*inputs, **(params or {}))
     if m.kind == "scalar":
         if not isinstance(value, (int, float, np.floating, np.integer)) or isinstance(value, bool):

@@ -197,6 +197,22 @@ def test_compute_select_returns_one_float():
     assert isinstance(value, float)
 
 
+@pytest.mark.parametrize(
+    ("method", "inputs", "message"),
+    [
+        # (3, 6) is a particles shape, not an orbit's (None, 7)
+        ("closest_approach", [ORBIT[:, :6]], r"input 0 must be a 'orbit' array, shape \(None, 7\): got \(3, 6\)"),
+        ("closest_approach", [ORBIT[0]], r"got \(7,\)"),  # one row: 1-D, not an orbit
+        ("closest_approach", [ORBIT[:, :3].tolist()], "got list"),  # not an array at all
+        ("absolute_difference", [np.zeros((2, 2), dtype=np.float32), np.zeros((2, 2, 2), dtype=np.float32)],
+         r"input 1 must be a 'image' array.*got \(2, 2, 2\)"),
+    ],
+)
+def test_compute_checks_each_input_against_its_kind(method, inputs, message):
+    with pytest.raises(ValueError, match=message):
+        metrics.compute(method, inputs)
+
+
 def test_compute_rejects_a_nonfinite_scalar():
     def bad_scalar(a, b):
         return float("nan")
