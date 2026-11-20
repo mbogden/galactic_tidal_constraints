@@ -221,3 +221,134 @@ def absolute_difference(a: np.ndarray, b: np.ndarray) -> float:
     if a.shape != b.shape:
         raise ValueError(f"the images must have the same shape: {a.shape} vs {b.shape}")
     return float(np.mean(np.abs(a.astype(np.float64) - b.astype(np.float64))))
+
+
+# --- PCA shape: the particles' covariance ellipsoid ------------------------------------------------------
+
+PCA_COLUMNS = {"position": slice(0, 3), "velocity": slice(3, 6)}
+PCA_CENTERS = ("mean", "median")
+PCA_DESCRIPTORS = ("ratios", "axes", "geometric")
+PCA_DISTANCES = ("l1", "l2")
+PCA_EPS = 1e-12  # floor on each eigenvalue, so a line, a sheet or a single point never divides by zero
+PCA_SETTINGS = {"columns": "position", "center": "mean", "trim_quantile": None}
+
+
+def _pca(particles: np.ndarray, columns: str, center: str, trim_quantile: float | None) -> dict:
+    """The principal axes of a particle cloud: semi-axes, unit vectors, center. Never changes its input."""
+    if columns not in PCA_COLUMNS:
+        raise ValueError(f"columns must be one of {list(PCA_COLUMNS)}: {columns!r}")
+    if center not in PCA_CENTERS:
+        raise ValueError(f"center must be one of {list(PCA_CENTERS)}: {center!r}")
+    if particles.ndim != 2 or particles.shape[1] != 6:
+        raise ValueError(f"particles must have shape (n, 6): got {particles.shape}")
+    points = particles[:, PCA_COLUMNS[columns]].astype(np.float64)
+
+    def middle(p):
+        return p.mean(axis=0) if center == "mean" else np.median(p, axis=0)
+
+    if trim_quantile is not None:
+        if not 0.0 < trim_quantile <= 1.0:
+            raise ValueError(f"trim_quantile must be in (0, 1] or None: {trim_quantile!r}")
+        distance = np.linalg.norm(points - middle(points), axis=1)
+        points = points[distance <= np.quantile(distance, trim_quantile)]
+    if len(points) < 3:
+        raise ValueError(f"PCA needs at least 3 particles: got {len(points)}")
+    c = middle(points)
+    offsets = points - c
+    values, vectors = np.linalg.eigh(offsets.T @ offsets / len(points))  # ascending
+    order = np.argsort(values)[::-1]
+    axes = np.sqrt(np.maximum(values[order], PCA_EPS))
+    vectors = vectors[:, order].T  # rows, largest axis first
+    # An eigenvector's sign is arbitrary: make each one's largest component positive, so the output
+    # is the same on every run and machine.
+    signs = np.sign(vectors[np.arange(3), np.argmax(np.abs(vectors), axis=1)])
+    vectors = vectors * signs[:, None]
+    return {"axes": axes, "vectors": vectors, "center": c}
+
+
+@metric(
+    kind="descriptive",
+    inputs=("particles",),
+    settings=PCA_SETTINGS,
+    outputs={"axes": (3,), "vectors": (3, 3), "center": (3,), "b_a": (), "c_a": ()},
+)
+def pca_shape(particles: np.ndarray, columns="position", center="mean", trim_quantile=None) -> dict:
+    """The shape of a particle cloud as its covariance ellipsoid (principal component analysis).
+
+    The whole array as given: for `sim.particles` that's both galaxies together.
+
+    Args:
+        particles: (n, 6): x, y, z, vx, vy, vz. At least 3 particles (after trimming).
+        columns: "position" (columns 0-2) or "velocity" (3-5).
+        center: "mean" or "median" of the points.
+        trim_quantile: drop the particles farther from the center than this quantile of the
+            distances before the PCA (e.g. 0.95 drops the farthest 5%). None keeps them all: tidal
+            tails are the outliers.
+
+    Returns:
+        "axes" (3,): the semi-axes (standard deviation along each principal axis), largest first.
+        "vectors" (3, 3): the matching unit vectors as rows, each with its largest component positive.
+        "center" (3,): the center used.
+        "b_a", "c_a": the axis ratios (middle / largest, smallest / largest), in [0, 1].
+    """
+    pca = _pca(particles, columns, center, trim_quantile)
+    a, b, c = pca["axes"]
+    return {**pca, "b_a": float(b / a), "c_a": float(c / a)}
+
+
+@metric(
+    kind="scalar",
+    inputs=("particles", "particles"),
+    settings={**PCA_SETTINGS, "descriptor": "ratios", "distance": "l2", "orientation_weight": 0.0},
+    best="low",
+    range=(0.0, math.inf),
+)
+def pca_difference(
+    a: np.ndarray,
+    b: np.ndarray,
+    columns="position",
+    center="mean",
+    trim_quantile=None,
+    descriptor="ratios",
+    distance="l2",
+    orientation_weight=0.0,
+) -> float:
+    """How different two particle clouds' shapes are, from their PCA ellipsoids (`pca_shape`).
+
+    0 means the same shape. Both clouds get the same `columns`, `center` and `trim_quantile`; they
+    may hold different numbers of particles.
+
+    Args:
+        a, b: (n, 6) each: x, y, z, vx, vy, vz.
+        columns, center, trim_quantile: as in `pca_shape`.
+        descriptor: what's compared. "ratios": [b/a, c/a], blind to size, position and rotation.
+            "axes": the semi-axes themselves, so size counts. "geometric": [linearity, planarity,
+            sphericity] = [(a-b)/a, (b-c)/a, c/a].
+        distance: "l2" (Euclidean) or "l1" between the two descriptors.
+        orientation_weight: w >= 0 adds w * (1 - |v1_a . v1_b|), how far apart the two largest axes
+            point (0 aligned, 1 perpendicular). 0 compares shape alone.
+
+    Returns:
+        The distance. With the defaults it lies in [0, sqrt(2)].
+    """
+    if descriptor not in PCA_DESCRIPTORS:
+        raise ValueError(f"descriptor must be one of {list(PCA_DESCRIPTORS)}: {descriptor!r}")
+    if distance not in PCA_DISTANCES:
+        raise ValueError(f"distance must be one of {list(PCA_DISTANCES)}: {distance!r}")
+    if not orientation_weight >= 0.0:
+        raise ValueError(f"orientation_weight must be >= 0: {orientation_weight!r}")
+    pcas = [_pca(p, columns, center, trim_quantile) for p in (a, b)]
+
+    def describe(axes):
+        big, mid, small = axes
+        if descriptor == "ratios":
+            return np.array([mid / big, small / big])
+        if descriptor == "axes":
+            return axes
+        return np.array([(big - mid) / big, (mid - small) / big, small / big])
+
+    gap = describe(pcas[0]["axes"]) - describe(pcas[1]["axes"])
+    value = np.abs(gap).sum() if distance == "l1" else np.sqrt((gap**2).sum())
+    if orientation_weight:
+        value += orientation_weight * (1.0 - abs(float(pcas[0]["vectors"][0] @ pcas[1]["vectors"][0])))
+    return float(value)

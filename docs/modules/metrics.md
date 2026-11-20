@@ -66,6 +66,8 @@ This table is guarded by a test (`tests/test_metrics.py`) against `metrics.table
 |---|---|---|---|---|---|---|
 | `closest_approach` | descriptive | orbit | `t` (), `distance` (), `position` (3,), `velocity` (3,) | — | — | — |
 | `absolute_difference` | scalar | image, image | one float | low | [0, 1] | — |
+| `pca_shape` | descriptive | particles | `axes` (3,), `vectors` (3, 3), `center` (3,), `b_a` (), `c_a` () | — | — | `columns="position"`, `center="mean"`, `trim_quantile=None` |
+| `pca_difference` | scalar | particles, particles | one float | low | [0, ∞) | as `pca_shape`, plus `descriptor="ratios"`, `distance="l2"`, `orientation_weight=0.0` |
 
 - **`closest_approach`**: the point along an orbit where the two centers are closest — the smallest
   distance in whatever orbit it's given, so the entry's input decides the window (`sim.search_orbit`:
@@ -75,6 +77,21 @@ This table is guarded by a test (`tests/test_metrics.py`) against `metrics.table
   shape; 0 is identical. Any two matching images work: model vs unperturbed reads as how perturbed
   the model is, and an image vs an external target (once externals exist) as how far from the target.
   Images of another shape are an error; matching frames is the caller's job.
+- **`pca_shape`**: the shape of a particle cloud as its covariance ellipsoid (3D principal component
+  analysis), on the whole array as given (for `sim.particles`, both galaxies together). `columns`
+  picks positions or velocities; `center` is the mean or median; `trim_quantile` (e.g. 0.95) drops
+  the farthest particles first, off by default because tidal tails are the outliers. `axes` are the
+  semi-axes (standard deviations along each principal axis), largest first; `vectors` are the
+  matching unit vectors as rows, each with its largest component positive so the output is
+  deterministic; `b_a` and `c_a` are the axis ratios. Needs at least 3 particles; lines, sheets and
+  repeated points stay finite (each eigenvalue has a tiny floor).
+- **`pca_difference`**: how different two clouds' shapes are, from their `pca_shape` ellipsoids;
+  0 is the same shape, and the clouds may hold different numbers of particles. `descriptor`:
+  `"ratios"` `[b/a, c/a]` (blind to size, position and rotation), `"axes"` (size counts) or
+  `"geometric"` `[linearity, planarity, sphericity]`; `distance` is `"l2"` or `"l1"`. With
+  `orientation_weight` w > 0 it adds w·(1 − |v1_a·v1_b|), how far apart the two longest axes point
+  (SPAM's frame is the sky's, so orientation is real information). With the defaults the value lies
+  in [0, √2].
 
 ## Where to see it
 - `examples/notebooks/metrics_tour.ipynb`: a hands-on tour, each method on real arrays.
