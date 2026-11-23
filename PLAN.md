@@ -80,14 +80,14 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
 ## Configuration
 One config tree for everything that can change a result, plus a few runtime flags.
 - Config tree: one section per component (`run`, `simulator`, `image`, `sim_metrics`, `img_metrics`, `composite`, `ga`, …); `run`
-  holds per-run values like the target and what to return or save.
+  holds what to return or save.
 - Precedence: defaults in code (dataclasses) < JSON config file. No command-line overrides
   (dropped 2026-11-12): the config file is the whole run, and small changes are new config files.
 - Unknown keys or wrong types are an error. Each run saves its full merged config with its
   output.
 - Parameter studies are generated config files, one run per file.
 - Runtime flags (`argparse`) don't change results and stay outside the tree: `--config`,
-  `--log-level`, `--mode`, output folder.
+  `--externals`, `--log-level`, `--mode`, output folder.
 - Models are their own input, separate from the config: the config says how to simulate (and
   later image and measure), and the models say what. Either can then change while the other stays
   fixed. On the command line they come from a text file (`--models models.txt`): one model per
@@ -96,8 +96,15 @@ One config tree for everything that can change a result, plus a few runtime flag
   lines had more than 14 values. Fewer than 14 numbers is an error naming the line. Blank lines and
   `#` comments are ignored. The catalog records each run's models with its configs, so the output
   folder still says what was run.
+- Externals are their own input too, like the models: arrays from outside the run (e.g. a target's
+  orbit, image or particles) that metrics compare each model against. The config names only their
+  keys (a metric input that isn't a `sim.*` or `img.*` item); the arrays come with the run:
+  `simr.run(models, config, externals={key: array or .npy path})`, or `--externals <file>` (a JSON
+  file of key -> path, relative to the file's folder). Each is checked, converted to `float32` and
+  hashed before anything runs, and the run records its source, shape and hash. With a pool, the
+  workers share one copy in the node's memory (`/dev/shm`), so such a pool is single-node.
 - The command line: `python -m galactic_tidal_constraints.simr --models <file> --output <folder or
-  .json> [--config <file>] [--log-level <level>]`. An output is required, so every run leaves its
+  .json> [--config <file>] [--externals <file>] [--log-level <level>]`. An output is required, so every run leaves its
   models, configs and statuses on disk. The config is optional and lists only what differs from the
   defaults (the catalog records the full, filled-in config). `run.save` is optional; `run.return`
   is ignored, with a warning if it names anything (nothing comes back in memory), so one config
