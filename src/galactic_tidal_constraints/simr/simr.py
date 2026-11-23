@@ -303,6 +303,7 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     arrays, files, records = _read_externals(
         externals, _external_uses({"sim_metrics": parts[4], "img_metrics": parts[5]}), image_configs=parts[3]
     )
+    _check_external_weights({"sim_metrics": parts[4], "img_metrics": parts[5]}, arrays)
     shared_folder = None
     if arrays and map is not builtins.map:  # a pool: its workers share one copy of each external
         arrays, shared_folder = _share_externals(arrays, files, records)
@@ -1021,9 +1022,12 @@ def _metric_entry(where: str, entry, section: str) -> dict:
             f"{where}: {method.name} declares a setup step, which simr can't run yet (planned with DL metrics)"
         )
     inputs = entry.get("inputs", [])
-    if isinstance(inputs, str) or not isinstance(inputs, (list, tuple)) or len(inputs) != len(method.inputs):
+    kinds = _input_kinds(method)
+    if isinstance(inputs, str) or not isinstance(inputs, (list, tuple)) \
+            or not len(method.inputs) <= len(inputs) <= len(kinds):
         raise ValueError(
             f"{where}.inputs: {method.name} takes {len(method.inputs)} input(s), one per kind: {list(method.inputs)}"
+            + (f", and optionally its weights (a {method.weights}) after them" if method.weights else "")
         )
     for j, name in enumerate(inputs):
         if section == "sim_metrics" and name in IMAGE_DATA:
@@ -1036,9 +1040,9 @@ def _metric_entry(where: str, entry, section: str) -> dict:
                     f"{[*SIM_INPUT_KINDS, *IMAGE_DATA]}, or a key in the run's externals"
                 )
             continue  # an external: `run` checks its key and its array, as the kind this place takes
-        if kind != method.inputs[j]:
+        if kind != kinds[j]:
             raise ValueError(
-                f"{where}.inputs[{j}]: {method.name} takes a {method.inputs[j]} here, but {name} is a {kind}"
+                f"{where}.inputs[{j}]: {method.name} takes a {kinds[j]} here, but {name} is a {kind}"
             )
     if not any(name in SIM_INPUT_KINDS or name in IMAGE_DATA for name in inputs):
         raise ValueError(
@@ -1066,13 +1070,36 @@ def _metric_entry(where: str, entry, section: str) -> dict:
     return {"method": method.name, "inputs": list(inputs), "select": select, "params": {**method.settings, **params}}
 
 
+def _input_kinds(method: metrics.Metric) -> tuple[str, ...]:
+    """The kind each place in a metric entry's `inputs` takes: the method's inputs, then, for a method
+    that can use weights, its optional weights."""
+    return method.inputs + ((method.weights,) if method.weights else ())
+
+
+def _check_external_weights(sections: dict[str, list[dict]], arrays: dict[str, np.ndarray]) -> None:
+    """Before anything runs: where an entry's row weights and the input they weigh (its first) are both
+    externals, they must have the same number of rows. Otherwise every model's cell would fail the same
+    way, after its simulation."""
+    for section, entries in sections.items():
+        for k, entry in enumerate(entries):
+            method, inputs = metrics.METHODS[entry["method"]], entry["inputs"]
+            if method.weights != "weights" or len(inputs) <= len(method.inputs):
+                continue
+            first, weights = inputs[0], inputs[-1]
+            if first in arrays and weights in arrays and len(arrays[first]) != len(arrays[weights]):
+                raise ValueError(
+                    f"{section}[{k}]: the weights {weights!r} have {len(arrays[weights])} values, but "
+                    f"{first!r}, which they weigh, has {len(arrays[first])} rows"
+                )
+
+
 def _external_uses(sections: dict[str, list[dict]]) -> dict[str, tuple[str, str]]:
     """The externals the filled-in metric entries use: key -> (the input kind it's used as, the first
     place that uses it). One external has one kind: using a key as two kinds is an error."""
     uses: dict[str, tuple[str, str]] = {}
     for section, entries in sections.items():
         for k, entry in enumerate(entries):
-            kinds = metrics.METHODS[entry["method"]].inputs
+            kinds = _input_kinds(metrics.METHODS[entry["method"]])
             for j, name in enumerate(entry["inputs"]):
                 if name in SIM_INPUT_KINDS or name in IMAGE_DATA:
                     continue

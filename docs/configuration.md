@@ -65,7 +65,7 @@ items it takes, in the order and kinds the method declares:
 | Key | Meaning |
 |---|---|
 | `method` | A name from the metrics table |
-| `inputs` | The items the method takes, one per declared kind, in order |
+| `inputs` | The items the method takes, one per declared kind, in order. A method that can use weights takes them as one more name at the end ([modules/metrics.md](modules/metrics.md#weights)) |
 | `select` (optional) | One single-float output of a descriptive method: the entry's value becomes that float instead of the dict |
 | `params` (optional) | The method's settings; everything left out takes the method's default |
 

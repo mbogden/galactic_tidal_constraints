@@ -20,7 +20,8 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def test_the_first_methods_are_registered():
-    assert set(metrics.METHODS) == {"closest_approach", "absolute_difference", "pca_shape", "pca_difference"}
+    assert set(metrics.METHODS) == {"closest_approach", "absolute_difference", "orbit_time_error",
+                                    "orbit_position_error", "pca_shape", "pca_difference"}
     assert metrics.METHODS["closest_approach"].kind == "descriptive"
     assert metrics.METHODS["absolute_difference"].kind == "scalar"
 
@@ -50,6 +51,7 @@ def test_table_is_json_ready_and_matches_the_declarations():
     assert table["closest_approach"] == {
         "kind": "descriptive",
         "inputs": ["orbit"],
+        "weights": None,
         "settings": {},
         "best": None,
         "range": None,
@@ -58,6 +60,7 @@ def test_table_is_json_ready_and_matches_the_declarations():
     assert table["absolute_difference"] == {
         "kind": "scalar",
         "inputs": ["image", "image"],
+        "weights": "image",
         "settings": {},
         "best": "low",
         "range": [0.0, 1.0],

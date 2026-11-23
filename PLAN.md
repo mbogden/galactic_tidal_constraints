@@ -28,6 +28,14 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
   model, and a `catalog.json` per output recording every run. A file counts as saved only once
   `model.json` lists it, and saved data is reused only when its config matches exactly. Layout, write
   order, the catalog and reuse: [docs/modules/simr.md](docs/modules/simr.md#saving).
+- **Metric or derived** (decided 2026-11-23): the size of what a function returns decides its stage.
+  One float or a small dict is a **metric**; an array about the size of its input (a mask, an edge
+  map, a window, weights) is a **derived** method. A metric never takes another metric's value, so
+  data moves one way: items and externals → derived arrays → metrics → composite.
+  [docs/modules/derived.md](docs/modules/derived.md), [docs/modules/metrics.md](docs/modules/metrics.md).
+- **Weights** are optional inputs: a metric that can use them takes them last, and without them every
+  row or pixel counts equally. They match the array they weigh (row weights: the metric's first
+  input, the target).
 - **Applications** live in the repo. Each owns its run's tables and final fitness scores, and chooses how to
   parallelize.
 - **Composite scores** (planned, MDRN-4 step 5): `simr` can return one composite per model, a

@@ -18,10 +18,16 @@ chosen range. A method may also register a one-time `setup` step (load a network
 run the first time it's used in a process; plain methods have none.
 
 Inputs are declared by kind, not by item, so the same method works on arrays from any source (a
-`simr` item, or an external array once those exist), as long as the shape fits:
+`simr` item, an external array, or a derived one), as long as the shape fits:
   orbit:     (n, 7) float32: x, y, z, vx, vy, vz, t (`sim.orbit`, `sim.search_orbit`)
   particles: (n, 6) float32: x, y, z, vx, vy, vz (`sim.particles`, `sim.unperturbed`)
   image:     (height, width) float32 in [0, 1] (`img.*`)
+  weights:   (n,) float32: one value per row of the array it weighs
+
+Weights are optional. A method that can use them declares the kind it takes (`Metric.weights`) and
+has a `weights=None` argument; they come as one extra input after the declared ones. Without them
+every row or pixel counts equally. Weights must be non-negative and not all zero, and match the
+array they weigh: for row weights, the method's first input (the target, when there is one).
 """
 
 import math
@@ -54,6 +60,9 @@ class Metric:
         function: the method itself: `function(*inputs, **settings)`.
         setup: an optional one-time step, run the first time the method is used in a process (e.g.
             load a network and its weights). None for plain methods.
+        weights: the kind of the optional weights the method takes as one more input after `inputs`
+            ("weights": one per row of its first input; "image": one per pixel). None for a method
+            that takes no weights.
     """
 
     name: str
@@ -65,6 +74,7 @@ class Metric:
     outputs: dict[str, tuple[int, ...]] | None
     function: Callable
     setup: Callable | None = None
+    weights: str | None = None
 
     @property
     def scalar_outputs(self) -> tuple[str, ...]:
@@ -85,11 +95,13 @@ def metric(
     range: tuple[float, float] | None = None,
     outputs: dict[str, tuple[int, ...]] | None = None,
     setup: Callable | None = None,
+    weights: str | None = None,
 ) -> Callable:
     """Register a metric method in `METHODS`, checking its declaration as the module is imported.
 
     A scalar method declares `best` and `range` and no `outputs`; a descriptive method declares
-    `outputs` (key -> shape, () for one float) and neither `best` nor `range`.
+    `outputs` (key -> shape, () for one float) and neither `best` nor `range`. A method that can
+    use weights declares their kind (`weights`) and takes them as a `weights=None` argument.
     """
 
     def register(function: Callable) -> Callable:
@@ -98,7 +110,7 @@ def metric(
             raise ValueError(f"metric {name!r} is already registered")
         if kind not in KINDS:
             raise ValueError(f"{name}: kind must be one of {list(KINDS)}: {kind!r}")
-        unknown = [k for k in inputs if k not in INPUT_KINDS]
+        unknown = [k for k in (*inputs, *([weights] if weights is not None else [])) if k not in INPUT_KINDS]
         if unknown:
             raise ValueError(f"{name}: unknown input kinds {unknown}. Known: {list(INPUT_KINDS)}")
         if kind == "scalar":
@@ -123,6 +135,7 @@ def metric(
             outputs=None if outputs is None else {key: tuple(shape) for key, shape in outputs.items()},
             function=function,
             setup=setup,
+            weights=weights,
         )
         return function
 
@@ -131,11 +144,13 @@ def metric(
 
 def table() -> dict[str, dict]:
     """The metrics table as plain data (JSON-ready), one entry per method, for checks and higher-level
-    code: kind, inputs, settings, best, range and outputs, as declared."""
+    code: kind, inputs, weights (the kind of its optional weights, or None), settings, best, range and
+    outputs, as declared."""
     return {
         name: {
             "kind": m.kind,
             "inputs": list(m.inputs),
+            "weights": m.weights,
             "settings": dict(m.settings),
             "best": m.best,
             "range": None if m.range is None else list(m.range),
@@ -171,7 +186,8 @@ def compute(method: str, inputs: list[np.ndarray], select: str | None = None, pa
 
     Args:
         method: a name from `METHODS`.
-        inputs: the input arrays, one per declared kind, in order.
+        inputs: the input arrays, one per declared kind, in order. A method that takes weights
+            (`Metric.weights`) accepts one more at the end: its weights.
         select: for a descriptive method, the single-float output to return instead of the dict.
         params: settings passed to the method as keyword arguments (defaults for those left out come
             from the entry that was filled in against the declaration, not from here).
@@ -180,14 +196,26 @@ def compute(method: str, inputs: list[np.ndarray], select: str | None = None, pa
         The method's float (a scalar method, or `select`), or its dict (a descriptive method).
 
     Raises:
-        ValueError: an input doesn't fit its kind's shape (`INPUT_SHAPES`), the value doesn't match
+        ValueError: the wrong number of inputs; an input doesn't fit its kind's shape
+        (`INPUT_SHAPES`); weights that are negative, not finite or all zero; the value doesn't match
         the declaration, or it holds NaN or inf — a metric failure. Whatever the method itself raises
         is not caught.
     """
     m = METHODS[method]
+    allowed = (len(m.inputs), len(m.inputs) + 1) if m.weights else (len(m.inputs),)
+    if len(inputs) not in allowed:
+        raise ValueError(
+            f"{method} takes {len(m.inputs)} input(s) {list(m.inputs)}"
+            + (f", and optionally {m.weights!r} weights after them" if m.weights else "")
+            + f": got {len(inputs)}"
+        )
     for j, (kind, value) in enumerate(zip(m.inputs, inputs)):
         check_input(kind, value, f"{method}: input {j}")
-    value = m.function(*inputs, **(params or {}))
+    keywords = dict(params or {})
+    if len(inputs) > len(m.inputs):
+        check_input(m.weights, inputs[-1], f"{method}: the weights")
+        keywords["weights"] = check_weights(inputs[-1], f"{method}: the weights")
+    value = m.function(*inputs[: len(m.inputs)], **keywords)
     if m.kind == "scalar":
         if not isinstance(value, (int, float, np.floating, np.integer)) or isinstance(value, bool):
             raise ValueError(f"{method} returned {type(value).__name__}, not one float")
@@ -203,6 +231,20 @@ def compute(method: str, inputs: list[np.ndarray], select: str | None = None, pa
         if not np.isfinite(np.asarray(value[key], dtype=float)).all():
             raise ValueError(f"{method}[{key!r}] holds NaN or inf")
     return float(value[select]) if select is not None else value
+
+
+def check_weights(weights: np.ndarray, where: str) -> np.ndarray:
+    """Weights a metric can use: finite, none negative, not all zero. Returns them as float64.
+
+    Raises:
+        ValueError: otherwise. A derived array may be all zeros; it can't be used as weights.
+    """
+    weights = np.asarray(weights, dtype=np.float64)
+    if not np.isfinite(weights).all() or (weights < 0).any():
+        raise ValueError(f"{where} must be finite and not negative")
+    if not (weights > 0).any():
+        raise ValueError(f"{where} are all zero: nothing would be compared")
+    return weights
 
 
 @metric(
@@ -234,21 +276,128 @@ def closest_approach(orbit: np.ndarray) -> dict:
     }
 
 
-@metric(kind="scalar", inputs=("image", "image"), best="low", range=(0.0, 1.0))
-def absolute_difference(a: np.ndarray, b: np.ndarray) -> float:
+@metric(kind="scalar", inputs=("image", "image"), best="low", range=(0.0, 1.0), weights="image")
+def absolute_difference(a: np.ndarray, b: np.ndarray, weights: np.ndarray | None = None) -> float:
     """The mean |a - b| over the pixels of two greyscale images of the same shape.
 
     0 means identical, 1 the largest possible difference between images in [0, 1]. It works for any
     two matching images, wherever they come from: two `simr` images of one simulation (model vs
     unperturbed reads as how perturbed the model is), or a `simr` image against an external one (a
-    target) once externals exist.
+    target).
 
     Args:
         a, b: greyscale images, (height, width), values in [0, 1].
+        weights: None (every pixel counts equally), or a weight per pixel, the images' shape: the
+            value is then the weighted mean, sum(w * |a - b|) / sum(w). With a target, a model and
+            weights from `derived.difference_weights(target, unperturbed)`, differences count most
+            where the target shows tidal features.
     """
     if a.shape != b.shape:
         raise ValueError(f"the images must have the same shape: {a.shape} vs {b.shape}")
-    return float(np.mean(np.abs(a.astype(np.float64) - b.astype(np.float64))))
+    difference = np.abs(a.astype(np.float64) - b.astype(np.float64))
+    if weights is None:
+        return float(np.mean(difference))
+    weights = check_weights(weights, "the weights")
+    if weights.shape != a.shape:
+        raise ValueError(f"the weights must have the images' shape {a.shape}: got {weights.shape}")
+    return float((weights * difference).sum() / weights.sum())
+
+
+# --- Orbit errors: a model's orbit against a target's ---------------------------------------------------
+
+# The most squared distances held at once while searching for nearest points (about 32 MB as float64).
+ORBIT_SEARCH_CHUNK = 4_000_000
+
+
+def _orbit_pair(target: np.ndarray, model: np.ndarray, weights: np.ndarray | None):
+    """What both orbit errors need, checked: the target rows that count, each one's share of the
+    weighted time, and the model's rows in time order.
+
+    Each target row stands for the time around it (half the gap to the row before plus half the gap to
+    the row after: the trapezoid rule), so the result is a weighted average over time, and doesn't
+    depend on how the target was sampled.
+
+    Returns (positions, times, shares, model): the counted target rows' x, y, z and t, their shares
+    (weight x time, summing to 1), and the model orbit sorted by time.
+    """
+    times = target[:, 6].astype(np.float64)
+    if len(times) < 2 or not (np.diff(times) > 0).all():
+        raise ValueError("the target orbit needs at least 2 rows, with times strictly increasing")
+    if weights is None:
+        weights = np.ones(len(times))
+    weights = check_weights(weights, "the weights")
+    if weights.shape != times.shape:
+        raise ValueError(f"the weights must be one per target row, {len(times)}: got {weights.shape}")
+    gaps = np.diff(times)
+    spans = np.concatenate(([gaps[0] / 2], (gaps[:-1] + gaps[1:]) / 2, [gaps[-1] / 2]))
+    shares = weights * spans
+    counted = shares > 0
+    model_times = model[:, 6].astype(np.float64)
+    steps = np.diff(model_times)
+    if len(model_times) < 2 or not ((steps > 0).all() or (steps < 0).all()):
+        raise ValueError("the model orbit needs at least 2 rows, with times running strictly one way")
+    if steps[0] < 0:
+        model = model[::-1]
+        model_times = model_times[::-1]
+    first, last = times[counted][0], times[counted][-1]
+    slack = np.abs(steps).max() / 2  # a target time may sit half a model step past the model's ends
+    if first < model_times[0] - slack or last > model_times[-1] + slack:
+        raise ValueError(
+            f"the model orbit runs from t = {model_times[0]:g} to {model_times[-1]:g}, but the target "
+            f"rows that count run from t = {first:g} to {last:g}"
+        )
+    return target[counted, :3].astype(np.float64), times[counted], shares[counted] / shares[counted].sum(), model
+
+
+@metric(kind="scalar", inputs=("orbit", "orbit"), best="low", range=(0.0, math.inf), weights="weights")
+def orbit_time_error(target: np.ndarray, model: np.ndarray, weights: np.ndarray | None = None) -> float:
+    """How far a model's orbit is from a target's at the same times: the weighted time average of the
+    squared distance between the two, in SPAM length units squared.
+
+    For each target row, the model's position at the nearest model time is used. 0 means the model is
+    where the target is, when the target is there. A model that follows the right path at the wrong
+    times scores badly here and well on `orbit_position_error`.
+
+    Args:
+        target: the orbit to match, (n, 7): x, y, z, vx, vy, vz, t, with times strictly increasing and
+            any spacing.
+        model: the model's orbit, (m, 7), e.g. `sim.search_orbit`; rows in either time order. It must
+            cover the target times that count.
+        weights: None (every target time counts equally), or one weight per target row, e.g. from
+            `derived.recent_approach_cosine_window(target)`.
+    """
+    positions, times, shares, model = _orbit_pair(target, model, weights)
+    model_times = model[:, 6].astype(np.float64)
+    after = np.clip(np.searchsorted(model_times, times), 1, len(model_times) - 1)
+    nearest = np.where(times - model_times[after - 1] <= model_times[after] - times, after - 1, after)
+    squared = ((positions - model[nearest, :3].astype(np.float64)) ** 2).sum(axis=1)
+    return float((shares * squared).sum())
+
+
+@metric(kind="scalar", inputs=("orbit", "orbit"), best="low", range=(0.0, math.inf), weights="weights")
+def orbit_position_error(target: np.ndarray, model: np.ndarray, weights: np.ndarray | None = None) -> float:
+    """How far a target's path is from a model's path, whatever the timing: the weighted time average
+    of the squared distance from each target point to the nearest model point, in SPAM length units
+    squared.
+
+    Only the model's rows inside the span of the target times that count are searched, so on a
+    repeating orbit a target point can't match an earlier lap. 0 means every counted target point
+    lies on the model's path. The nearest model row is used, with no interpolation between rows.
+
+    Args:
+        target, model, weights: as in `orbit_time_error`.
+    """
+    positions, times, shares, model = _orbit_pair(target, model, weights)
+    model_times = model[:, 6].astype(np.float64)
+    slack = np.abs(np.diff(model_times)).max() / 2
+    inside = (model_times >= times[0] - slack) & (model_times <= times[-1] + slack)
+    path = model[inside, :3].astype(np.float64)
+    squared = np.empty(len(positions))
+    rows = max(1, ORBIT_SEARCH_CHUNK // max(1, len(path)))
+    for start in range(0, len(positions), rows):
+        block = positions[start:start + rows]
+        squared[start:start + rows] = ((block[:, None, :] - path[None, :, :]) ** 2).sum(axis=2).min(axis=1)
+    return float((shares * squared).sum())
 
 
 # --- PCA shape: the particles' covariance ellipsoid ------------------------------------------------------

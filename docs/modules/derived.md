@@ -12,7 +12,8 @@ weights = derived.compute("recent_approach_cosine_window", [target_orbit], {"k":
 ```
 
 Only what exists today is described here: the methods, called from Python. `simr` doesn't run them
-yet (a `derived` config section is the next step), and no metric takes weights yet. Decisions behind
+yet (a `derived` config section is the next step); until then, give a derived array to a run as an
+external, e.g. as a metric's weights ([metrics.md](metrics.md#weights)). Decisions behind
 it are in [PLAN.md](../../PLAN.md).
 
 ## Derived or metric?

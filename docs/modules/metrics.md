@@ -9,6 +9,18 @@ returns when the config has a `composite` section).
 Only what exists today is described here. Decisions behind it are in
 `Experiments/MDRN-4` (the vault) and [PLAN.md](../../PLAN.md).
 
+## Metric or derived?
+A metric deliberately reduces its inputs to something small. The size of what a function returns
+decides where it belongs:
+
+| It returns | It's a |
+|---|---|
+| One float, or a small dict | Metric (this stage) |
+| An array about the size of its input (a mask, an edge map, a window, weights) | Derived method ([derived.md](derived.md)) |
+
+So a metric never takes another metric's value as an input, and data only moves one way: items and
+externals → derived arrays → metrics → the composite, the one place metric values are combined.
+
 ## Two kinds of metrics
 - **Scalar**: returns exactly one float (a fitness value, a perturbation measure, an orbit error).
 - **Descriptive**: returns a dict with everything about one thing (e.g. closest approach). Each
@@ -64,13 +76,32 @@ source (a `simr` item, or an external array given to `simr.run`; see Externals i
 | `image` | `(height, width)` float32 in [0, 1] | `img.*` |
 | `weights` | `(n,)` float32: one value per row of the array it weighs | none yet; made by the Derived stage ([derived.md](derived.md)) or given as an external |
 
+## Weights
+A method that can use weights declares the kind it takes (`Metric.weights`) and has a `weights=None`
+argument. In a config entry they're one more name after the method's inputs:
+
+```json
+{"method": "orbit_time_error", "inputs": ["test_ext_orbit", "sim.search_orbit", "test_ext_weights"]}
+```
+
+- **Optional:** without them, every row or pixel counts equally.
+- **They match what they weigh:** row weights are one per row of the method's first input (the
+  target); image weights have the images' shape.
+- **They must be usable:** finite, none negative, not all zero; otherwise that metric cell fails.
+- **Where they come from:** an external array today, built by your own code or by a derived method
+  ([derived.md](derived.md)) called from Python.
+- When the weights and the input they weigh are both externals, their lengths are compared before
+  anything runs.
+
 ## The methods
 This table is guarded by a test (`tests/test_metrics.py`) against `metrics.table()`.
 
 | Method | Kind | Inputs | Returns | Best | Range | Settings |
 |---|---|---|---|---|---|---|
 | `closest_approach` | descriptive | orbit | `t` (), `distance` (), `position` (3,), `velocity` (3,) | — | — | — |
-| `absolute_difference` | scalar | image, image | one float | low | [0, 1] | — |
+| `absolute_difference` | scalar | image, image; optional image weights | one float | low | [0, 1] | — |
+| `orbit_time_error` | scalar | orbit (target), orbit (model); optional weights | one float | low | [0, ∞) | — |
+| `orbit_position_error` | scalar | orbit (target), orbit (model); optional weights | one float | low | [0, ∞) | — |
 | `pca_shape` | descriptive | particles | `axes` (3,), `vectors` (3, 3), `center` (3,), `b_a` (), `c_a` () | — | — | `columns="position"`, `center="mean"`, `trim_quantile=None` |
 | `pca_difference` | scalar | particles, particles | one float | low | [0, ∞) | as `pca_shape`, plus `descriptor="ratios"`, `distance="l2"`, `orientation_weight=0.0` |
 
@@ -81,7 +112,28 @@ This table is guarded by a test (`tests/test_metrics.py`) against `metrics.table
 - **`absolute_difference`**: the mean |a − b| over the pixels of two greyscale images of the same
   shape; 0 is identical. Any two matching images work: model vs unperturbed reads as how perturbed
   the model is, and an image vs an external target as how far from the target.
-  Images of another shape are an error; matching frames is the caller's job.
+  Images of another shape are an error; matching frames is the caller's job. With a weight image
+  it's the weighted mean, Σ w·|a − b| / Σ w: with a target, a model and weights from
+  `derived.difference_weights(target, unperturbed)`, differences count most where the target shows
+  tidal features.
+- **`orbit_time_error`**: how far a model's orbit is from a target's **at the same times**: the
+  weighted time average of the squared distance between them, in SPAM length units squared. For each
+  target row the model's position at the nearest model time is used. 0 means the model is where the
+  target is, when the target is there.
+- **`orbit_position_error`**: how far the target's **path** is from the model's, whatever the timing:
+  the same average of the squared distance from each target point to the nearest model point. Only
+  the model's rows inside the span of the target times that count are searched, so on a repeating
+  orbit a target point can't match an earlier lap. A model on the right path at the wrong times scores
+  well here and badly on `orbit_time_error`; because of that span, a late model also loses a little
+  here near the window's ends, where the weights are small.
+- **Both orbit errors:**
+  - The target comes first, the model second (e.g. `sim.search_orbit`, in either time order).
+  - The target's times must increase, with any spacing. Each row stands for the time around it (the
+    trapezoid rule), so the value is an average over time, not over rows, and doesn't depend on how
+    the target was sampled.
+  - The model must cover the target times that count, or the metric fails; nothing is padded.
+  - Weights are one per target row, e.g. `derived.recent_approach_cosine_window(target)`. They replace
+    the old code's Gaussian weight function; the old 50/50 mix of the two errors is a composite.
 - **`pca_shape`**: the shape of a particle cloud as its covariance ellipsoid (3D principal component
   analysis), on the whole array as given (for `sim.particles`, both galaxies together). `columns`
   picks positions or velocities; `center` is the mean or median; `trim_quantile` (e.g. 0.95) drops
