@@ -1385,6 +1385,57 @@ def test_too_little_shared_memory_stops_the_run_before_anything_is_written(monke
     assert _shared_folders() == before
 
 
+MULTI_NODE_MPI = [
+    {"OMPI_COMM_WORLD_LOCAL_SIZE": "2", "OMPI_COMM_WORLD_SIZE": "4"},  # OpenMPI: 4 ranks, 2 on this node
+    {"MPI_LOCALNRANKS": "1", "PMI_SIZE": "3"},  # MPICH / Intel MPI
+]
+
+
+@pytest.mark.parametrize("variables", MULTI_NODE_MPI)
+def test_a_multi_node_mpi_job_with_shared_externals_stops_before_anything_is_written(
+        tmp_path, monkeypatch, variables):
+    from concurrent.futures import ProcessPoolExecutor  # stands in for the MPI pool: any pool shares
+
+    for name, value in variables.items():
+        monkeypatch.setenv(name, value)
+    before = _shared_folders()
+    with ProcessPoolExecutor(max_workers=2) as pool, pytest.raises(
+            ValueError, match=r"externals \['ext_particles'\] are shared through this node's memory .* only "):
+        simr.run(MODELS, externals_request(), output=tmp_path / "runs",
+                 externals={"ext_particles": EXTERNAL_PARTICLES}, map=pool.map)
+    assert not (tmp_path / "runs").exists()  # no catalog
+    assert _shared_folders() == before  # nothing in /dev/shm
+
+
+def test_float32_files_need_no_shared_copy_so_a_multi_node_job_may_use_them(tmp_path, monkeypatch):
+    from concurrent.futures import ProcessPoolExecutor
+
+    monkeypatch.setenv("OMPI_COMM_WORLD_LOCAL_SIZE", "2")
+    monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "4")
+    np.save(tmp_path / "particles.npy", EXTERNAL_PARTICLES.astype(np.float32))
+    with ProcessPoolExecutor(max_workers=2) as pool:
+        result = simr.run(MODELS, externals_request(), externals={"ext_particles": tmp_path / "particles.npy"},
+                          map=pool.map)
+    assert result.status["sim_metrics"].tolist() == [[["ran"]], [["ran"]]]
+
+
+@pytest.mark.parametrize("pooled", [False, True])
+def test_one_node_mpi_jobs_and_solo_runs_are_not_stopped(monkeypatch, pooled):
+    from concurrent.futures import ProcessPoolExecutor
+
+    monkeypatch.setenv("OMPI_COMM_WORLD_LOCAL_SIZE", "4")
+    monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "4")  # every rank on this node
+    if not pooled:
+        monkeypatch.setenv("OMPI_COMM_WORLD_LOCAL_SIZE", "1")  # solo shares nothing, so nothing to check
+    externals = {"ext_particles": EXTERNAL_PARTICLES}
+    if pooled:
+        with ProcessPoolExecutor(max_workers=2) as pool:
+            result = simr.run(MODELS, externals_request(), externals=externals, map=pool.map)
+    else:
+        result = simr.run(MODELS, externals_request(), externals=externals)
+    assert result.status["sim_metrics"].tolist() == [[["ran"]], [["ran"]]]
+
+
 def test_a_worker_that_cannot_see_the_shared_copy_says_why():
     with pytest.raises(simr.SimrRunError, match="every worker must run on the node that started the run"):
         simr._open_externals({"ext_particles": "/dev/shm/simr_externals_gone/external_0.npy"})

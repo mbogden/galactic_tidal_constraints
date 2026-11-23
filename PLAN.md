@@ -65,7 +65,8 @@ and examples: [docs/configuration.md](docs/configuration.md).
   target's orbit, image or particles) that metrics compare each model against. The config names only
   their keys; the arrays come with the run (`externals=`, or `--externals`). Each is checked,
   converted to `float32` and hashed before anything runs, and the run records its source, shape and
-  hash. A pool shares them through one node's memory, so such a pool is single-node.
+  hash. A pool shares them through one node's memory, so such a pool is single-node (see
+  Parallelization, In `simr`).
 - **The command line** requires an output, so every run leaves its models, configs and statuses on
   disk; `run.return` is ignored there, so one config works in a notebook and on the command line.
   Flags, the models file and exit codes: [docs/modules/simr.md](docs/modules/simr.md#the-command-line).
@@ -126,6 +127,10 @@ How it's done (the catalog while results arrive, crashes, MPI logging, sharing e
   workers free up (no shrinking batches for now).
 - Only the main process touches the catalog.
 - A worker crash ends the run; a rerun resumes from what's saved.
+- Externals shared through a node's memory (in-memory or non-`float32`) keep a run on one node: an
+  MPI job spanning more nodes stops before anything is written (decided 2026-11-23). Large external
+  data stays local to a node, and different data sets (e.g. different targets' particles) get their
+  own jobs. MPI runs without such externals can still span nodes.
 - `mpi4py` is an optional dependency group (decided 2026-11-16), and `simr` never imports it.
 
 ## Environment

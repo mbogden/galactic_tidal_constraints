@@ -282,8 +282,11 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
             here, is a ValueError. A key can't start with "sim." or "img."; keys no metric uses are
             ignored, with one log message. Metrics get each external read-only.
             With a pool, the workers share one copy of each external in the node's memory instead of
-            getting a copy each (see `_share_externals`), so a pool that uses externals must have all
-            its workers on the node that started the run.
+            getting a copy each (see `_share_externals`), so a pool that uses in-memory or
+            non-float32 externals must have all its workers on the node that started the run; under
+            an MPI launcher spanning more nodes, that's a ValueError before anything is written.
+            float32 .npy files are used in place, so on a disk every node reads they work on any
+            number of nodes.
 
     Returns:
         A `SimrResult`; see its docstring.
@@ -1194,6 +1197,7 @@ def _share_externals(arrays: dict[str, np.ndarray], files: dict[str, Path | None
     to_write = {key: array for key, array in arrays.items() if key not in paths}
     if not to_write:
         return paths, None
+    _check_one_node(sorted(to_write))
     root = SHARED_MEMORY if SHARED_MEMORY.is_dir() else Path(tempfile.gettempdir())
     needed, free = sum(array.nbytes for array in to_write.values()), shutil.disk_usage(root).free
     if needed >= free:
@@ -1214,6 +1218,30 @@ def _share_externals(arrays: dict[str, np.ndarray], files: dict[str, Path | None
     logger.info("simr: externals %s shared with the workers through %s (%.1f MB)",
                 sorted(to_write), folder, needed / 2**20)
     return paths, folder
+
+
+# What MPI launchers tell every rank: (ranks on this node, ranks in the job). OpenMPI's mpirun, then
+# MPICH / Intel MPI (Hydra).
+MPI_NODE_VARIABLES = (("OMPI_COMM_WORLD_LOCAL_SIZE", "OMPI_COMM_WORLD_SIZE"), ("MPI_LOCALNRANKS", "PMI_SIZE"))
+
+
+def _check_one_node(keys: list[str]) -> None:
+    """Stop a run, before anything is written, whose externals must go through this node's memory
+    (`keys`) when it was launched by MPI on more than one node: workers on other nodes couldn't see
+    them. Read from the launcher's environment, so `simr` never imports `mpi4py`. Without those
+    variables (no MPI launcher) there is nothing to check; a worker that can't see an external still
+    stops the run when it starts (`_open_externals`)."""
+    for local_name, size_name in MPI_NODE_VARIABLES:
+        if local_name in os.environ and size_name in os.environ:
+            local, size = int(os.environ[local_name]), int(os.environ[size_name])
+            if local < size:
+                raise ValueError(
+                    f"the externals {keys} are shared through this node's memory (/dev/shm), but this MPI "
+                    f"job has {size} ranks and only {local} on this node ({socket.gethostname()}). Run "
+                    f"it on one node (e.g. one job per target), or give the externals as float32 .npy "
+                    f"files on a disk every node can read, which are used in place"
+                )
+            return
 
 
 # The externals this process has mapped, by (path, modified time, size): a worker maps each once and

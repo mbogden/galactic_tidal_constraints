@@ -109,8 +109,13 @@ result = simr.run(models, config, externals={"tng_particles": array})
 a copy. `simr` writes each external once to `/dev/shm`, a folder that lives in the node's memory, not
 on disk; every worker maps that one copy read-only, and `simr` removes it when the run ends. So:
 
-- **One node only.** `/dev/shm` belongs to one node, so a pool that uses externals must have all its
-  workers on the node that started the run. A worker elsewhere stops the run with a message saying so.
+- **One node only, for externals shared through `/dev/shm`.** `/dev/shm` belongs to one node, so a
+  pool that shares externals there must have all its workers on the node that started the run. An MPI
+  job that spans more nodes stops **before anything is written**, with a message saying so (`simr`
+  reads the launcher's count of ranks per node). The intent: large external data stays on one node,
+  and different data sets, such as different targets' particles, get their own jobs.
+- **`float32` `.npy` files on a disk every node reads** (e.g. `/home` on Babbage) aren't copied to
+  `/dev/shm`, so a run that uses only those can span nodes.
 - **Memory:** the node holds each external once, however many workers use it.
 - **A `float32` `.npy` given by path is mapped from your own file**, with no copy at all. Saving targets
   as `float32` avoids the copy; a file of another type gets a converted copy in `/dev/shm`.

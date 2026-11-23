@@ -171,8 +171,12 @@ with ProcessPoolExecutor(max_workers=simr.available_cpus(), mp_context=multiproc
 - **Externals with a pool** aren't copied into each model's task. `simr` writes each one once to
   `/dev/shm` (memory, not disk; a `float32` `.npy` given by path is used as it is), every worker maps
   that copy read-only, and the folder is removed when the run ends. `/dev/shm` belongs to one node, so
-  **a pool that uses externals must have all its workers on the calling process's node**; a worker
-  elsewhere raises `SimrRunError`. Details: [configuration.md](../configuration.md#externals).
+  **a pool that shares externals there must have all its workers on the calling process's node**. Under
+  an MPI launcher, `simr` reads how many ranks are on this node (`OMPI_COMM_WORLD_LOCAL_SIZE` vs
+  `OMPI_COMM_WORLD_SIZE`; `MPI_LOCALNRANKS` vs `PMI_SIZE` for MPICH) and stops a multi-node job with a
+  `ValueError` before anything is written. Without those variables, a worker that can't see the copy
+  raises `SimrRunError` when it starts. `float32` files on a shared disk need no copy, so they work
+  across nodes. Details: [configuration.md](../configuration.md#externals).
 - "spawn" starts workers fresh, as MPI does. A script that uses it needs the usual
   `if __name__ == "__main__":` guard.
 

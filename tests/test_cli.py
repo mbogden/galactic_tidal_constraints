@@ -223,6 +223,26 @@ def test_mpi_mode_matches_solo(tmp_path, files, caplog):
         np.testing.assert_array_equal(mpi_data["sim.orbit"], solo_data["sim.orbit"])
 
 
+@pytest.mark.slow
+def test_mpi_mode_with_externals_on_one_node(tmp_path, files):
+    """A real mpirun on this machine: the launcher's node variables say every rank is here, so shared
+    externals are allowed, and the workers map the copy in /dev/shm."""
+    pytest.importorskip("mpi4py")
+    if shutil.which("mpirun") is None:
+        pytest.skip("no mpirun")
+    np.save(tmp_path / "particles.npy", TARGET.astype(np.float64))  # not float32: shared through /dev/shm
+    args = files(models=(MODEL, MODEL.replace("301.0", "302.0")), config=PCA_CONFIG, output="mpi")
+    args += externals_args(tmp_path, {"ext_particles": "particles.npy"})
+    env = {**os.environ, "OMPI_ALLOW_RUN_AS_ROOT": "1", "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM": "1"}
+    result = subprocess.run(["mpirun", "-n", "3", "--oversubscribe", sys.executable, "-m", "mpi4py.futures",
+                             "-m", "galactic_tidal_constraints.simr", *args, "--mode", "mpi"],
+                            capture_output=True, text=True, env=env, timeout=300)
+    assert result.returncode == 0, result.stderr
+    assert "shared with the workers through" in result.stderr
+    [record] = simr.load_catalog(tmp_path / "mpi")["runs"]
+    assert record["status"]["sim_metrics"] == [[["ran"]], [["ran"]]]
+
+
 def test_mpi_mode_without_mpi4py_exits_1(files, caplog, monkeypatch):
     monkeypatch.setitem(sys.modules, "mpi4py", None)  # makes `import mpi4py` fail
     assert main(files() + ["--mode", "mpi"]) == 1
