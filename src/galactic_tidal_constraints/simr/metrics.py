@@ -33,7 +33,7 @@ import numpy as np
 # Each input kind's array shape (None: any length). `compute` checks every input against its declared
 # kind before the method runs, so a wrong array fails cleanly wherever it came from (a simr item today,
 # an external array later).
-INPUT_SHAPES = {"orbit": (None, 7), "particles": (None, 6), "image": (None, None)}
+INPUT_SHAPES = {"orbit": (None, 7), "particles": (None, 6), "image": (None, None), "weights": (None,)}
 INPUT_KINDS = tuple(INPUT_SHAPES)
 KINDS = ("scalar", "descriptive")
 

@@ -62,6 +62,7 @@ source (a `simr` item, or an external array given to `simr.run`; see Externals i
 | `orbit` | `(n, 7)` float32: x, y, z, vx, vy, vz, t | `sim.orbit`, `sim.search_orbit` |
 | `particles` | `(n, 6)` float32: x, y, z, vx, vy, vz | `sim.particles`, `sim.unperturbed` |
 | `image` | `(height, width)` float32 in [0, 1] | `img.*` |
+| `weights` | `(n,)` float32: one value per row of the array it weighs | none yet; made by the Derived stage ([derived.md](derived.md)) or given as an external |
 
 ## The methods
 This table is guarded by a test (`tests/test_metrics.py`) against `metrics.table()`.

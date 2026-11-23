@@ -194,6 +194,7 @@ how-to guides.
 | `docs/modules/simulation.md` | The Simulator stage's functions, inputs and outputs | Exists |
 | `docs/modules/image_creator.md` | The Image Creator's config, pixel frame and steps | Exists |
 | `docs/modules/metrics.md` | The Metrics stage: the method registry, input kinds, each method | Exists |
+| `docs/modules/derived.md` | The Derived stage: derived or metric, the registry, each method | Exists (the methods; not yet in `simr`) |
 | `docs/modules/<module>.md` | The same for each later module | With the module or after it |
 | `docs/guides/running_spam.md` | Compile and run SPAM itself, from Python or as the Fortran program | Exists |
 | `docs/guides/running_on_babbage.md` | A how-to for setting up an experiment and launching runs on Babbage | Exists (CPU only) |
