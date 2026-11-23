@@ -88,6 +88,13 @@ result = simr.run(models, config, externals={"tng_particles": array})
 ```
 
 - **A value** is a numeric numpy array, or the absolute path of a `.npy` file, which `simr` loads once.
+- **Each used external is hashed and recorded.** The hash is SHA-256 of the data as `float32`, with its
+  shape (`simr.array_hash(array)`), so the same data gives the same hash from memory or a file, on any
+  machine. Each one's source (the path, or `"memory"`), shape and hash are logged, returned in
+  `result.externals`, and written to the run's record in the catalog (`"externals"`). The catalog
+  records which data a run used, not the data itself.
+- **An expected hash** can be given with a path: `{"path": "/data/tng_123/image.npy", "hash": "a3f9..."}`.
+  If the file's data has another hash, the run stops before anything is simulated.
 - **Its kind** (orbit, particles or image) is the kind of the input place it's used in. One external
   has one kind.
 - **Checked before anything is simulated:** every key a metric names is in `externals`; each array is

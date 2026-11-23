@@ -1256,6 +1256,66 @@ def test_externals_come_back_the_same_through_a_pool():
     assert pooled.sim_metrics.tolist() == solo.sim_metrics.tolist()
 
 
+def test_array_hash_is_sha256_of_the_shape_and_the_float32_values():
+    import hashlib
+
+    as_float32 = EXTERNAL_PARTICLES.astype("<f4")
+    expected = hashlib.sha256(b"float32(40, 6)" + as_float32.tobytes()).hexdigest()
+    assert simr.array_hash(as_float32) == expected
+    assert simr.array_hash(EXTERNAL_PARTICLES) == expected  # float64 in: hashed as the float32 simr uses
+    assert simr.array_hash(np.asfortranarray(as_float32)) == expected  # memory layout doesn't matter
+    assert simr.array_hash(as_float32.reshape(6, 40)) != expected  # the shape does
+    assert simr.array_hash(as_float32 + 1) != expected
+
+
+def test_the_result_and_the_catalog_record_each_external(tmp_path, caplog):
+    np.save(tmp_path / "image.npy", EXTERNAL_IMAGE)
+    digest = simr.array_hash(EXTERNAL_PARTICLES)
+    with caplog.at_level("INFO"):
+        result = simr.run(PARAMS, externals_request(img_metrics=[IMAGE_ENTRY]), output=tmp_path / "runs",
+                          externals={"tng_particles": EXTERNAL_PARTICLES, "tng_image": tmp_path / "image.npy",
+                                     "spare": EXTERNAL_IMAGE})
+    assert result.externals == {  # only the used ones
+        "tng_particles": {"source": "memory", "shape": [40, 6], "hash": digest},
+        "tng_image": {"source": str(tmp_path / "image.npy"), "shape": [128, 128],
+                      "hash": simr.array_hash(EXTERNAL_IMAGE)},
+    }
+    [record] = simr.load_catalog(tmp_path / "runs")["runs"]
+    assert record["externals"] == result.externals
+    assert f"external 'tng_particles': memory, shape (40, 6), hash {digest}" in caplog.text
+
+
+def test_a_run_without_externals_records_none(tmp_path):
+    result = simr.run(PARAMS, metric_request(), output=tmp_path)
+    assert result.externals == {}
+    assert simr.load_catalog(tmp_path)["runs"][0]["externals"] == {}
+
+
+def test_an_expected_hash_must_match_the_data(tmp_path, monkeypatch):
+    np.save(tmp_path / "particles.npy", EXTERNAL_PARTICLES)
+    digest = simr.array_hash(EXTERNAL_PARTICLES)
+    given = {"tng_particles": {"path": tmp_path / "particles.npy", "hash": digest}}
+    assert simr.run(PARAMS, externals_request(), externals=given).externals["tng_particles"]["hash"] == digest
+    np.save(tmp_path / "particles.npy", EXTERNAL_PARTICLES + 1)  # the file changed since the hash was taken
+    monkeypatch.setitem(simr.SIM_DATA, "sim.particles", _not_computed)
+    with pytest.raises(ValueError, match=f"the data's hash is [0-9a-f]{{64}}, not the expected {digest}"):
+        simr.run(PARAMS, externals_request(), externals=given)
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ({"hash": "abc"}, 'a dict holds "path" and, optionally, "hash"'),
+        ({"path": "/x.npy", "sha": "abc"}, 'a dict holds "path" and, optionally, "hash"'),
+        ({"path": "/x.npy", "hash": 12}, "the hash must be a string"),
+        ({"path": EXTERNAL_PARTICLES}, "the path must be a string or Path"),
+    ],
+)
+def test_a_bad_external_dict_names_the_problem(value, message):
+    with pytest.raises(ValueError, match=message):
+        simr.run(PARAMS, externals_request(), externals={"tng_particles": value})
+
+
 def _shared_folders():
     root = simr.SHARED_MEMORY if simr.SHARED_MEMORY.is_dir() else Path(__import__("tempfile").gettempdir())
     return sorted(root.glob("simr_externals_*"))
@@ -1291,14 +1351,15 @@ def test_a_float32_file_is_mapped_as_it_is_and_others_get_a_shared_copy(tmp_path
     np.save(tmp_path / "f32.npy", EXTERNAL_PARTICLES.astype(np.float32))
     np.save(tmp_path / "f64.npy", EXTERNAL_PARTICLES)
     uses = {"a": ("particles", "here"), "b": ("particles", "here"), "c": ("particles", "here")}
-    arrays, files = simr._read_externals(
+    arrays, files, records = simr._read_externals(
         {"a": tmp_path / "f32.npy", "b": tmp_path / "f64.npy", "c": EXTERNAL_PARTICLES}, uses, []
     )
     assert files == {"a": tmp_path / "f32.npy", "b": None, "c": None}
-    paths, folder = simr._share_externals(arrays, files)
+    paths, folder = simr._share_externals(arrays, files, records)
     try:
         assert paths["a"] == str(tmp_path / "f32.npy")  # the caller's own file: no copy
-        assert Path(paths["b"]).parent == Path(paths["c"]).parent == folder
+        assert paths["b"] == paths["c"] == str(folder / f"{records['b']['hash']}.npy")  # same data: written once
+        assert len(list(folder.iterdir())) == 1
         opened = simr._open_externals(paths)
         for key in uses:
             assert opened[key].dtype == np.float32 and not opened[key].flags.writeable
@@ -1309,7 +1370,7 @@ def test_a_float32_file_is_mapped_as_it_is_and_others_get_a_shared_copy(tmp_path
     finally:
         simr._OPEN_EXTERNALS.clear()
         __import__("shutil").rmtree(folder)
-    only_file, no_folder = simr._share_externals({"a": arrays["a"]}, {"a": files["a"]})
+    only_file, no_folder = simr._share_externals({"a": arrays["a"]}, {"a": files["a"]}, records)
     assert no_folder is None and only_file == {"a": str(tmp_path / "f32.npy")}
 
 
