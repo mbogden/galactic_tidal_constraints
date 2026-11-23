@@ -42,6 +42,7 @@ request = {
 | `run.save` | `[]` | Names of the data to save. Independent of `return`: a run can do both |
 | `simulator` | one `SimulatorConfig()` | A dict (keys are `SimulatorConfig` fields) or a `SimulatorConfig`, or a list of them |
 | `image` | one `ImageConfig()` | A dict (keys are `ImageConfig` fields) or an `ImageConfig`, or a list of them. Centers are lists in JSON (`[column, row]`). See [image_creator.md](image_creator.md) |
+| `derived` | none | Named entries, in order: arrays made from other arrays, which metrics name as `drv.<name>`. See [derived.md](derived.md) and [configuration.md](../configuration.md#derived-entries) |
 | `sim_metrics` | none | Metric entries whose inputs are `sim.*` items: one dict or a list ([] is also none). See [metrics.md](metrics.md) and [configuration.md](../configuration.md#metric-entries) |
 | `img_metrics` | none | Metric entries with at least one `img.*` input, likewise |
 
@@ -122,6 +123,7 @@ catalog). It's a folder or a `.json` file, told apart by name, so it works befor
 | `sim_metrics` | Each `sim_metrics` entry's value per simulation, an object array `[model, simulator, entry]`: a float (a scalar method, or `select`), a dict (a descriptive method), or `None` (failed or skipped). Shape `(N, S, 0)` with no entries |
 | `img_metrics` | Likewise per image: `[model, simulator, image, entry]` |
 | `sim_metric_configs`, `img_metric_configs` | The filled-in entries (`method`, `inputs`, `select` — `None` when absent — and `params` with every default), so `sim_metrics[..., k]` is entry `sim_metric_configs[k]` |
+| `derived_configs` | The filled-in `derived` entries, in order: `name`, `method`, `inputs`, `params` with every default, `level` (`"run"`: computed once), and for those its array's `shape` and `hash` |
 | `externals` | Each external a metric used, by key: `{"source"` (its path, or `"memory"`), `"shape"`, `"hash"` (`simr.array_hash`)`}`. Empty when none was used |
 | `ids` | Each row's model id in the output's catalog, or `None` without an output (see The output catalog) |
 | `status`, `seconds`, `errors` | Per stage (`"sim"`, `"img"`, `"sim_metrics"`, `"img_metrics"`), indexed like its data or values; see Failures and status |
@@ -342,6 +344,7 @@ The catalog (a folder's `catalog.json`, or a `.json` output) is the output's tab
   | `run` | Its `return` and `save` lists |
   | `simulator` | The full simulator configs |
   | `image` | The full image configs |
+  | `derived` | The filled-in derived entries, as in the result's `derived_configs` |
   | `sim_metrics`, `img_metrics` | The filled-in metric entries (the values themselves aren't saved yet) |
   | `externals` | Each used external's source, shape and hash, as in the result (the data itself isn't saved) |
   | `model_ids` | Row m's model id |

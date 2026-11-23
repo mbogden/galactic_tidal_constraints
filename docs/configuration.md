@@ -22,6 +22,7 @@ it: `--models`, `--output`, `--externals`, `--mode`, `--workers` and `--log-leve
 | `run` | `return`: data to hand back in memory (Python only). `save`: data to write to the output folder. Both are lists of names (below) | Nothing returned or saved | [modules/simr.md](modules/simr.md#data-names) |
 | `simulator` | One `SimulatorConfig` entry, or a list of them | One default entry | [modules/simulation.md](modules/simulation.md#simulatorconfig) |
 | `image` | One `ImageConfig` entry, or a list of them | One default entry | [modules/image_creator.md](modules/image_creator.md#imageconfig) |
+| `derived` | Named entries (below), in order: arrays made from other arrays, for metrics to use as data or weights | None | [modules/derived.md](modules/derived.md) |
 | `sim_metrics` | One metric entry (below), or a list of them: metrics whose inputs are `sim.*` items | No metrics (an empty list `[]` also means that) | [modules/metrics.md](modules/metrics.md) |
 | `img_metrics` | The same, for metrics with at least one `img.*` input | No metrics | [modules/metrics.md](modules/metrics.md) |
 | `composite` *(planned)* | The weights for one composite score per model: a weighted mean of the scalar metrics, returned with the metrics | No composite | Not built yet |
@@ -75,6 +76,44 @@ line a warning says so). `simr` computes (or loads) the items an entry needs eve
 for them. An entry with an `img.*` input goes in `img_metrics` (one per simulation and image entry);
 an entry using only `sim.*` items goes in `sim_metrics` (one per simulation). `sim.timing` isn't a
 metric input.
+
+### Derived entries
+A derived entry makes an array from other arrays: weights along an orbit, a weight image, an edge map
+([modules/derived.md](modules/derived.md)). Each has a name, and a metric uses it as `drv.<name>`,
+as data or as weights:
+
+```json
+"derived": [
+  {"name": "target_win",   "method": "recent_approach_cosine_window", "inputs": ["test_ext_orbit"],
+   "params": {"k": 1.0}},
+  {"name": "target_edges", "method": "detect_edges", "inputs": ["test_ext_image"]}
+],
+"sim_metrics": [
+  {"method": "orbit_time_error", "inputs": ["test_ext_orbit", "sim.search_orbit", "drv.target_win"]}
+],
+"img_metrics": [
+  {"method": "absolute_difference", "inputs": ["drv.target_edges", "img.model"]}
+]
+```
+
+| Key | Meaning |
+|---|---|
+| `name` | Letters, digits and `_`; unique in the section. Metrics and later entries call it `drv.<name>` |
+| `method` | A derived method |
+| `inputs` | What it's made from, one per declared kind: externals, or entries **above it** in the list |
+| `params` (optional) | The method's settings; everything left out takes the method's default |
+
+- **Order matters only for entries built from other entries:** an entry may use those above it, so a
+  loop is impossible.
+- **Today an entry's inputs must be externals** (or entries made from them). It's then computed once,
+  before anything is simulated, and from there treated like an external: hashed, recorded and shared
+  with a pool's workers. Entries made from `sim.*` or `img.*` items, computed for every simulation or
+  image, are the next step; for now they're an error.
+- **No new combinations:** an entry adds one array, and metrics use it only where they name it.
+- **Checked before anything runs:** names, methods, kinds and order; a method that fails on its
+  externals; and a derived image that a metric uses but that isn't the size of the image entries.
+- **Recorded:** the run's record lists every entry with its full settings, and for one computed for
+  the run, its array's shape and hash, so the config says how the weights were made.
 
 ### Externals
 An input that isn't a `sim.*` or `img.*` item is an **external**: an array from outside the run, such as

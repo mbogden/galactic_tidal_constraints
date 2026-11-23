@@ -35,15 +35,16 @@ def test_defaults_lists_every_field():
     assert list(request["simulator"]) == [f.name for f in fields(SimulatorConfig)]
     assert list(request["image"]) == [f.name for f in fields(ImageConfig)]
     assert request["sim_metrics"] == [] and request["img_metrics"] == []  # the default: no metrics
+    assert request["derived"] == []  # and no derived entries
 
 
 def test_defaults_equal_the_code():
     """Read the way simr reads a request, the file gives exactly the default configs."""
-    returned, saved, simulators, images, sim_metrics, img_metrics = simr._read_request(load("defaults.json"))
+    returned, saved, simulators, images, sim_metrics, img_metrics, derived = simr._read_request(load("defaults.json"))
     assert returned == saved == []
     assert simulators == [SimulatorConfig()]
     assert images == [ImageConfig()]
-    assert sim_metrics == [] and img_metrics == []
+    assert sim_metrics == [] and img_metrics == [] and derived == []
 
 
 @pytest.mark.parametrize("path", sorted(CONFIGS.glob("*.json")), ids=lambda p: p.name)
@@ -55,7 +56,7 @@ def test_every_example_config_is_valid(path, caplog):
 
 
 def test_compare_lnl_runs_every_combination():
-    _, saved, simulators, images, _, _ = simr._read_request(load("compare_lnl.json"))
+    _, saved, simulators, images, _, _, _ = simr._read_request(load("compare_lnl.json"))
     assert saved == ["sim.orbit", "sim.particles", "img.model"]
     assert [s.lnl for s in simulators] == [0.1, 0.001]
     assert images[0] == ImageConfig()

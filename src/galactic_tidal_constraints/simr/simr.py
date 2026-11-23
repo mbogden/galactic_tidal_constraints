@@ -104,6 +104,7 @@ from pathlib import Path
 
 import numpy as np
 
+from galactic_tidal_constraints.simr import derived
 from galactic_tidal_constraints.simr import image_creator as img
 from galactic_tidal_constraints.simr import metrics
 from galactic_tidal_constraints.simr import simulation as sim
@@ -170,10 +171,14 @@ IMAGE_DATA = {
 # While a run collects results, its statuses are written to the catalog at most this often (and at the end).
 CATALOG_WRITE_SECONDS = 60.0
 
-REQUEST_KEYS = ("run", "simulator", "image", "sim_metrics", "img_metrics")
+REQUEST_KEYS = ("run", "simulator", "image", "derived", "sim_metrics", "img_metrics")
+DERIVED_ENTRY_KEYS = ("name", "method", "inputs", "params")
+# How often a derived entry is computed, from the inputs it's made from: once for the run (externals
+# only), per simulation (any sim.* item) or per image (any img.* item). Later ones include earlier ones.
+DERIVED_LEVELS = ("run", "sim", "img")
 # What a stage item's name starts with. A metric input without one is a key in the run's externals, so
 # an externals key can't start with one.
-STAGE_PREFIXES = ("sim.", "img.")
+STAGE_PREFIXES = ("sim.", "img.", "drv.")
 RUN_KEYS = ("return", "save")
 METRIC_ENTRY_KEYS = ("method", "inputs", "select", "params")
 
@@ -208,6 +213,10 @@ class SimrResult:
         sim_metric_configs, img_metric_configs: the filled-in entries, each `{"method", "inputs",
             "select" (None when absent), "params"}` with every setting's default filled in, so
             `sim_metrics[..., k]` is `sim_metric_configs[k]` (and the same at the image level).
+        derived_configs: the filled-in `derived` entries, in order: each `{"name", "method", "inputs",
+            "params" (every default filled in), "level"}`, where "level" is how often it's computed
+            ("run": once, from externals only). One computed for the run also records the "shape" and
+            "hash" (`array_hash`) of its array. Metrics name an entry as "drv.<name>".
         externals: a record of each external the metrics used, by key: `{"source": the path it was
             loaded from, or "memory"; "shape"; "hash": `array_hash` of its data as the metrics saw it}`.
             Empty when no metric uses one. The same dict goes in the catalog's run record.
@@ -234,6 +243,7 @@ class SimrResult:
     img_metrics: np.ndarray
     sim_metric_configs: list[dict]
     img_metric_configs: list[dict]
+    derived_configs: list[dict]
     externals: dict[str, dict]
     ids: list[str | None]
     status: dict[str, np.ndarray]
@@ -300,13 +310,17 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     """
     models = _check_models(models)
     parts = _read_request(request)
+    metric_sections, derived_entries = {"sim_metrics": parts[4], "img_metrics": parts[5]}, parts[6]
     arrays, files, records = _read_externals(
-        externals, _external_uses({"sim_metrics": parts[4], "img_metrics": parts[5]}), image_configs=parts[3]
+        externals, _external_uses(metric_sections, derived_entries), image_configs=parts[3]
     )
-    _check_external_weights({"sim_metrics": parts[4], "img_metrics": parts[5]}, arrays)
+    # Derived entries made only from externals are computed here, once, and from then on travel with the
+    # externals (as "drv.<name>"): checked, hashed, and shared with a pool's workers the same way.
+    hashes = _derive_for_the_run(derived_entries, arrays, files, metric_sections, image_configs=parts[3])
+    _check_external_weights(metric_sections, arrays)
     shared_folder = None
     if arrays and map is not builtins.map:  # a pool: its workers share one copy of each external
-        arrays, shared_folder = _share_externals(arrays, files, records)
+        arrays, shared_folder = _share_externals(arrays, files, {**records, **hashes})
     try:
         return _run(models, parts, arrays, records, output, map)
     finally:
@@ -318,7 +332,7 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
     """`run`, once the models, the request and the externals are checked. `external_arrays` holds each
     external a metric uses: the array itself, or (for a pool) the path its workers map it from;
     `external_records` its `{"source", "shape", "hash"}`."""
-    returned, saved, configs, image_configs, sim_entries, img_entries = parts
+    returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries = parts
     catalog_file, root = output_paths(output) if output is not None else (None, None)
     if saved and root is None:
         where = "no output was given" if output is None else f"{output} is a catalog file, not a folder"
@@ -335,6 +349,7 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
             "run": {"return": returned, "save": saved},
             "simulator": [_json_ready(asdict(config)) for config in configs],
             "image": [_json_ready(asdict(config)) for config in image_configs],
+            "derived": derived_entries,
             "sim_metrics": sim_entries,
             "img_metrics": img_entries,
             "externals": external_records,
@@ -411,7 +426,7 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
     return SimrResult(models=models, simulators=configs, images=image_configs, data=data,
                       sim_metrics=metric_values["sim_metrics"], img_metrics=metric_values["img_metrics"],
                       sim_metric_configs=sim_entries, img_metric_configs=img_entries,
-                      externals=external_records, ids=ids,
+                      derived_configs=derived_entries, externals=external_records, ids=ids,
                       status=status, seconds=seconds, errors=errors)
 
 
@@ -991,24 +1006,139 @@ def _read_request(
     returned, saved = (_names(run_section, key) for key in ("return", "save"))
     configs = _stage_configs(request, "simulator", SimulatorConfig)
     image_configs = _stage_configs(request, "image", ImageConfig)
-    sim_entries = _metric_entries(request, "sim_metrics")
-    img_entries = _metric_entries(request, "img_metrics")
-    return returned, saved, configs, image_configs, sim_entries, img_entries
+    derived_entries = _derived_entries(request)
+    made = {f"drv.{entry['name']}": entry for entry in derived_entries}
+    sim_entries = _metric_entries(request, "sim_metrics", made)
+    img_entries = _metric_entries(request, "img_metrics", made)
+    return returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries
 
 
-def _metric_entries(request: dict, section: str) -> list[dict]:
+def _derived_entries(request: dict) -> list[dict]:
+    """The `derived` section's entries, checked against the derived methods before anything runs, with
+    every setting's default filled in and each entry's level worked out from its inputs.
+
+    An entry's inputs may be externals, sim.* or img.* items, and entries above it in the list (as
+    "drv.<name>"), so entries are computed in order and can never form a loop. One entry (a dict) or a
+    list; a missing section or an empty list means none.
+    """
+    entries = request.get("derived", [])
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not isinstance(entries, (list, tuple)):
+        raise ValueError(f"derived must be an entry (a dict) or a list of them: {entries!r}")
+    filled: list[dict] = []
+    made: dict[str, dict] = {}
+    for i, entry in enumerate(entries):
+        where = f"derived[{i}]"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{where} must be a dict with a name, a method and inputs: {entry!r}")
+        _reject_unknown(where, entry, DERIVED_ENTRY_KEYS)
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.isidentifier():
+            raise ValueError(f'{where} needs a "name" of letters, digits and _ (metrics use it as "drv.<name>"): {name!r}')
+        if f"drv.{name}" in made:
+            raise ValueError(f"{where}: the name {name!r} is already used by an entry above it")
+        method = derived.METHODS.get(entry.get("method"))
+        if method is None:
+            raise ValueError(f"{where}.method: unknown method {entry.get('method')!r}. Known: {list(derived.METHODS)}")
+        inputs = entry.get("inputs", [])
+        if isinstance(inputs, str) or not isinstance(inputs, (list, tuple)) or len(inputs) != len(method.inputs):
+            raise ValueError(
+                f"{where}.inputs: {method.name} takes {len(method.inputs)} input(s), one per kind: {list(method.inputs)}"
+            )
+        level = 0
+        for j, source in enumerate(inputs):
+            if source in SIM_INPUT_KINDS:
+                kind, level = SIM_INPUT_KINDS[source], max(level, 1)
+            elif source in IMAGE_DATA:
+                kind, level = "image", 2
+            elif isinstance(source, str) and source.startswith("drv."):
+                if source not in made:
+                    raise ValueError(
+                        f"{where}.inputs[{j}]: {source!r} isn't a derived entry above this one. Above: {list(made)}"
+                    )
+                kind = derived.METHODS[made[source]["method"]].output
+                level = max(level, DERIVED_LEVELS.index(made[source]["level"]))
+            elif not isinstance(source, str) or source.startswith(STAGE_PREFIXES):
+                raise ValueError(
+                    f"{where}.inputs[{j}]: {source!r} isn't an input. Known: {[*SIM_INPUT_KINDS, *IMAGE_DATA]}, "
+                    f"a derived entry above this one, or a key in the run's externals"
+                )
+            else:
+                continue  # an external: `run` checks its key and its array, as the kind this place takes
+            if kind != method.inputs[j]:
+                raise ValueError(
+                    f"{where}.inputs[{j}]: {method.name} takes a {method.inputs[j]} here, but {source} is a {kind}"
+                )
+        params = entry.get("params", {})
+        if not isinstance(params, dict):
+            raise ValueError(f"{where}.params must be a dict: {params!r}")
+        unknown = [key for key in params if key not in method.settings]
+        if unknown:
+            raise ValueError(f"{where}.params: unknown settings {unknown}. {method.name} has: {list(method.settings)}")
+        if level > 0:
+            raise NotImplementedError(
+                f"{where} ({name!r}) is made from sim.* or img.* items, so it would be computed for every "
+                f"simulation or image, which simr can't do yet (the next step). Entries made only from "
+                f"externals work now"
+            )
+        made[f"drv.{name}"] = {"name": name, "method": method.name, "inputs": list(inputs),
+                               "params": {**method.settings, **params}, "level": DERIVED_LEVELS[level]}
+        filled.append(made[f"drv.{name}"])
+    return filled
+
+
+def _derive_for_the_run(entries: list[dict], arrays: dict, files: dict, metric_sections: dict,
+                        image_configs: list) -> dict[str, dict]:
+    """Compute the derived entries made only from externals, once, before anything is simulated, and add
+    each to `arrays` as "drv.<name>" (and to `files` as needing a shared copy in a pool), so from here
+    on it's handled like an external. Records each one's shape and hash in its entry.
+
+    Returns "drv.<name>" -> {"hash"} for the shared copies' file names. Raises ValueError, naming the
+    entry, if a method fails, or if a derived image a metric uses isn't the size of every image entry.
+    """
+    hashes = {}
+    used_as_image = {
+        name for section in ("img_metrics",) for entry in metric_sections[section] for name in entry["inputs"]
+    }
+    for i, entry in enumerate(entries):
+        if entry["level"] != "run":
+            continue
+        key = f"drv.{entry['name']}"
+        try:
+            value = derived.compute(entry["method"], [arrays[name] for name in entry["inputs"]], entry["params"])
+        except ValueError as error:
+            raise ValueError(f"derived[{i}] ({entry['name']!r}): {error}") from None
+        if value.ndim == 2 and key in used_as_image:
+            for n, config in enumerate(image_configs):
+                if value.shape != (config.height, config.width):
+                    raise ValueError(
+                        f"derived[{i}] ({entry['name']!r}) is {value.shape[0]} x {value.shape[1]} (height x "
+                        f"width), but image[{n}] makes {config.height} x {config.width} images"
+                    )
+        value = value.view()
+        value.flags.writeable = False
+        arrays[key], files[key] = value, None
+        entry["shape"], entry["hash"] = list(value.shape), array_hash(value)
+        hashes[key] = {"hash": entry["hash"]}
+        logger.info("simr: derived %r (%s): shape %s, hash %s", entry["name"], entry["method"], value.shape,
+                    entry["hash"])
+    return hashes
+
+
+def _metric_entries(request: dict, section: str, made: dict[str, dict]) -> list[dict]:
     """A metric section's entries, filled in. One entry (a dict) or a list of them; a missing section or
     an empty list means no metrics (unlike the stage sections, [] is allowed: a placeholder while a
-    config only computes simulations or images)."""
+    config only computes simulations or images). `made` is the derived entries by "drv.<name>"."""
     entries = request.get(section, [])
     if isinstance(entries, dict):
         entries = [entries]
     if not isinstance(entries, (list, tuple)):
         raise ValueError(f"{section} must be a metric entry (a dict) or a list of them: {entries!r}")
-    return [_metric_entry(f"{section}[{i}]", entry, section) for i, entry in enumerate(entries)]
+    return [_metric_entry(f"{section}[{i}]", entry, section, made) for i, entry in enumerate(entries)]
 
 
-def _metric_entry(where: str, entry, section: str) -> dict:
+def _metric_entry(where: str, entry, section: str, made: dict[str, dict]) -> dict:
     """One metric entry, checked against the metrics table before anything runs, with every setting's
     default filled in. The filled-in entry always records all four keys."""
     _reject_unknown(where, entry, METRIC_ENTRY_KEYS)
@@ -1033,11 +1163,17 @@ def _metric_entry(where: str, entry, section: str) -> dict:
         if section == "sim_metrics" and name in IMAGE_DATA:
             raise ValueError(f"{where}.inputs[{j}]: an img.* input belongs in img_metrics, not sim_metrics")
         kind = SIM_INPUT_KINDS.get(name, "image" if name in IMAGE_DATA else None)
-        if kind is None:
+        if isinstance(name, str) and name.startswith("drv."):
+            if name not in made:
+                raise ValueError(
+                    f"{where}.inputs[{j}]: {name!r} isn't an entry in the derived section, which has {list(made)}"
+                )
+            kind = derived.METHODS[made[name]["method"]].output
+        elif kind is None:
             if not isinstance(name, str) or name.startswith(STAGE_PREFIXES):
                 raise ValueError(
                     f"{where}.inputs[{j}]: {name!r} isn't a metric input. Known: "
-                    f"{[*SIM_INPUT_KINDS, *IMAGE_DATA]}, or a key in the run's externals"
+                    f"{[*SIM_INPUT_KINDS, *IMAGE_DATA]}, a derived entry (drv.<name>), or a key in the run's externals"
                 )
             continue  # an external: `run` checks its key and its array, as the kind this place takes
         if kind != kinds[j]:
@@ -1093,15 +1229,17 @@ def _check_external_weights(sections: dict[str, list[dict]], arrays: dict[str, n
                 )
 
 
-def _external_uses(sections: dict[str, list[dict]]) -> dict[str, tuple[str, str]]:
-    """The externals the filled-in metric entries use: key -> (the input kind it's used as, the first
-    place that uses it). One external has one kind: using a key as two kinds is an error."""
+def _external_uses(sections: dict[str, list[dict]], derived_entries: list[dict]) -> dict[str, tuple[str, str]]:
+    """The externals the filled-in derived and metric entries use: key -> (the input kind it's used as,
+    the first place that uses it). One external has one kind: using a key as two kinds is an error."""
     uses: dict[str, tuple[str, str]] = {}
+    places = {"derived": [(entry, derived.METHODS[entry["method"]].inputs) for entry in derived_entries]}
     for section, entries in sections.items():
-        for k, entry in enumerate(entries):
-            kinds = _input_kinds(metrics.METHODS[entry["method"]])
+        places[section] = [(entry, _input_kinds(metrics.METHODS[entry["method"]])) for entry in entries]
+    for section, entries in places.items():
+        for k, (entry, kinds) in enumerate(entries):
             for j, name in enumerate(entry["inputs"]):
-                if name in SIM_INPUT_KINDS or name in IMAGE_DATA:
+                if name in SIM_INPUT_KINDS or name in IMAGE_DATA or name.startswith("drv."):
                     continue
                 where = f"{section}[{k}].inputs[{j}]"
                 if name in uses and uses[name][0] != kinds[j]:

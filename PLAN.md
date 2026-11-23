@@ -33,6 +33,11 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
   map, a window, weights) is a **derived** method. A metric never takes another metric's value, so
   data moves one way: items and externals → derived arrays → metrics → composite.
   [docs/modules/derived.md](docs/modules/derived.md), [docs/modules/metrics.md](docs/modules/metrics.md).
+- **Derived stage** (decided 2026-11-23): an optional `derived` config section of named entries, each
+  a method on externals, `sim.*` or `img.*` items, or entries above it in the list (so no loops).
+  Metrics name one as `drv.<name>`, as data or as weights. An entry is computed once for the run, per
+  simulation or per image, depending on what it's made from, and adds no new combinations.
+  [docs/configuration.md](docs/configuration.md#derived-entries).
 - **Weights** are optional inputs: a metric that can use them takes them last, and without them every
   row or pixel counts equally. They match the array they weigh (row weights: the metric's first
   input, the target).
@@ -57,7 +62,7 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
 ## Configuration
 One config tree for everything that can change a result, plus a few runtime flags. Sections, checks
 and examples: [docs/configuration.md](docs/configuration.md).
-- Config tree: one section per component (`run`, `simulator`, `image`, `sim_metrics`, `img_metrics`, `composite`, `ga`, …); `run`
+- Config tree: one section per component (`run`, `simulator`, `image`, `derived`, `sim_metrics`, `img_metrics`, `composite`, `ga`, …); `run`
   holds what to return or save.
 - Precedence: defaults in code (dataclasses) < JSON config file. No command-line overrides
   (dropped 2026-11-12): the config file is the whole run, and small changes are new config files.

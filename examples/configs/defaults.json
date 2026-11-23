@@ -27,6 +27,7 @@
     "blur_truncate": 4.0,
     "brightness": "log"
   },
+  "derived": [],
   "sim_metrics": [],
   "img_metrics": []
 }
