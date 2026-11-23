@@ -98,7 +98,7 @@ as data or as weights:
 
 | Key | Meaning |
 |---|---|
-| `name` | Letters, digits and `_`; unique in the section. Metrics and later entries call it `drv.<name>` |
+| `name` | Letters, digits and `_`, not starting with a digit; unique in the section. Metrics and later entries call it `drv.<name>` |
 | `method` | A derived method |
 | `inputs` | What it's made from, one per declared kind: externals, `sim.*` or `img.*` items, or entries **above it** in the list |
 | `params` (optional) | The method's settings; everything left out takes the method's default |
@@ -164,7 +164,9 @@ Every input name has a prefix that says where it comes from, so a name without o
 - **Checked before anything is simulated:** every `ext.<key>` a metric or derived entry names is in `externals`; each array is
   turned into `float32` and must hold no NaN or inf, have its kind's shape, and, for an image, the
   height and width of every image entry. Any problem stops the run with a message naming the key.
-- **A key** is letters, digits and `_` (no dots): `tng_particles` is named `ext.tng_particles`. The
+- **A key** is letters, digits and `_`, not starting with a digit (a Python identifier, in plain
+  ASCII): `tng_particles` is named `ext.tng_particles`. So a key has no dots and never looks like a
+  number; a bare id needs a letter in front (`sdss_587722984435351614`). The
   `ext.` belongs to the config only; the dict's keys, the `--externals` file and the run's record use
   the plain key. Keys no metric uses are ignored, with one log message.
 - **Every metric entry needs an input that depends on the model** (a `sim.*` or `img.*` item, or a

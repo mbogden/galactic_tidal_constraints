@@ -182,8 +182,10 @@ DERIVED_LEVELS = ("run", "sim", "img")
 # name says where it comes from: sim. (the simulator), img. (the image creator), drv. (the derived
 # section) or ext. (outside the run).
 EXTERNAL_PREFIX = "ext."
-# What an external's key and a derived entry's name may hold: letters, digits and _ (no dots).
-PLAIN_NAME = re.compile(r"[A-Za-z0-9_]+")
+# What an external's key and a derived entry's name must be: a Python identifier in plain ASCII (letters,
+# digits and _, not starting with a digit). So a name never looks like a number, and has no dots. Written
+# out, not `str.isidentifier`, which also accepts accented and non-Latin letters.
+PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 RUN_KEYS = ("return", "save")
 METRIC_ENTRY_KEYS = ("method", "inputs", "select", "params")
 
@@ -285,7 +287,8 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
             a minute while results arrive. If a worker dies (a broken pool, e.g. a crash in SPAM's
             Fortran), the unfinished models are logged, the catalog keeps the statuses so far with
             "finished" None, and `SimrRunError` is raised; a rerun reuses what was saved.
-        externals: arrays from outside the run, by key (letters, digits and _); the request names one
+        externals: arrays from outside the run, by key (letters, digits and _, not starting with a
+            digit); the request names one
             as "ext.<key>" (e.g. `{"tng_orbit": orbit, "tng_image": "/data/targets/tng_123/image.npy"}`,
             named "ext.tng_orbit" and "ext.tng_image"). Each value is a
             numeric numpy array, an absolute path to a .npy file, or `{"path": ..., "hash": ...}` to
@@ -1092,7 +1095,10 @@ def _derived_entries(request: dict) -> list[dict]:
         _reject_unknown(where, entry, DERIVED_ENTRY_KEYS)
         name = entry.get("name")
         if not isinstance(name, str) or not PLAIN_NAME.fullmatch(name):
-            raise ValueError(f'{where} needs a "name" of letters, digits and _ (metrics use it as "drv.<name>"): {name!r}')
+            raise ValueError(
+                f'{where} needs a "name" of letters, digits and _, not starting with a digit (metrics use it as '
+                f'"drv.<name>"): {name!r}'
+            )
         if f"drv.{name}" in made:
             raise ValueError(f"{where}: the name {name!r} is already used by an entry above it")
         method = derived.METHODS.get(entry.get("method"))
@@ -1266,7 +1272,7 @@ def _metric_entry(where: str, entry, section: str, made: dict[str, dict]) -> dic
 
 
 def _names_an_external(name) -> bool:
-    """True for "ext.<key>" with a key of letters, digits and _: how a request names an external."""
+    """True for "ext.<key>" with a key that is a plain name (`PLAIN_NAME`): how a request names an external."""
     return isinstance(name, str) and name.startswith(EXTERNAL_PREFIX) \
         and PLAIN_NAME.fullmatch(name[len(EXTERNAL_PREFIX):]) is not None
 
@@ -1328,7 +1334,8 @@ def _read_externals(externals, uses: dict[str, tuple[str, str]], image_configs: 
     for key in externals:
         if not isinstance(key, str) or not PLAIN_NAME.fullmatch(key):
             raise ValueError(
-                f"externals: a key must be letters, digits and _ (a request names it {EXTERNAL_PREFIX}<key>): {key!r}"
+                f"externals: a key must be letters, digits and _, not starting with a digit (a request names it "
+                f"{EXTERNAL_PREFIX}<key>): {key!r}"
             )
     for key, (_, where) in uses.items():
         if key not in externals:

@@ -144,6 +144,8 @@ def test_all_zero_weights_made_per_model_fail_that_cell_and_nothing_else():
     ["test_orbit",  # the plain key: an external needs its ext. prefix
      "sim_orbit",  # a typo for sim.orbit is an unknown input, not a missing external
      "ext.", "ext.test.orbit", "ext.test orbit",  # not letters, digits and _
+     "ext.5_orbit",  # starts with a digit
+     "ext.órbita",  # plain ASCII only
      "tng.test_orbit"],  # an unknown prefix
 )
 def test_an_input_without_a_known_prefix_is_an_error(name):
@@ -155,16 +157,24 @@ def test_an_input_without_a_known_prefix_is_an_error(name):
         simr.run(PARAMS, {"simulator": SMALL, "derived": [derived_entry]}, externals={"test_orbit": TARGET})
 
 
-@pytest.mark.parametrize("key", ["test.orbit", "ext.test_orbit", "test orbit", "", 7])
+@pytest.mark.parametrize("key", ["test.orbit", "ext.test_orbit", "test orbit", "", 7, "587722984435351614", "2nd"])
 def test_an_externals_key_holds_only_letters_digits_and_underscores(key):
     with pytest.raises(ValueError, match="externals: a key must be letters, digits and _"):
         simr.run(PARAMS, request({"method": "orbit_time_error", "inputs": INPUTS}),
                  externals={"test_orbit": TARGET, key: TARGET})
 
 
-def test_the_prefix_is_the_requests_only_and_keys_may_start_with_a_digit():
-    entry = {"method": "orbit_time_error", "inputs": ["ext.587722984435351614", "sim.search_orbit"]}
-    result = simr.run(PARAMS, request(entry), externals={"587722984435351614": TARGET})
+def test_the_prefix_is_the_requests_only_and_an_id_needs_a_letter_in_front():
+    # A bare SDSS id starts with a digit, so it can't be a key; with a letter in front it can.
+    entry = {"method": "orbit_time_error", "inputs": ["ext.sdss_587722984435351614", "sim.search_orbit"]}
+    result = simr.run(PARAMS, request(entry), externals={"sdss_587722984435351614": TARGET, "_2nd": TARGET})
     assert result.status["sim_metrics"].tolist() == [[["ran"]]]
-    assert list(result.externals) == ["587722984435351614"]  # recorded under the plain key
-    assert result.sim_metric_configs[0]["inputs"][0] == "ext.587722984435351614"
+    assert list(result.externals) == ["sdss_587722984435351614"]  # recorded under the plain key
+    assert result.sim_metric_configs[0]["inputs"][0] == "ext.sdss_587722984435351614"
+
+
+@pytest.mark.parametrize("name", ["2nd_window", "5", "win.dow", "wïn"])
+def test_a_derived_name_follows_the_same_rule(name):
+    entry = {"name": name, "method": "recent_approach_cosine_window", "inputs": ["ext.test_orbit"]}
+    with pytest.raises(ValueError, match=r'derived\[0\] needs a "name" of letters, digits and _, not starting'):
+        simr.run(PARAMS, {"simulator": SMALL, "derived": [entry]}, externals={"test_orbit": TARGET})

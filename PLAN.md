@@ -41,7 +41,8 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
 - **Input names** (decided 2026-11-23): every input a config names has a prefix that says where it
   comes from: `sim.` (the simulator), `img.` (the Image Creator), `drv.` (the derived section) or
   `ext.` (an external). A name without one is an error. An external's key and a derived entry's name
-  are letters, digits and `_`.
+  are Python identifiers in plain ASCII (letters, digits and `_`, not starting with a digit): a
+  small enforcement of good naming, so a name never looks like a number.
 - **Weights** are optional inputs: a metric that can use them takes them last, and without them every
   row or pixel counts equally. They match the array they weigh (row weights: the metric's first
   input, the target).

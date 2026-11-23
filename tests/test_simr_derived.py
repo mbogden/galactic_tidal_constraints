@@ -294,6 +294,6 @@ def test_derived_names_in_run_return_and_run_save_are_checked():
 
 
 def test_an_externals_key_is_letters_digits_and_underscores():
-    with pytest.raises(ValueError, match=r"a key must be letters, digits and _ .* 'drv.mine'"):
+    with pytest.raises(ValueError, match=r"a key must be letters, digits and _, not starting with a digit .* 'drv.mine'"):
         simr.run(PARAMS, request([WINDOW_ENTRY], [ORBIT_METRIC]),
                  externals={"test_orbit": TARGET, "drv.mine": TARGET})
