@@ -84,12 +84,12 @@ as data or as weights:
 
 ```json
 "derived": [
-  {"name": "target_win",   "method": "recent_approach_cosine_window", "inputs": ["test_ext_orbit"],
+  {"name": "target_win",   "method": "recent_approach_cosine_window", "inputs": ["ext.tng_orbit"],
    "params": {"k": 1.0}},
-  {"name": "target_edges", "method": "detect_edges", "inputs": ["test_ext_image"]}
+  {"name": "target_edges", "method": "detect_edges", "inputs": ["ext.tng_image"]}
 ],
 "sim_metrics": [
-  {"method": "orbit_time_error", "inputs": ["test_ext_orbit", "sim.search_orbit", "drv.target_win"]}
+  {"method": "orbit_time_error", "inputs": ["ext.tng_orbit", "sim.search_orbit", "drv.target_win"]}
 ],
 "img_metrics": [
   {"method": "absolute_difference", "inputs": ["drv.target_edges", "img.model"]}
@@ -131,16 +131,25 @@ as data or as weights:
 - **Not saved yet:** `run.save` doesn't take `drv.*` names.
 
 ### Externals
-An input that isn't a `sim.*` or `img.*` item is an **external**: an array from outside the run, such as
-a target's orbit, image or particles. The config holds only its key; the array itself is given to the
-run, like the models:
+An input named `ext.<key>` is an **external**: an array from outside the run, such as a target's orbit,
+image or particles. The config holds only the name; the array itself is given to the run under that
+key, like the models:
 
 ```json
-"sim_metrics": [{"method": "pca_difference", "inputs": ["tng_particles", "sim.particles"]}]
+"sim_metrics": [{"method": "pca_difference", "inputs": ["ext.tng_particles", "sim.particles"]}]
 ```
 ```python
 result = simr.run(models, config, externals={"tng_particles": array})
 ```
+
+Every input name has a prefix that says where it comes from, so a name without one is an error:
+
+| Prefix | Comes from |
+|---|---|
+| `sim.` | The simulator |
+| `img.` | The Image Creator |
+| `drv.` | The `derived` section |
+| `ext.` | Outside the run: the `externals` given with it |
 
 - **A value** is a numeric numpy array, or the absolute path of a `.npy` file, which `simr` loads once.
 - **Each used external is hashed and recorded.** The hash is SHA-256 of the data as `float32`, with its
@@ -152,11 +161,14 @@ result = simr.run(models, config, externals={"tng_particles": array})
   If the file's data has another hash, the run stops before anything is simulated.
 - **Its kind** (orbit, particles or image) is the kind of the input place it's used in. One external
   has one kind.
-- **Checked before anything is simulated:** every key a metric names is in `externals`; each array is
+- **Checked before anything is simulated:** every `ext.<key>` a metric or derived entry names is in `externals`; each array is
   turned into `float32` and must hold no NaN or inf, have its kind's shape, and, for an image, the
   height and width of every image entry. Any problem stops the run with a message naming the key.
-- **A key** can't start with `sim.` or `img.`. Keys no metric uses are ignored, with one log message.
-- **Every entry needs at least one `sim.*` or `img.*` input**, or its value wouldn't depend on the model.
+- **A key** is letters, digits and `_` (no dots): `tng_particles` is named `ext.tng_particles`. The
+  `ext.` belongs to the config only; the dict's keys, the `--externals` file and the run's record use
+  the plain key. Keys no metric uses are ignored, with one log message.
+- **Every metric entry needs an input that depends on the model** (a `sim.*` or `img.*` item, or a
+  derived entry made from one), or its value would be the same for every model.
 - **Metrics get externals read-only**, so a method can't change a target by accident.
 
 **Parallel runs share externals on one node.** With a pool (`map=pool.map`), the workers don't each get

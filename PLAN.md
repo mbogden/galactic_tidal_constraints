@@ -38,6 +38,10 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
   Metrics name one as `drv.<name>`, as data or as weights. An entry is computed once for the run, per
   simulation or per image, depending on what it's made from, and adds no new combinations.
   [docs/configuration.md](docs/configuration.md#derived-entries).
+- **Input names** (decided 2026-11-23): every input a config names has a prefix that says where it
+  comes from: `sim.` (the simulator), `img.` (the Image Creator), `drv.` (the derived section) or
+  `ext.` (an external). A name without one is an error. An external's key and a derived entry's name
+  are letters, digits and `_`.
 - **Weights** are optional inputs: a metric that can use them takes them last, and without them every
   row or pixel counts equally. They match the array they weigh (row weights: the metric's first
   input, the target).
@@ -75,8 +79,8 @@ and examples: [docs/configuration.md](docs/configuration.md).
   later image and measure), and the models say what. Either can then change while the other stays
   fixed. On the command line they come from a text file (`--models`).
 - **Externals** are their own input too, like the models: arrays from outside the run (e.g. a
-  target's orbit, image or particles) that metrics compare each model against. The config names only
-  their keys; the arrays come with the run (`externals=`, or `--externals`). Each is checked,
+  target's orbit, image or particles) that metrics compare each model against. The config only names
+  them, as `ext.<key>`; the arrays come with the run (`externals=`, or `--externals`). Each is checked,
   converted to `float32` and hashed before anything runs, and the run records its source, shape and
   hash. A pool shares them through one node's memory, so such a pool is single-node (see
   Parallelization, In `simr`).

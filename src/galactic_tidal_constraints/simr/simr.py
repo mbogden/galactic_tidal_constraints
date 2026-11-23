@@ -28,14 +28,15 @@ per-entry filters. A metric's inputs are simr items; simr computes (or loads) wh
 nothing else asks for those items, so an orbit-only request with `sim_metrics` never builds an image.
 Entries are checked against the metrics table (`metrics.METHODS`) before anything runs.
 
-An input that isn't a simr item is an external: a key in the `externals` dict given to `run`, holding
-an array from outside the run (a target orbit, image or particles), or a path to its .npy file:
+An input named "ext.<key>" is an external: the entry under <key> in the `externals` dict given to `run`,
+holding an array from outside the run (a target orbit, image or particles), or a path to its .npy file:
 
-    request = {"sim_metrics": [{"method": "pca_difference", "inputs": ["tng_particles", "sim.particles"]}]}
+    request = {"sim_metrics": [{"method": "pca_difference", "inputs": ["ext.tng_particles", "sim.particles"]}]}
     result = run(models, request, externals={"tng_particles": array})
 
-The request holds only the key; the array takes the input kind of the place it's used. Every external a
-metric uses is loaded once and checked before anything is simulated (see `run`).
+The request holds only the name; the array takes the input kind of the place it's used. Every external a
+metric uses is loaded once and checked before anything is simulated (see `run`). Every input name has a
+prefix that says where it comes from: sim., img., drv. (a derived entry) or ext.
 
 With an output (`run(..., output=...)`), every run is recorded in a catalog, whether or not it saves data.
 The output is a folder or a `.json` file, told apart by name:
@@ -90,6 +91,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -176,9 +178,12 @@ DERIVED_ENTRY_KEYS = ("name", "method", "inputs", "params")
 # How often a derived entry is computed, from the inputs it's made from: once for the run (externals
 # only), per simulation (any sim.* item) or per image (any img.* item). Later ones include earlier ones.
 DERIVED_LEVELS = ("run", "sim", "img")
-# What a stage item's name starts with. A metric input without one is a key in the run's externals, so
-# an externals key can't start with one.
-STAGE_PREFIXES = ("sim.", "img.", "drv.")
+# How a request names an external: "ext.<key>", for the array given to `run` under <key>. So every input
+# name says where it comes from: sim. (the simulator), img. (the image creator), drv. (the derived
+# section) or ext. (outside the run).
+EXTERNAL_PREFIX = "ext."
+# What an external's key and a derived entry's name may hold: letters, digits and _ (no dots).
+PLAIN_NAME = re.compile(r"[A-Za-z0-9_]+")
 RUN_KEYS = ("return", "save")
 METRIC_ENTRY_KEYS = ("method", "inputs", "select", "params")
 
@@ -280,17 +285,18 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
             a minute while results arrive. If a worker dies (a broken pool, e.g. a crash in SPAM's
             Fortran), the unfinished models are logged, the catalog keeps the statuses so far with
             "finished" None, and `SimrRunError` is raised; a rerun reuses what was saved.
-        externals: arrays from outside the run, by key, for metric inputs that aren't simr items (e.g.
-            `{"tng_orbit": orbit, "tng_image": "/data/targets/tng_123/image.npy"}`). Each value is a
+        externals: arrays from outside the run, by key (letters, digits and _); the request names one
+            as "ext.<key>" (e.g. `{"tng_orbit": orbit, "tng_image": "/data/targets/tng_123/image.npy"}`,
+            named "ext.tng_orbit" and "ext.tng_image"). Each value is a
             numeric numpy array, an absolute path to a .npy file, or `{"path": ..., "hash": ...}` to
             also name the hash the file's data must have (`array_hash`; a mismatch is a ValueError).
             Not part of the request, like the models. Each used external's source, shape and hash are
             logged and recorded (`SimrResult.externals`, and the catalog's run record). Before anything is simulated, each external a metric uses is loaded (once), turned
             into float32 and checked: no NaN or inf, the shape of the input kind it's used as
             (`metrics.INPUT_SHAPES`; one external has one kind), and for an image the height and width
-            of every image entry. A problem with any of them, or a metric input naming a key that isn't
-            here, is a ValueError. A key can't start with "sim." or "img."; keys no metric uses are
-            ignored, with one log message. Metrics get each external read-only.
+            of every image entry. A problem with any of them, or an input naming a key that isn't
+            here, is a ValueError. Keys no metric uses are ignored, with one log message. Metrics get
+            each external read-only.
             With a pool, the workers share one copy of each external in the node's memory instead of
             getting a copy each (see `_share_externals`), so a pool that uses in-memory or
             non-float32 externals must have all its workers on the node that started the run; under
@@ -321,7 +327,8 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     for_the_run = {key: arrays[key] for key in hashes}  # the arrays themselves, for run.return
     shared_folder = None
     if arrays and map is not builtins.map:  # a pool: its workers share one copy of each external
-        arrays, shared_folder = _share_externals(arrays, files, {**records, **hashes})
+        named = {EXTERNAL_PREFIX + key: record for key, record in records.items()}
+        arrays, shared_folder = _share_externals(arrays, files, {**named, **hashes})
     try:
         return _run(models, parts, arrays, records, for_the_run, output, map)
     finally:
@@ -1084,7 +1091,7 @@ def _derived_entries(request: dict) -> list[dict]:
             raise ValueError(f"{where} must be a dict with a name, a method and inputs: {entry!r}")
         _reject_unknown(where, entry, DERIVED_ENTRY_KEYS)
         name = entry.get("name")
-        if not isinstance(name, str) or not name.isidentifier():
+        if not isinstance(name, str) or not PLAIN_NAME.fullmatch(name):
             raise ValueError(f'{where} needs a "name" of letters, digits and _ (metrics use it as "drv.<name>"): {name!r}')
         if f"drv.{name}" in made:
             raise ValueError(f"{where}: the name {name!r} is already used by an entry above it")
@@ -1109,10 +1116,10 @@ def _derived_entries(request: dict) -> list[dict]:
                     )
                 kind = derived.METHODS[made[source]["method"]].output
                 level = max(level, DERIVED_LEVELS.index(made[source]["level"]))
-            elif not isinstance(source, str) or source.startswith(STAGE_PREFIXES):
+            elif not _names_an_external(source):
                 raise ValueError(
                     f"{where}.inputs[{j}]: {source!r} isn't an input. Known: {[*SIM_INPUT_KINDS, *IMAGE_DATA]}, "
-                    f"a derived entry above this one, or a key in the run's externals"
+                    f"a derived entry above this one (drv.<name>), or an external (ext.<key>)"
                 )
             else:
                 continue  # an external: `run` checks its key and its array, as the kind this place takes
@@ -1220,10 +1227,10 @@ def _metric_entry(where: str, entry, section: str, made: dict[str, dict]) -> dic
                 )
             kind = derived.METHODS[made[name]["method"]].output
         elif kind is None:
-            if not isinstance(name, str) or name.startswith(STAGE_PREFIXES):
+            if not _names_an_external(name):
                 raise ValueError(
                     f"{where}.inputs[{j}]: {name!r} isn't a metric input. Known: "
-                    f"{[*SIM_INPUT_KINDS, *IMAGE_DATA]}, a derived entry (drv.<name>), or a key in the run's externals"
+                    f"{[*SIM_INPUT_KINDS, *IMAGE_DATA]}, a derived entry (drv.<name>), or an external (ext.<key>)"
                 )
             continue  # an external: `run` checks its key and its array, as the kind this place takes
         if kind != kinds[j]:
@@ -1256,6 +1263,12 @@ def _metric_entry(where: str, entry, section: str, made: dict[str, dict]) -> dic
     if unknown:
         raise ValueError(f"{where}.params: unknown settings {unknown}. {method.name} has: {list(method.settings)}")
     return {"method": method.name, "inputs": list(inputs), "select": select, "params": {**method.settings, **params}}
+
+
+def _names_an_external(name) -> bool:
+    """True for "ext.<key>" with a key of letters, digits and _: how a request names an external."""
+    return isinstance(name, str) and name.startswith(EXTERNAL_PREFIX) \
+        and PLAIN_NAME.fullmatch(name[len(EXTERNAL_PREFIX):]) is not None
 
 
 def _input_kinds(method: metrics.Metric) -> tuple[str, ...]:
@@ -1291,32 +1304,36 @@ def _external_uses(sections: dict[str, list[dict]], derived_entries: list[dict])
             for j, name in enumerate(entry["inputs"]):
                 if name in SIM_INPUT_KINDS or name in IMAGE_DATA or name.startswith("drv."):
                     continue
+                key = name[len(EXTERNAL_PREFIX):]
                 where = f"{section}[{k}].inputs[{j}]"
-                if name in uses and uses[name][0] != kinds[j]:
+                if key in uses and uses[key][0] != kinds[j]:
                     raise ValueError(
-                        f"{where}: the external {name!r} is used as a {kinds[j]} here but as a "
-                        f"{uses[name][0]} in {uses[name][1]}; one external has one kind"
+                        f"{where}: the external {key!r} is used as a {kinds[j]} here but as a "
+                        f"{uses[key][0]} in {uses[key][1]}; one external has one kind"
                     )
-                uses.setdefault(name, (kinds[j], where))
+                uses.setdefault(key, (kinds[j], where))
     return uses
 
 
 def _read_externals(externals, uses: dict[str, tuple[str, str]], image_configs: list) -> tuple[dict, dict, dict]:
     """The external arrays the metrics use, loaded, checked and hashed before anything runs. Returns three
-    dicts by key: the read-only float32 array; the file a pool's workers can map as it is (a float32 .npy
-    the caller gave by path), else None; and its record `{"source", "shape", "hash"}` (see `SimrResult`).
-    `uses` is `_external_uses`' dict. Raises ValueError for any problem (see `run`)."""
+    dicts: by the name a request uses ("ext.<key>"), the read-only float32 array, and the file a pool's
+    workers can map as it is (a float32 .npy the caller gave by path), else None; and by plain key, its
+    record `{"source", "shape", "hash"}` (see `SimrResult`). `uses` is `_external_uses`' dict, by key.
+    Raises ValueError for any problem (see `run`)."""
     if externals is None:
         externals = {}
     if not isinstance(externals, dict):
         raise ValueError(f"externals must be a dict, key -> array or path: got {type(externals).__name__}")
     for key in externals:
-        if not isinstance(key, str) or key.startswith(STAGE_PREFIXES):
-            raise ValueError(f"externals: a key must be a string that doesn't start with {STAGE_PREFIXES}: {key!r}")
+        if not isinstance(key, str) or not PLAIN_NAME.fullmatch(key):
+            raise ValueError(
+                f"externals: a key must be letters, digits and _ (a request names it {EXTERNAL_PREFIX}<key>): {key!r}"
+            )
     for key, (_, where) in uses.items():
         if key not in externals:
             given = f"externals has {sorted(externals)}" if externals else "no externals were given"
-            raise ValueError(f"{where}: {key!r} isn't a simr item, so it must be a key in externals, but {given}")
+            raise ValueError(f"{where}: {EXTERNAL_PREFIX}{key} names an external the run wasn't given: {given}")
     unused = sorted(set(externals) - set(uses))
     if unused:
         logger.info("simr: externals no metric uses, ignored: %s", unused)
@@ -1337,7 +1354,8 @@ def _read_externals(externals, uses: dict[str, tuple[str, str]], image_configs: 
         arrays[key] = array
         records[key] = {"source": source, "shape": list(array.shape), "hash": digest}
         logger.info("simr: external %r: %s, shape %s, hash %s", key, source, array.shape, digest)
-    return arrays, files, records
+    return ({EXTERNAL_PREFIX + key: array for key, array in arrays.items()},
+            {EXTERNAL_PREFIX + key: file for key, file in files.items()}, records)
 
 
 def array_hash(array: np.ndarray) -> str:

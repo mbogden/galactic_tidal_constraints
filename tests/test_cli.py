@@ -232,7 +232,7 @@ def test_mpi_mode_with_externals_on_one_node(tmp_path, files):
         pytest.skip("no mpirun")
     np.save(tmp_path / "particles.npy", TARGET.astype(np.float64))  # not float32: shared through /dev/shm
     args = files(models=(MODEL, MODEL.replace("301.0", "302.0")), config=PCA_CONFIG, output="mpi")
-    args += externals_args(tmp_path, {"test_ext_particles": "particles.npy"})
+    args += externals_args(tmp_path, {"test_particles": "particles.npy"})
     env = {**os.environ, "OMPI_ALLOW_RUN_AS_ROOT": "1", "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM": "1"}
     result = subprocess.run(["mpirun", "-n", "3", "--oversubscribe", sys.executable, "-m", "mpi4py.futures",
                              "-m", "galactic_tidal_constraints.simr", *args, "--mode", "mpi"],
@@ -262,7 +262,7 @@ def test_mpi_mode_without_mpirun_exits_1(tmp_path, files):
 # --- Externals (MDRN-4 step 3) ------------------------------------------------------------------------
 
 PCA_CONFIG = {"simulator": SMALL,
-              "sim_metrics": [{"method": "pca_difference", "inputs": ["test_ext_particles", "sim.particles"]}]}
+              "sim_metrics": [{"method": "pca_difference", "inputs": ["ext.test_particles", "sim.particles"]}]}
 TARGET = np.random.default_rng(5).normal(size=(30, 6)).astype(np.float32)
 
 
@@ -278,11 +278,11 @@ def test_externals_from_a_json_file_relative_to_it(tmp_path, files, monkeypatch)
     (tmp_path / "exp" / "targets").mkdir(parents=True)
     np.save(tmp_path / "exp" / "targets" / "particles.npy", TARGET)
     monkeypatch.chdir(tmp_path)  # a different folder than the JSON file's, so "relative to the file" matters
-    args = files(config=PCA_CONFIG) + externals_args(tmp_path, {"test_ext_particles": "targets/particles.npy"},
+    args = files(config=PCA_CONFIG) + externals_args(tmp_path, {"test_particles": "targets/particles.npy"},
                                                      folder="exp")
     assert main(args) == 0
     [record] = simr.load_catalog(tmp_path / "runs")["runs"]
-    assert record["externals"] == {"test_ext_particles": {
+    assert record["externals"] == {"test_particles": {
         "source": str(tmp_path / "exp" / "targets" / "particles.npy"), "shape": [30, 6],
         "hash": simr.array_hash(TARGET)}}
     assert record["status"]["sim_metrics"] == [[["ran"]]]
@@ -291,13 +291,13 @@ def test_externals_from_a_json_file_relative_to_it(tmp_path, files, monkeypatch)
 def test_externals_with_an_absolute_path_and_an_expected_hash(tmp_path, files):
     np.save(tmp_path / "particles.npy", TARGET)
     entry = {"path": str(tmp_path / "particles.npy"), "hash": simr.array_hash(TARGET)}
-    assert main(files(config=PCA_CONFIG) + externals_args(tmp_path, {"test_ext_particles": entry})) == 0
+    assert main(files(config=PCA_CONFIG) + externals_args(tmp_path, {"test_particles": entry})) == 0
 
 
 def test_externals_in_local_mode_are_shared(tmp_path, files, caplog):
     np.save(tmp_path / "particles.npy", TARGET.astype(np.float64))  # not float32: workers get a shared copy
     args = files(models=(MODEL, MODEL.replace("301.0", "302.0")), config=PCA_CONFIG)
-    args += externals_args(tmp_path, {"test_ext_particles": "particles.npy"}) + ["--mode", "local", "--workers", "2"]
+    args += externals_args(tmp_path, {"test_particles": "particles.npy"}) + ["--mode", "local", "--workers", "2"]
     with caplog.at_level("INFO"):
         assert main(args) == 0
     assert "shared with the workers through" in caplog.text
@@ -308,12 +308,12 @@ def test_externals_in_local_mode_are_shared(tmp_path, files, caplog):
 @pytest.mark.parametrize(
     ("entries", "message"),
     [
-        ({"test_ext_particles": "missing.npy"}, r"externals\['test_ext_particles'\]: can't load .*missing.npy"),
-        ({"test_ext_particles": {"path": "particles.npy", "hash": "0" * 64}}, "not the expected 0000"),
-        ({"test_ext_particles": 3}, r"'test_ext_particles' must be a .npy path or \{\"path\""),
-        ({"test_ext_particles": {"hash": "abc"}}, r"'test_ext_particles' must be a .npy path or \{\"path\""),
+        ({"test_particles": "missing.npy"}, r"externals\['test_particles'\]: can't load .*missing.npy"),
+        ({"test_particles": {"path": "particles.npy", "hash": "0" * 64}}, "not the expected 0000"),
+        ({"test_particles": 3}, r"'test_particles' must be a .npy path or \{\"path\""),
+        ({"test_particles": {"hash": "abc"}}, r"'test_particles' must be a .npy path or \{\"path\""),
         (["particles.npy"], "must hold a JSON object"),
-        ({}, "'test_ext_particles' isn't a simr item, so it must be a key in externals"),
+        ({}, "ext.test_particles names an external the run wasn't given"),
     ],
 )
 def test_bad_externals_exit_1_with_a_short_message(tmp_path, files, caplog, entries, message):

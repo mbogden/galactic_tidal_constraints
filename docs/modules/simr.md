@@ -96,8 +96,8 @@ between models come only from their parameters. To compare draws, list entries t
 
 ### Externals
 `externals` is a dict of arrays from outside the run (e.g. a target's orbit, image or particles), by
-key: each value an array, a `.npy` path, or `{"path": ..., "hash": ...}`. A metric input that isn't a
-`sim.*` or `img.*` item is one of these keys. Like the models, they aren't part of the request. Each
+key: each value an array, a `.npy` path, or `{"path": ..., "hash": ...}`. A metric or derived entry
+names one as `ext.<key>`. Like the models, they aren't part of the request. Each
 external a metric uses is loaded once, converted to `float32`, checked and hashed before anything
 runs, and handed to metrics read-only. Keys, checks, hashes and the command line's `--externals`:
 [configuration.md](../configuration.md#externals). With a pool they're shared through `/dev/shm`

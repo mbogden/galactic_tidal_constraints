@@ -83,7 +83,7 @@ argument; a method that doesn't say so takes none. In a config entry they're one
 method's inputs:
 
 ```json
-{"method": "orbit_time_error", "inputs": ["test_ext_orbit", "sim.search_orbit", "test_ext_weights"]}
+{"method": "orbit_time_error", "inputs": ["ext.tng_orbit", "sim.search_orbit", "drv.target_win"]}
 ```
 
 - **Optional:** without them, every row or pixel counts equally.
