@@ -154,5 +154,8 @@ This table is guarded by a test (`tests/test_metrics.py`) against `metrics.table
   in [0, √2].
 
 ## Where to see it
-- `examples/notebooks/metrics_tour.ipynb`: a hands-on tour, each method on real arrays.
-- `tests/test_metrics.py`: the registry's checks and the methods on small synthetic arrays.
+- `examples/notebooks/metrics_tour.ipynb`: a hands-on tour: each method on real arrays, externals,
+  the derived arrays, weights and the orbit metrics, and one config that uses them all.
+- `tests/test_metrics.py`: the registry's checks and the methods on small synthetic arrays;
+  `tests/test_orbit_metrics.py`: the orbit metrics and weights; `tests/test_simr_weights.py`: through
+  `simr`.

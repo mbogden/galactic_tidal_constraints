@@ -97,4 +97,7 @@ A derived array may be all zeros, and that's not an error here. It becomes one o
 given it as weights: weights must be non-negative and not all zero.
 
 ## Where to see it
-- `tests/test_derived.py`: each method on small hand-made arrays.
+- `examples/notebooks/metrics_tour.ipynb`: each method plotted on a real orbit and real images, then
+  used from a config as data and as weights.
+- `tests/test_derived.py`: each method on small hand-made arrays; `tests/test_simr_derived.py`:
+  through `simr`.
