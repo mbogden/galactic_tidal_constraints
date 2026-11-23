@@ -213,9 +213,10 @@ class SimrResult:
             [model, simulator, image] for "img.*". Each cell holds that run's array (or dict, for
             "sim.timing"), or None if it failed or was skipped.
         sim_metrics: each `sim_metrics` entry's value for each simulation, an object array indexed
-            [model, simulator, entry]: a float (a scalar method, or `select`), a dict (a descriptive
-            method), or None (failed or skipped). Metrics always come back when the request lists them;
-            they aren't part of run.return. Shape (N, S, 0) with no entries.
+            [model, simulator, entry]: a float (a scalar method, or `select`) or a dict (a descriptive
+            method). A failed or skipped cell holds NaN where the entry gives a float, None where it
+            gives a dict. Metrics always come back when the request lists them; they aren't part of
+            run.return. Shape (N, S, 0) with no entries.
         img_metrics: likewise for each `img_metrics` entry per image, [model, simulator, image, entry].
         sim_metric_configs, img_metric_configs: the filled-in entries, each `{"method", "inputs",
             "select" (None when absent), "params"}` with every setting's default filled in, so
@@ -384,7 +385,8 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
         else np.empty(shapes[levels.get(name) or _stage(name)], dtype=object)
         for name in returned
     }
-    metric_values = {stage: np.full(shapes[stage], None, dtype=object) for stage in ("sim_metrics", "img_metrics")}
+    metric_values = {"sim_metrics": _metric_cells(shapes["sim_metrics"], sim_entries),
+                     "img_metrics": _metric_cells(shapes["img_metrics"], img_entries)}
     status = {stage: np.empty(shape, dtype=object) for stage, shape in shapes.items()}
     seconds = {stage: np.zeros(shape) for stage, shape in shapes.items()}
     errors = {stage: np.full(shape, None, dtype=object) for stage, shape in shapes.items()}
@@ -540,7 +542,8 @@ def _run_model(task: _ModelTask) -> dict:
     outcome = {
         "data": {item: np.empty(shapes[levels.get(item) or _stage(item)], dtype=object)
                  for item in task.returned if levels.get(item) != "run"},
-        "metrics": {stage: np.full(shapes[stage], None, dtype=object) for stage in ("sim_metrics", "img_metrics")},
+        "metrics": {"sim_metrics": _metric_cells(shapes["sim_metrics"], task.sim_metric_configs),
+                    "img_metrics": _metric_cells(shapes["img_metrics"], task.img_metric_configs)},
         "status": {stage: np.empty(shape, dtype=object) for stage, shape in shapes.items()},
         "seconds": {stage: np.zeros(shape) for stage, shape in shapes.items()},
         "errors": {stage: np.full(shape, None, dtype=object) for stage, shape in shapes.items()},
@@ -680,6 +683,23 @@ def _derive(task: "_ModelTask", entry: dict, sources: tuple, made: dict, failed:
         logger.exception("model %d (id %s), %s, derived %r (%s) failed", task.row, task.model_id, where,
                          entry["name"], entry["method"])
         failed[key] = f"{type(error).__name__}: {error}"
+
+
+def _gives_a_float(entry: dict) -> bool:
+    """Whether a filled-in metric entry's cells hold one float: a scalar method, or `select` from a
+    descriptive one. Otherwise they hold the method's dict."""
+    return metrics.METHODS[entry["method"]].kind == "scalar" or entry["select"] is not None
+
+
+def _metric_cells(shape: tuple, entries: list[dict]) -> np.ndarray:
+    """A metric section's values before anything runs, [..., entry]: NaN in the columns of entries that
+    give one float, None in those that give a dict. A cell that never gets a value (it failed or was
+    skipped) keeps it, so a float column stays all floats (NaN is the standard for a failed scalar)."""
+    cells = np.full(shape, None, dtype=object)
+    for k, entry in enumerate(entries):
+        if _gives_a_float(entry):
+            cells[..., k] = float("nan")
+    return cells
 
 
 def _run_metric(task: "_ModelTask", entry: dict, sources: tuple, failed: dict, outcome: dict, stage: str,

@@ -125,7 +125,7 @@ catalog). It's a folder or a `.json` file, told apart by name, so it works befor
 | `simulators` | The simulator entries as `SimulatorConfig`s, every default filled in: entry s is simulator s |
 | `images` | The image entries as `ImageConfig`s, likewise: entry i is image i |
 | `data` | One entry per name in `return`, and nothing else |
-| `sim_metrics` | Each `sim_metrics` entry's value per simulation, an object array `[model, simulator, entry]`: a float (a scalar method, or `select`), a dict (a descriptive method), or `None` (failed or skipped). Shape `(N, S, 0)` with no entries |
+| `sim_metrics` | Each `sim_metrics` entry's value per simulation, an object array `[model, simulator, entry]`: a float (a scalar method, or `select`) or a dict (a descriptive method). A failed or skipped cell holds NaN where the entry gives a float, `None` where it gives a dict. Shape `(N, S, 0)` with no entries |
 | `img_metrics` | Likewise per image: `[model, simulator, image, entry]` |
 | `sim_metric_configs`, `img_metric_configs` | The filled-in entries (`method`, `inputs`, `select` — `None` when absent — and `params` with every default), so `sim_metrics[..., k]` is entry `sim_metric_configs[k]` |
 | `derived_configs` | The filled-in `derived` entries, in order: `name`, `method`, `inputs`, `params` with every default, `level` (`"run"`: computed once; `"sim"`: per simulation; `"img"`: per image), and for `"run"` ones the array's `shape` and `hash` |
@@ -225,6 +225,10 @@ Errors while **writing** files (a full disk, no permission) aren't caught: they 
 An image (one simulation with one image entry) fails on its own, the same way: its cells hold
 `None`, the error is logged, and its simulation is unaffected. When a simulation fails, its images are
 `"skipped"`.
+
+A metric cell that fails or is skipped holds **NaN** if its entry gives one float (a scalar method, or
+`select`), so a float column stays all floats and can be used as a float array, and `None` if it gives a
+dict.
 
 Each outcome comes back per stage, indexed like the data:
 

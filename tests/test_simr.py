@@ -1,6 +1,7 @@
 """Tests for the SIMR workflow (simr/simr.py). Each section covers one step of the rebuild."""
 
 import json
+import math
 from dataclasses import asdict
 from pathlib import Path
 
@@ -1106,7 +1107,9 @@ def test_a_failed_simulation_skips_its_metrics():
     assert result.status["sim"][0].tolist() == ["ran", "failed"]
     assert result.status["sim_metrics"][0].tolist() == [["ran", "ran"], ["skipped", "skipped"]]
     assert result.status["img_metrics"][0].tolist() == [[["ran"]], [["skipped"]]]
-    assert result.sim_metrics[0, 1, 0] is None and result.img_metrics[0, 1, 0, 0] is None
+    # A skipped cell: None for a descriptive entry, NaN for one giving a float (a select, a scalar method)
+    assert result.sim_metrics[0, 1, 0] is None
+    assert math.isnan(result.sim_metrics[0, 1, 1]) and math.isnan(result.img_metrics[0, 1, 0, 0])
 
 
 def test_a_failed_metric_is_recorded_and_everything_else_moves_on(monkeypatch):
@@ -1121,7 +1124,8 @@ def test_a_failed_metric_is_recorded_and_everything_else_moves_on(monkeypatch):
     assert result.status["sim"].tolist() == [["ran"]]  # the simulation is unaffected
     assert result.status["sim_metrics"].tolist() == [[["failed", "failed"]]]
     assert result.errors["sim_metrics"][0, 0, 0] == "RuntimeError: boom"
-    assert result.sim_metrics[0, 0, 0] is None
+    assert result.sim_metrics[0, 0, 0] is None  # descriptive: None
+    assert math.isnan(result.sim_metrics[0, 0, 1])  # select: one float, so NaN
     assert result.status["img_metrics"].tolist() == [[[["ran"]]]]  # the image metric still ran
 
 
@@ -1134,6 +1138,18 @@ def test_a_nan_metric_value_is_a_failure(monkeypatch):
     assert result.status["img"].tolist() == [[["ran"]]]  # the image is unaffected
     assert result.status["img_metrics"].tolist() == [[[["failed"]]]]
     assert "nan" in result.errors["img_metrics"][0, 0, 0, 0]
+    assert math.isnan(result.img_metrics[0, 0, 0, 0])
+
+
+def test_float_columns_stay_floats_through_a_pool():
+    from concurrent.futures import ProcessPoolExecutor
+
+    request = metric_request(simulator=[SMALL, FAILING])
+    with ProcessPoolExecutor(max_workers=2) as pool:
+        result = simr.run(np.stack([FIRST_APPROACH, FIRST_APPROACH]), request, map=pool.map)
+    assert result.status["sim"][:, 1].tolist() == ["failed", "failed"]
+    column = result.sim_metrics[..., 1].astype(float)  # the select entry: usable as a float array
+    assert np.isfinite(column[:, 0]).all() and np.isnan(column[:, 1]).all()
 
 
 def test_the_catalog_records_the_metric_entries_and_statuses(tmp_path):
