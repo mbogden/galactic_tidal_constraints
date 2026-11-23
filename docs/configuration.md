@@ -24,6 +24,7 @@ it: `--models`, `--output`, `--externals`, `--mode`, `--workers` and `--log-leve
 | `image` | One `ImageConfig` entry, or a list of them | One default entry | [modules/image_creator.md](modules/image_creator.md#imageconfig) |
 | `sim_metrics` | One metric entry (below), or a list of them: metrics whose inputs are `sim.*` items | No metrics (an empty list `[]` also means that) | [modules/metrics.md](modules/metrics.md) |
 | `img_metrics` | The same, for metrics with at least one `img.*` input | No metrics | [modules/metrics.md](modules/metrics.md) |
+| `composite` *(planned)* | The weights for one composite score per model: a weighted mean of the scalar metrics, returned with the metrics | No composite | Not built yet |
 
 What each simulator setting does physically is in
 [spam_physics.md](spam_physics.md#the-settings-we-expose-simulatorconfig).

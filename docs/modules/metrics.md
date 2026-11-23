@@ -3,7 +3,8 @@
 The Metrics stage computes one value per method from simulated or external arrays. Like the other
 stages it takes data in and returns data out; it never touches disk, pools or MPI. SIMR is a pipeline
 for generating many relevant metrics; "fitness" keeps its meaning as what's optimized, usually a
-composite of metrics (a later step).
+composite of metrics (planned: a weighted mean of the scalar metrics, one per model, which `simr`
+returns when the config has a `composite` section).
 
 Only what exists today is described here. Decisions behind it are in
 `Experiments/MDRN-4` (the vault) and [PLAN.md](../../PLAN.md).

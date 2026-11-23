@@ -29,7 +29,12 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
   `model.json` lists it, and saved data is reused only when its config matches exactly. Layout, write
   order, the catalog and reuse: [docs/modules/simr.md](docs/modules/simr.md#saving).
 - **Applications** live in the repo. Each owns its run's tables and final fitness scores, and chooses how to
-  parallelize. Composite scores are computed here.
+  parallelize.
+- **Composite scores** (planned, MDRN-4 step 5): `simr` can return one composite per model, a
+  weighted mean of the scalar metrics, when the config has a `composite` section (the weights). The
+  math is one function in the metrics module, so applications can also compute composites
+  themselves from the returned arrays. Without the section there is no composite, only the metric
+  arrays.
 - **Failures** are recorded, not raised: a failed simulation, image or metric cell holds `None`, gets
   the status `"failed"`, and logs its error, and the run moves on; nothing is saved for it, so a later
   run retries it. Errors while writing stop the run. Statuses, per stage and cell:

@@ -42,8 +42,10 @@ unclear.
 - The run keeps those tables and its final metric array in its data folder.
 - The application chooses how to split the work across processes. Shrinking batches are one example,
   and suit SPAM, where a simulation can take from a second to over a minute.
-- Composite scores, such as weighted averages of metrics, are computed here from the returned
-  array, so weights can change without re-simulating. A combination that needs the arrays themselves,
+- Composite scores, such as weighted averages of metrics, combine the metric values into one
+  number per model. *(Planned.)* `simr` returns one per model when the config has a `composite`
+  section, and an application can also compute them itself from the returned arrays, so weights can
+  change without re-simulating. A combination that needs the arrays themselves,
   not just the metric values, is a normal metric method.
 
 ## SIMR module and workflow
