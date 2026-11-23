@@ -3,7 +3,7 @@
 > **Status: this is the plan, and it's still in testing and development.** Built so far: the
 > Simulator, Image Creator and Metrics stages (the metrics with a few first methods, and externals as
 > their targets) and the `simr` workflow that runs them (see the module docs in [modules/](modules/)).
-> Composite scores, the applications and the optimizer are still plans, and details may change as
+> The applications and the optimizer are still plans, and details may change as
 > they're written. Decisions and rules are in [PLAN.md](../PLAN.md).
 
 This project simulates galaxy collisions, turns them into images, and scores how well they match a
@@ -43,7 +43,7 @@ unclear.
 - The application chooses how to split the work across processes. Shrinking batches are one example,
   and suit SPAM, where a simulation can take from a second to over a minute.
 - Composite scores, such as weighted averages of metrics, combine the metric values into one
-  number per model. *(Planned.)* `simr` returns one per model when the config has a `composite`
+  number per model. `simr` returns one per model when the config has a `composite`
   section, and an application can also compute them itself from the returned arrays, so weights can
   change without re-simulating. A combination that needs the arrays themselves,
   not just the metric values, is a normal metric method.

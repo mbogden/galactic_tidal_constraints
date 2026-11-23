@@ -25,7 +25,7 @@ it: `--models`, `--output`, `--externals`, `--mode`, `--workers` and `--log-leve
 | `derived` | Named entries (below), in order: arrays made from other arrays, for metrics to use as data or weights | None | [modules/derived.md](modules/derived.md) |
 | `sim_metrics` | One metric entry (below), or a list of them: metrics whose inputs are `sim.*` items | No metrics (an empty list `[]` also means that) | [modules/metrics.md](modules/metrics.md) |
 | `img_metrics` | The same, for metrics with at least one `img.*` input | No metrics | [modules/metrics.md](modules/metrics.md) |
-| `composite` *(planned)* | The weights for one composite score per model: a weighted mean of the scalar metrics, returned with the metrics | No composite | Not built yet |
+| `composite` | The weights for one composite score per model: a weighted mean of the scalar metrics, returned with the metrics (below) | No composite (`null` also means that) | [modules/metrics.md](modules/metrics.md#the-composite) |
 
 What each simulator setting does physically is in
 [spam_physics.md](spam_physics.md#the-settings-we-expose-simulatorconfig).
@@ -76,6 +76,37 @@ line a warning says so). `simr` computes (or loads) the items an entry needs eve
 for them. An entry with an `img.*` input goes in `img_metrics` (one per simulation and image entry);
 an entry using only `sim.*` items goes in `sim_metrics` (one per simulation). `sim.timing` isn't a
 metric input.
+
+### Composite
+The `composite` section turns a model's scalar metrics into one number, the weighted mean of its
+metric cells over both levels (`metrics.composite`), returned as `result.composite` (shape
+`(model,)`). It holds the weights, one per cell of a model:
+
+```json
+"sim_metrics": [
+  {"method": "orbit_time_error",     "inputs": ["ext.tng_orbit", "sim.search_orbit", "drv.target_win"]},
+  {"method": "orbit_position_error", "inputs": ["ext.tng_orbit", "sim.search_orbit", "drv.target_win"]},
+  {"method": "closest_approach",     "inputs": ["sim.search_orbit"]}
+],
+"composite": {"sim_weights": [[0.5, 0.5, 0.0]]}
+```
+
+| Key | Shape | Meaning |
+|---|---|---|
+| `sim_weights` | `(simulator, sim_metrics entry)` | One weight per `sim_metrics` cell of a model |
+| `img_weights` | `(simulator, image, img_metrics entry)` | One weight per `img_metrics` cell of a model |
+
+- **One key per level that has entries**, and none for a level without them. To leave a level out,
+  give it zeros.
+- **`"composite": {}`** gives weight 1 to every entry that gives one float, and 0 to descriptive
+  entries (dicts). No section, or `null`, means no composite.
+- **Weights** needn't sum to 1. They're numbers (never `true` or `false`), finite and not negative,
+  not all zero, and **0 for a descriptive entry** (one without `select`).
+- **A failed or skipped cell** with a nonzero weight makes that model's composite NaN; the others are
+  unaffected.
+- **Checked before anything runs**, like the metric entries. The run's record holds the filled-in
+  weights (`"composite"`, also `result.composite_weights`); the composite values aren't saved yet.
+- Mixing directions or scales is the config's choice: `simr` only applies the weights.
 
 ### Derived entries
 A derived entry makes an array from other arrays: weights along an orbit, a weight image, an edge map
@@ -237,6 +268,8 @@ Everything is checked before anything runs, and an error says where the problem 
 | A wrong metric input | `sim_metrics[0].inputs[0]: closest_approach takes a orbit here, but sim.particles is a particles` |
 | An `img.*` input at the wrong level | `sim_metrics[0].inputs[0]: an img.* input belongs in img_metrics, not sim_metrics` |
 | A `select` that isn't one float | `sim_metrics[1].select: 'position' isn't a single-float output of closest_approach. Choices: ['t', 'distance']` |
+| Composite weights of the wrong shape | `composite.sim_weights must have one weight per cell of a model, shape (simulator, sim_metrics entry) = (1, 3): got shape (3,)` |
+| A weight on a descriptive entry | `composite.sim_weights: sim_metrics[2] (closest_approach) gives a dict, not one float, so its weight must be 0` |
 
 Types follow JSON:
 - A whole number is fine for a number field (JSON may write `10.0` as `10`), but a field that takes a
@@ -293,7 +326,8 @@ take the names [above](#data-names):
   "image": {
     "width": 128, "height": 128, "primary_center": [32.0, 64.0], "secondary_center": [96.0, 64.0],
     "blur_sigma": 0.0, "blur_truncate": 4.0, "brightness": "log"
-  }
+  },
+  "derived": [], "sim_metrics": [], "img_metrics": [], "composite": null
 }
 ```
 

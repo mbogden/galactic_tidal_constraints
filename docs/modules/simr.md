@@ -127,7 +127,9 @@ catalog). It's a folder or a `.json` file, told apart by name, so it works befor
 | `data` | One entry per name in `return`, and nothing else |
 | `sim_metrics` | Each `sim_metrics` entry's value per simulation, an object array `[model, simulator, entry]`: a float (a scalar method, or `select`) or a dict (a descriptive method). A failed or skipped cell holds NaN where the entry gives a float, `None` where it gives a dict. Shape `(N, S, 0)` with no entries |
 | `img_metrics` | Likewise per image: `[model, simulator, image, entry]` |
+| `composite` | With a `composite` section: one `float64` per model, shape `(N,)`, the weighted mean of its metric cells (`metrics.composite`); NaN for a model whose weighted cell failed or was skipped. `None` without the section ([configuration.md](../configuration.md#composite)) |
 | `sim_metric_configs`, `img_metric_configs` | The filled-in entries (`method`, `inputs`, `select` — `None` when absent — and `params` with every default), so `sim_metrics[..., k]` is entry `sim_metric_configs[k]` |
+| `composite_weights` | The weights the composite used, filled in: `{"sim_weights", "img_weights"}` as nested lists, a key per level with entries. `None` without the section |
 | `derived_configs` | The filled-in `derived` entries, in order: `name`, `method`, `inputs`, `params` with every default, `level` (`"run"`: computed once; `"sim"`: per simulation; `"img"`: per image), and for `"run"` ones the array's `shape` and `hash` |
 | `externals` | Each external a metric used, by key: `{"source"` (its path, or `"memory"`), `"shape"`, `"hash"` (`simr.array_hash`)`}`. Empty when none was used |
 | `ids` | Each row's model id in the output's catalog, or `None` without an output (see The output catalog) |

@@ -29,5 +29,6 @@
   },
   "derived": [],
   "sim_metrics": [],
-  "img_metrics": []
+  "img_metrics": [],
+  "composite": null
 }

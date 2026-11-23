@@ -4,7 +4,7 @@ The Metrics stage computes one value per method from simulated or external array
 stages it takes data in and returns data out; it never touches disk, pools or MPI. SIMR is a pipeline
 for generating many relevant metrics; "fitness" keeps its meaning as what's optimized, usually a
 composite of metrics: a weighted mean of the scalar metrics, one per model (`metrics.composite`,
-below; planned: `simr` returns it when the config has a `composite` section).
+below; `simr` returns it when the config has a `composite` section).
 
 Only what exists today is described here. Decisions behind it are in
 `Experiments/MDRN-4` (the vault) and [PLAN.md](../../PLAN.md).
@@ -179,6 +179,8 @@ fitness = metrics.composite(sim_metrics=result.sim_metrics, sim_weights=[[0.5, 0
 - **Mixing is the caller's choice.** The composite only applies the weights; it doesn't check
   directions (`best`) or scales. Raw values differ a lot (orbit errors are often 0.1 to 1, image
   differences 0.02 to 0.06), so a mix is dominated by its largest terms unless the weights compensate.
+- **In `simr`**, the config's `composite` section holds the weights and the result's `composite` the
+  values ([configuration.md](../configuration.md#composite)).
 
 ## Where to see it
 - `examples/notebooks/metrics_tour.ipynb`: a hands-on tour: each method on real arrays, externals,

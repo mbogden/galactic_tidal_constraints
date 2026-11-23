@@ -96,10 +96,18 @@ def test_metrics_run_with_a_warning_that_values_arent_saved(tmp_path, files, cap
     config = {"simulator": SMALL,
               "sim_metrics": [{"method": "closest_approach", "inputs": ["sim.orbit"], "select": "distance"}]}
     assert main(files(config=config)) == 0
-    assert "metric values aren't saved yet" in caplog.text
+    assert "metric values and composites aren't saved yet" in caplog.text
     record = simr.load_catalog(tmp_path / "runs")["runs"][0]
     assert record["sim_metrics"][0]["select"] == "distance"
     assert record["status"]["sim_metrics"] == [[["ran"]]]
+    assert record["composite"] is None
+
+
+def test_a_composite_section_runs_from_the_command_line(tmp_path, files):
+    config = {"simulator": SMALL, "composite": {},
+              "sim_metrics": [{"method": "closest_approach", "inputs": ["sim.orbit"], "select": "distance"}]}
+    assert main(files(config=config)) == 0
+    assert simr.load_catalog(tmp_path / "runs")["runs"][0]["composite"] == {"sim_weights": [[1.0]]}
 
 
 # Until fitness exists, a run computes only what run.save asks for, so these save sim.timing (the cheapest).

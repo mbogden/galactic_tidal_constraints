@@ -127,8 +127,9 @@ def _read_config(path: str | None) -> dict:
             logger.warning("run.return is ignored on the command line: nothing is returned in memory")
         request = {**request, "run": {key: value for key, value in run_section.items() if key != "return"}}
     if request.get("sim_metrics") or request.get("img_metrics"):
-        logger.warning("metric values aren't saved yet (that's a later step): they're computed, and their"
-                       " statuses and configs are recorded in the catalog, but the values are discarded here")
+        logger.warning("metric values and composites aren't saved yet (that's a later step): they're computed,"
+                       " and their statuses, configs and weights are recorded in the catalog, but the values are"
+                       " discarded here")
     return request
 
 

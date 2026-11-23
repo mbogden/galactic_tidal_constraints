@@ -28,6 +28,14 @@ per-entry filters. A metric's inputs are simr items; simr computes (or loads) wh
 nothing else asks for those items, so an orbit-only request with `sim_metrics` never builds an image.
 Entries are checked against the metrics table (`metrics.METHODS`) before anything runs.
 
+A `composite` section turns the scalar metrics into one number per model (`metrics.composite`, a weighted
+mean over every cell of both levels), returned as `result.composite`:
+
+    "composite": {"sim_weights": [[0.5, 0.5]]}   # one weight per sim_metrics cell: (simulator, entry)
+    "composite": {}                              # equal weights for every entry that gives one float
+
+With no section (or null) there is no composite.
+
 An input named "ext.<key>" is an external: the entry under <key> in the `externals` dict given to `run`,
 holding an array from outside the run (a target orbit, image or particles), or a path to its .npy file:
 
@@ -173,7 +181,8 @@ IMAGE_DATA = {
 # While a run collects results, its statuses are written to the catalog at most this often (and at the end).
 CATALOG_WRITE_SECONDS = 60.0
 
-REQUEST_KEYS = ("run", "simulator", "image", "derived", "sim_metrics", "img_metrics")
+REQUEST_KEYS = ("run", "simulator", "image", "derived", "sim_metrics", "img_metrics", "composite")
+COMPOSITE_KEYS = ("sim_weights", "img_weights")
 DERIVED_ENTRY_KEYS = ("name", "method", "inputs", "params")
 # How often a derived entry is computed, from the inputs it's made from: once for the run (externals
 # only), per simulation (any sim.* item) or per image (any img.* item). Later ones include earlier ones.
@@ -218,9 +227,15 @@ class SimrResult:
             gives a dict. Metrics always come back when the request lists them; they aren't part of
             run.return. Shape (N, S, 0) with no entries.
         img_metrics: likewise for each `img_metrics` entry per image, [model, simulator, image, entry].
+        composite: with a `composite` section, one float64 per model, shape (N,): the weighted mean of
+            its metric cells (`metrics.composite`); NaN for a model whose cell with a nonzero weight
+            failed or was skipped. None with no section.
         sim_metric_configs, img_metric_configs: the filled-in entries, each `{"method", "inputs",
             "select" (None when absent), "params"}` with every setting's default filled in, so
             `sim_metrics[..., k]` is `sim_metric_configs[k]` (and the same at the image level).
+        composite_weights: the weights the composite used, filled in: `{"sim_weights": (simulator,
+            entry), "img_weights": (simulator, image, entry)}` as nested lists, one key per level that
+            has entries. None with no section.
         derived_configs: the filled-in `derived` entries, in order: each `{"name", "method", "inputs",
             "params" (every default filled in), "level"}`, where "level" is how often it's computed
             ("run": once, from externals only). One computed for the run also records the "shape" and
@@ -249,8 +264,10 @@ class SimrResult:
     data: dict[str, np.ndarray]
     sim_metrics: np.ndarray
     img_metrics: np.ndarray
+    composite: np.ndarray | None
     sim_metric_configs: list[dict]
     img_metric_configs: list[dict]
+    composite_weights: dict | None
     derived_configs: list[dict]
     externals: dict[str, dict]
     ids: list[str | None]
@@ -277,6 +294,11 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
             sim_metrics, img_metrics (default none): metric entries, each a dict `{"method", "inputs",
                 "select" (optional), "params" (optional)}` (see the module docstring and
                 `metrics.METHODS`). One entry or a list; an empty list is allowed and means none.
+            composite (default none; null also means none): the weights for one composite per model,
+                `{"sim_weights": ..., "img_weights": ...}`, each with one weight per cell of a model
+                ((simulator, entry) and (simulator, image, entry)), a key for each level that has
+                entries. Weights are finite and not negative, not all zero, and 0 for an entry that
+                gives a dict. `{}` gives every entry that gives one float weight 1, and the rest 0.
         output: where to record the run: a folder (its `catalog.json`, plus model folders for the data
             run.save names, and saved data is loaded from there instead of computed) or a `.json` catalog
             file (no model data). A folder is needed when run.save names something; optional otherwise.
@@ -314,9 +336,9 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     A run with an output adds a record to the catalog's "runs" when it starts and completes it when it ends:
     "started", "finished" (None if the run never got there), "code", "run" (its return and save lists),
     "simulator" and "image" (the full configs), "sim_metrics" and "img_metrics" (the filled-in entries),
-    "externals" (each used external's source, shape and hash, as in the result),
+    "composite" (the filled-in weights, or None), "externals" (each used external's source, shape and hash, as in the result),
     "model_ids" (row m's model id), and at the end "status", "seconds" and "errors" (as in the result, as
-    lists). Metric values aren't saved yet; saving them is a later step.
+    lists). Metric values and composites aren't saved yet; saving them is a later step.
     """
     models = _check_models(models)
     parts = _read_request(request)
@@ -346,7 +368,7 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
     external a metric uses: the array itself, or (for a pool) the path its workers map it from;
     `external_records` its `{"source", "shape", "hash"}`; `for_the_run` the derived arrays computed once
     for the run, by "drv.<name>".""" 
-    returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries = parts
+    returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries, composite_weights = parts
     catalog_file, root = output_paths(output) if output is not None else (None, None)
     if saved and root is None:
         where = "no output was given" if output is None else f"{output} is a catalog file, not a folder"
@@ -366,6 +388,7 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
             "derived": derived_entries,
             "sim_metrics": sim_entries,
             "img_metrics": img_entries,
+            "composite": composite_weights,
             "externals": external_records,
             "model_ids": ids,
         }
@@ -444,14 +467,24 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
             counts = {word: int((status[stage] == word).sum()) for word in ("ran", "failed", "skipped")}
             logger.info("simr: %d %s metric cells: %d ran, %d failed, %d skipped",
                         status[stage].size, label, *counts.values())
+    composite = None
+    if composite_weights is not None:
+        composite = metrics.composite(
+            sim_metrics=metric_values["sim_metrics"] if "sim_weights" in composite_weights else None,
+            img_metrics=metric_values["img_metrics"] if "img_weights" in composite_weights else None,
+            sim_weights=composite_weights.get("sim_weights"),
+            img_weights=composite_weights.get("img_weights"),
+        )
+        logger.info("simr: %d composites, %d NaN (a cell they weigh failed or was skipped)",
+                    composite.size, int(np.isnan(composite).sum()))
     if catalog is not None:
         run_record["finished"] = _now()
         _record_status(catalog_file, catalog, run_record, status, seconds, errors)
     return SimrResult(models=models, simulators=configs, images=image_configs, data=data,
                       sim_metrics=metric_values["sim_metrics"], img_metrics=metric_values["img_metrics"],
-                      sim_metric_configs=sim_entries, img_metric_configs=img_entries,
-                      derived_configs=derived_entries, externals=external_records, ids=ids,
-                      status=status, seconds=seconds, errors=errors)
+                      composite=composite, sim_metric_configs=sim_entries, img_metric_configs=img_entries,
+                      composite_weights=composite_weights, derived_configs=derived_entries,
+                      externals=external_records, ids=ids, status=status, seconds=seconds, errors=errors)
 
 
 LOG_FORMAT = "%(asctime)s %(levelname)s [%(processName)s] %(name)s: %(message)s"
@@ -1090,7 +1123,85 @@ def _read_request(
     returned, saved = _names(run_section, "return", list(made)), _names(run_section, "save", [])
     sim_entries = _metric_entries(request, "sim_metrics", made)
     img_entries = _metric_entries(request, "img_metrics", made)
-    return returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries
+    composite_weights = _composite_weights(request, sim_entries, img_entries, len(configs), len(image_configs))
+    return returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries, composite_weights
+
+
+def _composite_weights(request: dict, sim_entries: list[dict], img_entries: list[dict], simulators: int,
+                       images: int) -> dict | None:
+    """The `composite` section's weights, checked against the metric sections and filled in: one key per
+    level that has entries, each a nested list with one weight per cell of a model. None with no section
+    (or null).
+
+    `{}` gives weight 1 to every entry that gives one float and 0 to the rest. Otherwise each level with
+    entries needs its key, and a level without entries can't have one. Weights must have the level's
+    shape, be finite and not negative, be 0 for an entry that gives a dict, and not all be zero.
+    """
+    section = request.get("composite")
+    if section is None:
+        return None
+    if not isinstance(section, dict):
+        raise ValueError(
+            'composite must be a dict of weights (e.g. {"sim_weights": [[0.5, 0.5]]}), {} for equal weights, '
+            f"or null for no composite: {section!r}"
+        )
+    _reject_unknown("composite", section, COMPOSITE_KEYS)
+    if not sim_entries and not img_entries:
+        raise ValueError("composite: there are no metric entries to combine (sim_metrics and img_metrics are empty)")
+    levels = {
+        "sim": (sim_entries, (simulators, len(sim_entries)), "(simulator, sim_metrics entry)"),
+        "img": (img_entries, (simulators, images, len(img_entries)), "(simulator, image, img_metrics entry)"),
+    }
+    filled = {}
+    for level, (entries, shape, axes) in levels.items():
+        key = f"{level}_weights"
+        where = f"composite.{key}"
+        if not entries:
+            if key in section:
+                raise ValueError(f"{where}: {level}_metrics has no entries, so there's nothing to weigh")
+            continue
+        floats = np.array([_gives_a_float(entry) for entry in entries])
+        if not section:  # {}: equal weights for every entry that gives one float
+            weights = np.broadcast_to(floats.astype(np.float64), shape)
+        elif key not in section:
+            raise ValueError(
+                f"{where} is missing: {level}_metrics has entries, so give their weights, shape {axes} = "
+                f"{shape} (zeros leave them out), or use {{}} for equal weights"
+            )
+        else:
+            weights = _weights_array(section[key], shape, axes, where)
+            for k in np.flatnonzero(~floats):
+                if (weights[..., k] != 0).any():
+                    raise ValueError(
+                        f"{where}: {level}_metrics[{k}] ({entries[k]['method']}) gives a dict, not one float, "
+                        f"so its weight must be 0"
+                    )
+        filled[key] = weights.tolist()
+    if not any(np.any(np.asarray(weights) > 0) for weights in filled.values()):
+        raise ValueError(
+            "composite: no metric entry gives one float, so there's nothing to combine" if not section
+            else "composite: the weights are all zero, so nothing would be combined"
+        )
+    return filled
+
+
+def _weights_array(value, shape: tuple, axes: str, where: str) -> np.ndarray:
+    """A level's composite weights from the config: nested lists of numbers (never true or false) of
+    exactly `shape`, finite and not negative."""
+    try:
+        cells = np.array(value, dtype=object)
+    except ValueError:  # ragged lists
+        cells = None
+    if cells is None or cells.shape != shape:
+        got = "ragged lists" if cells is None else f"shape {cells.shape}"
+        raise ValueError(f"{where} must have one weight per cell of a model, shape {axes} = {shape}: got {got}")
+    for index, weight in np.ndenumerate(cells):
+        if isinstance(weight, (bool, np.bool_)) or not isinstance(weight, (int, float, np.integer, np.floating)):
+            raise ValueError(f"{where}{list(index)} must be a number: {weight!r}")
+    weights = cells.astype(np.float64)
+    if not np.isfinite(weights).all() or (weights < 0).any():
+        raise ValueError(f"{where} must be finite and not negative")
+    return weights
 
 
 def _derived_entries(request: dict) -> list[dict]:
