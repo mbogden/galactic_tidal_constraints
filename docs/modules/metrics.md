@@ -3,8 +3,8 @@
 The Metrics stage computes one value per method from simulated or external arrays. Like the other
 stages it takes data in and returns data out; it never touches disk, pools or MPI. SIMR is a pipeline
 for generating many relevant metrics; "fitness" keeps its meaning as what's optimized, usually a
-composite of metrics (planned: a weighted mean of the scalar metrics, one per model, which `simr`
-returns when the config has a `composite` section).
+composite of metrics: a weighted mean of the scalar metrics, one per model (`metrics.composite`,
+below; planned: `simr` returns it when the config has a `composite` section).
 
 Only what exists today is described here. Decisions behind it are in
 `Experiments/MDRN-4` (the vault) and [PLAN.md](../../PLAN.md).
@@ -153,9 +153,36 @@ This table is guarded by a test (`tests/test_metrics.py`) against `metrics.table
   (SPAM's frame is the sky's, so orientation is real information). With the defaults the value lies
   in [0, √2].
 
+## The composite
+`metrics.composite(sim_metrics=None, img_metrics=None, sim_weights=None, img_weights=None)` combines a
+model's metric cells into one number, the weighted mean across both levels:
+
+```
+composite[m] = (Σ sim_weights · sim_metrics[m] + Σ img_weights · img_metrics[m]) / (Σ sim_weights + Σ img_weights)
+```
+
+```python
+# The old 50/50 mix of the two orbit errors, sim_metrics entries 0 and 1, one simulator entry:
+fitness = metrics.composite(sim_metrics=result.sim_metrics, sim_weights=[[0.5, 0.5]])   # shape (model,)
+```
+
+- **Inputs** are shaped like `SimrResult`'s: `sim_metrics` `[model, simulator, entry]`, `img_metrics`
+  `[model, simulator, image, entry]`. Give either level or both; object arrays are fine.
+- **Weights** have one value per cell of a model: `sim_weights` `(simulator, entry)`, `img_weights`
+  `(simulator, image, entry)`. They needn't sum to 1, must be finite and not negative, and not all
+  zero across both levels. A level given without weights counts every cell equally; weights for a
+  level that isn't given are an error.
+- **Weight 0 skips a cell** entirely, so it may hold anything: a descriptive entry's dict (or its
+  `None`), or a failed scalar's NaN. A cell with a nonzero weight must hold one number.
+- **NaN** in a cell with a nonzero weight (a failed or skipped scalar) makes that model's composite
+  NaN, and only that model's.
+- **Mixing is the caller's choice.** The composite only applies the weights; it doesn't check
+  directions (`best`) or scales. Raw values differ a lot (orbit errors are often 0.1 to 1, image
+  differences 0.02 to 0.06), so a mix is dominated by its largest terms unless the weights compensate.
+
 ## Where to see it
 - `examples/notebooks/metrics_tour.ipynb`: a hands-on tour: each method on real arrays, externals,
   the derived arrays, weights and the orbit metrics, and one config that uses them all.
 - `tests/test_metrics.py`: the registry's checks and the methods on small synthetic arrays;
   `tests/test_orbit_metrics.py`: the orbit metrics and weights; `tests/test_simr_weights.py`: through
-  `simr`.
+  `simr`; `tests/test_composite.py`: the composite.

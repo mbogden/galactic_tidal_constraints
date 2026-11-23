@@ -29,6 +29,9 @@ Weights are optional. A method that can use them says so (`Metric.weights` is Tr
 row or pixel counts equally. Weights must be non-negative and not all zero, and match the method's
 first input (the target, when there is one): one value per row of an orbit or of particles, or an
 image of the same shape (`check_weights`, the one place this rule lives).
+
+`composite` is the one place metric values are combined: a weighted mean of a model's scalar metric
+cells across both levels, one number per model.
 """
 
 import math
@@ -551,3 +554,85 @@ def pca_difference(
     if orientation_weight:
         value += orientation_weight * (1.0 - abs(float(pcas[0]["vectors"][0] @ pcas[1]["vectors"][0])))
     return float(value)
+
+
+# --- Composite: one number per model from the scalar metrics ---------------------------------------------
+
+
+def composite(
+    sim_metrics: np.ndarray | None = None,
+    img_metrics: np.ndarray | None = None,
+    sim_weights: np.ndarray | None = None,
+    img_weights: np.ndarray | None = None,
+) -> np.ndarray:
+    """One composite score per model: the weighted mean of its metric cells, across both levels.
+
+        composite[m] = (sum(sim_weights * sim_metrics[m]) + sum(img_weights * img_metrics[m]))
+                       / (sum(sim_weights) + sum(img_weights))
+
+    The weights needn't sum to 1. A cell with weight 0 is skipped entirely, so it may hold anything (a
+    descriptive entry's dict or None, or a failed scalar's NaN). A NaN in a cell with a nonzero weight
+    makes that model's composite NaN, and only that model's. Whether a mix makes sense (directions,
+    scales) is the caller's choice; this only applies the weights.
+
+    Args:
+        sim_metrics: [model, simulator, entry], as `SimrResult.sim_metrics` (an object array is fine).
+        img_metrics: [model, simulator, image, entry], as `SimrResult.img_metrics`.
+        sim_weights: one weight per cell of a model, shape (simulator, entry). None: 1 for every cell.
+        img_weights: likewise, shape (simulator, image, entry).
+        At least one level must be given; weights for a level that isn't given are an error.
+
+    Returns:
+        float64, shape (model,).
+
+    Raises:
+        ValueError: no level given; weights without their level, of the wrong shape, negative, not
+        finite, or all zero across both levels; the levels disagree on the number of models; a cell
+        with a nonzero weight holds something other than one number (e.g. a dict).
+    """
+    levels = []
+    for level, values, weights, axes in (("sim", sim_metrics, sim_weights, "(simulator, entry)"),
+                                          ("img", img_metrics, img_weights, "(simulator, image, entry)")):
+        if values is None:
+            if weights is not None:
+                raise ValueError(f"{level}_weights were given without {level}_metrics")
+            continue
+        values = np.asarray(values)
+        if values.ndim != len(axes.split(",")) + 1:
+            raise ValueError(f"{level}_metrics must be [model, {axes[1:-1]}]: got shape {values.shape}")
+        weights = np.ones(values.shape[1:]) if weights is None else np.asarray(weights, dtype=np.float64)
+        if weights.shape != values.shape[1:]:
+            raise ValueError(
+                f"{level}_weights must have one weight per cell of a model, shape {axes} = {values.shape[1:]}: "
+                f"got {weights.shape}"
+            )
+        if not np.isfinite(weights).all() or (weights < 0).any():
+            raise ValueError(f"{level}_weights must be finite and not negative")
+        levels.append((level, values, weights))
+    if not levels:
+        raise ValueError("composite needs sim_metrics, img_metrics or both")
+    if len({len(values) for _, values, _ in levels}) > 1:
+        raise ValueError(f"the levels have different numbers of models: {[len(v) for _, v, _ in levels]}")
+    total = sum(float(weights.sum()) for _, _, weights in levels)
+    if total <= 0:
+        raise ValueError("the weights are all zero: nothing would be combined")
+    result = np.zeros(len(levels[0][1]))
+    for level, values, weights in levels:
+        used = weights > 0
+        result += _cells_as_floats(values[:, used], level) @ weights[used]
+    return result / total
+
+
+def _cells_as_floats(cells: np.ndarray, level: str) -> np.ndarray:
+    """The cells a composite uses, (model, cell), as float64; each must hold one number (NaN allowed)."""
+    if cells.dtype != object:
+        return cells.astype(np.float64)
+    floats = np.empty(cells.shape)
+    for index, value in np.ndenumerate(cells):
+        if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)):
+            raise ValueError(
+                f"{level}_metrics: a cell with a nonzero weight holds {type(value).__name__}, not one number "
+                f"(a descriptive entry's dict, or its None, must have weight 0)"
+            )
+        floats[index] = value
+    return floats
