@@ -100,20 +100,35 @@ as data or as weights:
 |---|---|
 | `name` | Letters, digits and `_`; unique in the section. Metrics and later entries call it `drv.<name>` |
 | `method` | A derived method |
-| `inputs` | What it's made from, one per declared kind: externals, or entries **above it** in the list |
+| `inputs` | What it's made from, one per declared kind: externals, `sim.*` or `img.*` items, or entries **above it** in the list |
 | `params` (optional) | The method's settings; everything left out takes the method's default |
 
 - **Order matters only for entries built from other entries:** an entry may use those above it, so a
   loop is impossible.
-- **Today an entry's inputs must be externals** (or entries made from them). It's then computed once,
-  before anything is simulated, and from there treated like an external: hashed, recorded and shared
-  with a pool's workers. Entries made from `sim.*` or `img.*` items, computed for every simulation or
-  image, are the next step; for now they're an error.
-- **No new combinations:** an entry adds one array, and metrics use it only where they name it.
-- **Checked before anything runs:** names, methods, kinds and order; a method that fails on its
-  externals; and a derived image that a metric uses but that isn't the size of the image entries.
-- **Recorded:** the run's record lists every entry with its full settings, and for one computed for
-  the run, its array's shape and hash, so the config says how the weights were made.
+- **How often an entry is computed follows from what it's made from** (its `level`):
+
+  | Made from | Computed | Returned by `run.return` as |
+  |---|---|---|
+  | Externals only | Once, before anything is simulated (`"run"`) | The one array |
+  | Any `sim.*` item | Once per simulation (`"sim"`) | `[model, simulator]`, like `sim.*` data |
+  | Any `img.*` item | Once per image (`"img"`) | `[model, simulator, image]`, like `img.*` data |
+
+  An entry built from another takes the more specific of their levels.
+- **A metric's section follows its inputs:** an entry made from `img.*` items counts as an image
+  input, so a metric using it goes in `img_metrics`. A metric still needs something that depends on
+  the model: an item, or an entry made from one.
+- **No new combinations:** an entry adds one array per run, simulation or image, and metrics use it
+  only where they name it. Every listed entry is computed, used or not; one made from `img.*` items
+  makes `simr` create the images.
+- **Checked before anything runs:** names, methods, kinds, order and levels; a method that fails on
+  its externals; and a once-per-run image that a metric uses but that isn't the size of the image
+  entries.
+- **A failure during the run** (e.g. a model whose orbit has no pass to center a window on) is that
+  entry's alone, for that model: metrics that use it fail with a message naming it, and everything
+  else carries on.
+- **Recorded:** the run's record lists every entry with its full settings and level, and for one
+  computed once, its array's shape and hash, so the config says how the weights were made.
+- **Not saved yet:** `run.save` doesn't take `drv.*` names.
 
 ### Externals
 An input that isn't a `sim.*` or `img.*` item is an **external**: an array from outside the run, such as

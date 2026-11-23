@@ -11,10 +11,10 @@ weights = derived.recent_approach_cosine_window(target_orbit, k=1.0)
 weights = derived.compute("recent_approach_cosine_window", [target_orbit], {"k": 1.0})   # the same, by name
 ```
 
-Only what exists today is described here. `simr` runs these methods from a `derived` config section
-when an entry is made from externals ([configuration.md](../configuration.md#derived-entries));
-entries made from simulated data are the next step. A derived array can also be made in Python and
-given to a run as an external, e.g. as a metric's weights ([metrics.md](metrics.md#weights)). Decisions behind
+Only what exists today is described here. `simr` runs these methods from a `derived` config section:
+once for the run, per simulation or per image, depending on what each entry is made from
+([configuration.md](../configuration.md#derived-entries)). A derived array can also be made in Python
+and given to a run as an external, e.g. as a metric's weights ([metrics.md](metrics.md#weights)). Decisions behind
 it are in [PLAN.md](../../PLAN.md).
 
 ## Derived or metric?

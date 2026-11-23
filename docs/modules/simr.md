@@ -77,6 +77,11 @@ simulation's own particles and that simulator's `n1` and `n2`):
 | `img.model` | `sim.particles` | The model image, `float32` `(height, width)` in [0, 1] |
 | `img.unperturbed` | `sim.unperturbed` | The unperturbed image, in the same frame |
 
+`run.return` also takes derived entries, as `drv.<name>`
+([configuration.md](../configuration.md#derived-entries)): one made per simulation or per image comes
+back indexed like that stage's data, and one computed once for the run comes back as the array
+itself. `run.save` doesn't take them yet.
+
 **Only what `return` and `save` name is computed.** Asking only for `sim.orbit` never runs
 particles. An image needs the `sim` items it's made from, so `simr` computes them (or loads them, if
 saved) even when they aren't returned or saved. Simulated arrays are converted to `float32` as soon
@@ -123,7 +128,7 @@ catalog). It's a folder or a `.json` file, told apart by name, so it works befor
 | `sim_metrics` | Each `sim_metrics` entry's value per simulation, an object array `[model, simulator, entry]`: a float (a scalar method, or `select`), a dict (a descriptive method), or `None` (failed or skipped). Shape `(N, S, 0)` with no entries |
 | `img_metrics` | Likewise per image: `[model, simulator, image, entry]` |
 | `sim_metric_configs`, `img_metric_configs` | The filled-in entries (`method`, `inputs`, `select` — `None` when absent — and `params` with every default), so `sim_metrics[..., k]` is entry `sim_metric_configs[k]` |
-| `derived_configs` | The filled-in `derived` entries, in order: `name`, `method`, `inputs`, `params` with every default, `level` (`"run"`: computed once), and for those its array's `shape` and `hash` |
+| `derived_configs` | The filled-in `derived` entries, in order: `name`, `method`, `inputs`, `params` with every default, `level` (`"run"`: computed once; `"sim"`: per simulation; `"img"`: per image), and for `"run"` ones the array's `shape` and `hash` |
 | `externals` | Each external a metric used, by key: `{"source"` (its path, or `"memory"`), `"shape"`, `"hash"` (`simr.array_hash`)`}`. Empty when none was used |
 | `ids` | Each row's model id in the output's catalog, or `None` without an output (see The output catalog) |
 | `status`, `seconds`, `errors` | Per stage (`"sim"`, `"img"`, `"sim_metrics"`, `"img_metrics"`), indexed like its data or values; see Failures and status |

@@ -318,20 +318,23 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     # externals (as "drv.<name>"): checked, hashed, and shared with a pool's workers the same way.
     hashes = _derive_for_the_run(derived_entries, arrays, files, metric_sections, image_configs=parts[3])
     _check_external_weights(metric_sections, arrays)
+    for_the_run = {key: arrays[key] for key in hashes}  # the arrays themselves, for run.return
     shared_folder = None
     if arrays and map is not builtins.map:  # a pool: its workers share one copy of each external
         arrays, shared_folder = _share_externals(arrays, files, {**records, **hashes})
     try:
-        return _run(models, parts, arrays, records, output, map)
+        return _run(models, parts, arrays, records, for_the_run, output, map)
     finally:
         if shared_folder is not None:
             shutil.rmtree(shared_folder, ignore_errors=True)
 
 
-def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_records: dict, output, map) -> SimrResult:
+def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_records: dict, for_the_run: dict,
+         output, map) -> SimrResult:
     """`run`, once the models, the request and the externals are checked. `external_arrays` holds each
     external a metric uses: the array itself, or (for a pool) the path its workers map it from;
-    `external_records` its `{"source", "shape", "hash"}`."""
+    `external_records` its `{"source", "shape", "hash"}`; `for_the_run` the derived arrays computed once
+    for the run, by "drv.<name>".""" 
     returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries = parts
     catalog_file, root = output_paths(output) if output is not None else (None, None)
     if saved and root is None:
@@ -364,7 +367,13 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
         "sim_metrics": (len(models), len(configs), len(sim_entries)),
         "img_metrics": (len(models), len(configs), len(image_configs), len(img_entries)),
     }
-    data = {name: np.empty(shapes[_stage(name)], dtype=object) for name in returned}
+    levels = {f"drv.{entry['name']}": entry["level"] for entry in derived_entries}
+    # A derived array computed once for the run comes back as itself; the rest are indexed like their stage's data.
+    data = {
+        name: for_the_run[name] if levels.get(name) == "run"
+        else np.empty(shapes[levels.get(name) or _stage(name)], dtype=object)
+        for name in returned
+    }
     metric_values = {stage: np.full(shapes[stage], None, dtype=object) for stage in ("sim_metrics", "img_metrics")}
     status = {stage: np.empty(shape, dtype=object) for stage, shape in shapes.items()}
     seconds = {stage: np.zeros(shape) for stage, shape in shapes.items()}
@@ -378,7 +387,8 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
     tasks = [
         _ModelTask(row=r[0], model_id=ids[r[0]], params=models[r[0]], configs=configs,
                    image_configs=image_configs, returned=returned, saved=saved,
-                   sim_metric_configs=sim_entries, img_metric_configs=img_entries, externals=external_arrays,
+                   sim_metric_configs=sim_entries, img_metric_configs=img_entries,
+                   derived_configs=derived_entries, externals=external_arrays,
                    folder=root / f"model_{ids[r[0]]}" if root is not None else None, versions=versions)
         for r in rows
     ]
@@ -388,6 +398,8 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
         for task_rows, outcome in zip(rows, map(_run_model, tasks)):
             for m in task_rows:
                 for item in returned:
+                    if levels.get(item) == "run":
+                        continue  # already whole: the same array for every model
                     for index, value in np.ndenumerate(outcome["data"][item]):
                         data[item][(m, *index)] = value  # cell by cell: numpy would try to merge equal-shape arrays
                 for stage in metric_values:
@@ -491,6 +503,7 @@ class _ModelTask:
     saved: list[str]
     sim_metric_configs: list[dict]
     img_metric_configs: list[dict]
+    derived_configs: list[dict]  # every derived entry, in order; those with level "sim" or "img" are computed here
     externals: dict  # the externals the metrics use, by key: the array, or (in a pool) the path to map it from
     folder: Path | None  # the model's folder, when the output is a folder
     versions: dict | None
@@ -511,8 +524,12 @@ def _run_model(task: _ModelTask) -> dict:
         "sim_metrics": (len(task.configs), len(task.sim_metric_configs)),
         "img_metrics": (len(task.configs), len(task.image_configs), len(task.img_metric_configs)),
     }
+    levels = {f"drv.{entry['name']}": entry["level"] for entry in task.derived_configs}
+    sim_derived = [entry for entry in task.derived_configs if entry["level"] == "sim"]
+    img_derived = [entry for entry in task.derived_configs if entry["level"] == "img"]
     outcome = {
-        "data": {item: np.empty(shapes[_stage(item)], dtype=object) for item in task.returned},
+        "data": {item: np.empty(shapes[levels.get(item) or _stage(item)], dtype=object)
+                 for item in task.returned if levels.get(item) != "run"},
         "metrics": {stage: np.full(shapes[stage], None, dtype=object) for stage in ("sim_metrics", "img_metrics")},
         "status": {stage: np.empty(shape, dtype=object) for stage, shape in shapes.items()},
         "seconds": {stage: np.zeros(shape) for stage, shape in shapes.items()},
@@ -521,12 +538,13 @@ def _run_model(task: _ModelTask) -> dict:
     externals = _open_externals(task.externals)
     sim_returned = [item for item in task.returned if _stage(item) == "sim"]
     sim_saved = [item for item in task.saved if _stage(item) == "sim"]
+    # What the metrics, and the derived entries computed here, need in memory
     metric_sim_needs = [
-        name for entry in task.sim_metric_configs + task.img_metric_configs for name in entry["inputs"]
-        if name in SIM_DATA
+        name for entry in task.sim_metric_configs + task.img_metric_configs + sim_derived + img_derived
+        for name in entry["inputs"] if name in SIM_DATA
     ]
     metric_image_needs = [
-        name for entry in task.img_metric_configs for name in entry["inputs"] if name in IMAGE_DATA
+        name for entry in task.img_metric_configs + img_derived for name in entry["inputs"] if name in IMAGE_DATA
     ]
     image_items = list(dict.fromkeys(
         [item for item in task.returned + task.saved if _stage(item) == "img"] + metric_image_needs
@@ -578,14 +596,22 @@ def _run_model(task: _ModelTask) -> dict:
         if to_save:  # errors while writing aren't caught: they stop the run
             arrays = {item: values[item] for item in to_save if item != "sim.timing"}
             _save_simulation(folder, record, name, config, arrays, values.get("sim.timing"), task.versions)
-        if not sim_returned and not sim_saved and not image_items and not task.sim_metric_configs:
+        if not sim_returned and not sim_saved and not image_items and not task.sim_metric_configs \
+                and not sim_derived:
             outcome["status"]["sim"][s] = "empty"  # the request asked for nothing, so there was nothing to do
         else:
             outcome["status"]["sim"][s] = "reused" if stored and not computed else "ran"  # reused: nothing computed
         outcome["seconds"]["sim"][s] = time.perf_counter() - start
+        # Derived entries made from this simulation's items, in order; a failure is that entry's alone,
+        # and reaches only what uses it
+        sim_made, sim_failed = {}, {}
+        for entry in sim_derived:
+            _derive(task, entry, (externals, sim_made, values), sim_made, sim_failed, f"simulator {s}")
+        for item in task.returned:
+            if levels.get(item) == "sim":
+                outcome["data"][item][s] = sim_made.get(item)
         for k, entry in enumerate(task.sim_metric_configs):
-            arrays = [externals[name] if name in externals else values[name] for name in entry["inputs"]]
-            _run_metric(task, entry, arrays,
+            _run_metric(task, entry, (externals, sim_made, values), sim_failed,
                         outcome, "sim_metrics", (s, k), f"simulator {s}, sim_metrics[{k}]")
         for i, image_config in enumerate(task.image_configs):
             if not image_items:
@@ -616,24 +642,48 @@ def _run_model(task: _ModelTask) -> dict:
                 _save_images(folder, record, image_name(i), image_config, name, arrays)
             outcome["status"]["img"][s, i] = "ran" if image_computed else "reused"
             outcome["seconds"]["img"][s, i] = time.perf_counter() - start
+            img_made, img_failed = {}, dict(sim_failed)
+            sources = (externals, img_made, sim_made, made, values)
+            for entry in img_derived:
+                _derive(task, entry, sources, img_made, img_failed, f"simulator {s}, image {i}")
+            for item in task.returned:
+                if levels.get(item) == "img":
+                    outcome["data"][item][s, i] = img_made.get(item)
             for k, entry in enumerate(task.img_metric_configs):
-                arrays = [
-                    externals[name] if name in externals
-                    else made[name] if name in IMAGE_DATA else values[name]
-                    for name in entry["inputs"]
-                ]
-                _run_metric(task, entry, arrays, outcome, "img_metrics", (s, i, k),
+                _run_metric(task, entry, sources, img_failed, outcome, "img_metrics", (s, i, k),
                             f"simulator {s}, image {i}, img_metrics[{k}]")
     return outcome
 
 
-def _run_metric(task: "_ModelTask", entry: dict, arrays: list, outcome: dict, stage: str,
+def _derive(task: "_ModelTask", entry: dict, sources: tuple, made: dict, failed: dict, where: str) -> None:
+    """One derived entry for one simulation or image: run its method on its inputs (each found in the
+    first of `sources` that has it) and keep the array in `made` under "drv.<name>". A failure is
+    logged and recorded in `failed` (name -> message); whatever uses the entry then fails in turn."""
+    key = f"drv.{entry['name']}"
+    try:
+        for name in entry["inputs"]:
+            if name in failed:
+                raise ValueError(f"its input {name} failed ({failed[name]})")
+        arrays = [next(source[name] for source in sources if name in source) for name in entry["inputs"]]
+        made[key] = derived.compute(entry["method"], arrays, entry["params"])
+    except Exception as error:
+        logger.exception("model %d (id %s), %s, derived %r (%s) failed", task.row, task.model_id, where,
+                         entry["name"], entry["method"])
+        failed[key] = f"{type(error).__name__}: {error}"
+
+
+def _run_metric(task: "_ModelTask", entry: dict, sources: tuple, failed: dict, outcome: dict, stage: str,
                 index: tuple, where: str) -> None:
-    """One metric cell: run the entry's method on its input arrays and record the value, status, time and
-    error. A failure (the method raised, or its value failed `metrics.compute`'s checks) is this cell's
-    alone: it's logged, and the simulation, image and other metrics move on."""
+    """One metric cell: run the entry's method on its inputs (each found in the first of `sources` that
+    has it) and record the value, status, time and error. A failure (the method raised, its value failed
+    `metrics.compute`'s checks, or a derived entry it uses is in `failed`) is this cell's alone: it's
+    logged, and the simulation, image and other metrics move on."""
     start = time.perf_counter()
     try:
+        for name in entry["inputs"]:
+            if name in failed:
+                raise ValueError(f"its input {name} failed ({failed[name]})")
+        arrays = [next(source[name] for source in sources if name in source) for name in entry["inputs"]]
         value = metrics.compute(entry["method"], arrays, select=entry["select"], params=entry["params"])
     except Exception as error:
         logger.exception("model %d (id %s), %s (%s) failed", task.row, task.model_id, where, entry["method"])
@@ -1003,11 +1053,11 @@ def _read_request(
     _reject_unknown("request", request, REQUEST_KEYS)
     run_section = request.get("run", {})
     _reject_unknown("run", run_section, RUN_KEYS)
-    returned, saved = (_names(run_section, key) for key in ("return", "save"))
     configs = _stage_configs(request, "simulator", SimulatorConfig)
     image_configs = _stage_configs(request, "image", ImageConfig)
     derived_entries = _derived_entries(request)
     made = {f"drv.{entry['name']}": entry for entry in derived_entries}
+    returned, saved = _names(run_section, "return", list(made)), _names(run_section, "save", [])
     sim_entries = _metric_entries(request, "sim_metrics", made)
     img_entries = _metric_entries(request, "img_metrics", made)
     return returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries
@@ -1076,12 +1126,6 @@ def _derived_entries(request: dict) -> list[dict]:
         unknown = [key for key in params if key not in method.settings]
         if unknown:
             raise ValueError(f"{where}.params: unknown settings {unknown}. {method.name} has: {list(method.settings)}")
-        if level > 0:
-            raise NotImplementedError(
-                f"{where} ({name!r}) is made from sim.* or img.* items, so it would be computed for every "
-                f"simulation or image, which simr can't do yet (the next step). Entries made only from "
-                f"externals work now"
-            )
         made[f"drv.{name}"] = {"name": name, "method": method.name, "inputs": list(inputs),
                                "params": {**method.settings, **params}, "level": DERIVED_LEVELS[level]}
         filled.append(made[f"drv.{name}"])
@@ -1168,6 +1212,11 @@ def _metric_entry(where: str, entry, section: str, made: dict[str, dict]) -> dic
                 raise ValueError(
                     f"{where}.inputs[{j}]: {name!r} isn't an entry in the derived section, which has {list(made)}"
                 )
+            if section == "sim_metrics" and made[name]["level"] == "img":
+                raise ValueError(
+                    f"{where}.inputs[{j}]: {name} is made from img.* items, so it belongs in img_metrics, "
+                    f"not sim_metrics"
+                )
             kind = derived.METHODS[made[name]["method"]].output
         elif kind is None:
             if not isinstance(name, str) or name.startswith(STAGE_PREFIXES):
@@ -1180,11 +1229,13 @@ def _metric_entry(where: str, entry, section: str, made: dict[str, dict]) -> dic
             raise ValueError(
                 f"{where}.inputs[{j}]: {method.name} takes a {kinds[j]} here, but {name} is a {kind}"
             )
-    if not any(name in SIM_INPUT_KINDS or name in IMAGE_DATA for name in inputs):
+    from_model = [made[name]["level"] if name in made else "img" if name in IMAGE_DATA
+                  else "sim" if name in SIM_INPUT_KINDS else "run" for name in inputs]  # an external: "run"
+    if all(level == "run" for level in from_model):
         raise ValueError(
             f"{where}: no simr item among the inputs {list(inputs)}, so the value wouldn't depend on the model"
         )
-    if section == "img_metrics" and not any(name in IMAGE_DATA for name in inputs):
+    if section == "img_metrics" and "img" not in from_model:
         raise ValueError(f"{where}: no img.* input; a metric that uses only sim.* items belongs in sim_metrics")
     select = entry.get("select")
     if select is not None:
@@ -1441,11 +1492,15 @@ def _open_externals(externals: dict) -> dict[str, np.ndarray]:
     return opened
 
 
-def _names(run_section: dict, key: str) -> list[str]:
+def _names(run_section: dict, key: str, derived_names: list[str]) -> list[str]:
+    """run.return's or run.save's names, checked. `derived_names` are the "drv.<name>" it may also hold
+    (the derived entries for run.return; none for run.save: derived arrays aren't saved yet)."""
     names = run_section.get(key, [])
     if isinstance(names, str):
         raise ValueError(f'run.{key} must be a list of names, e.g. ["{names}"]')
-    known = [*SIM_DATA, *IMAGE_DATA]
+    if key == "save" and any(isinstance(name, str) and name.startswith("drv.") for name in names):
+        raise ValueError("run.save: derived arrays can't be saved yet (a later step); run.return hands them back")
+    known = [*SIM_DATA, *IMAGE_DATA, *derived_names]
     unknown = [name for name in names if name not in known]
     if unknown:
         raise ValueError(f"unknown names in run.{key}: {unknown}. Known: {known}")

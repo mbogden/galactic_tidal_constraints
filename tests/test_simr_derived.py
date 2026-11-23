@@ -165,10 +165,133 @@ def test_a_derived_image_a_metric_uses_must_match_the_image_entries():
         simr.run(PARAMS, request(entries, img_metrics=[metric]), externals={"test_ext_small": small})
 
 
-def test_entries_made_from_simulated_data_are_the_next_step():
-    entry = {"name": "model_win", "method": "recent_approach_cosine_window", "inputs": ["sim.search_orbit"]}
-    with pytest.raises(NotImplementedError, match=r"derived\[0\] \('model_win'\) is made from sim.\* or img.\* items"):
-        simr.run(PARAMS, request([entry]))
+# --- Step 4d: entries made from simulated data, and run.return ------------------------------------------
+
+TIDAL = {"name": "tidal", "method": "difference_weights", "inputs": ["test_ext_image", "img.unperturbed"]}
+MODEL_WIN = {"name": "model_win", "method": "recent_approach_cosine_window", "inputs": ["sim.search_orbit"]}
+# The first model with its velocity reversed and tripled: its only pass is too long ago for the window to fit.
+APPROACHING = PARAMS.copy()
+APPROACHING[3:6] *= -3
+
+
+def returning(request_, *names):
+    return {**request_, "run": {"return": list(names)}}
+
+
+def test_a_per_image_entry_weighs_an_image_metric_with_the_models_own_unperturbed_image():
+    metric = {"method": "absolute_difference", "inputs": ["test_ext_image", "img.model", "drv.tidal"]}
+    result = simr.run(MODELS, returning(request([TIDAL], img_metrics=[metric]),
+                                        "img.model", "img.unperturbed", "drv.tidal"),
+                      externals={"test_ext_image": TARGET_IMAGE})
+    assert result.derived_configs[0]["level"] == "img" and "hash" not in result.derived_configs[0]
+    assert result.data["drv.tidal"].shape == (2, 1, 1)  # indexed like the images it's made from
+    for m in range(2):
+        model, unperturbed = result.data["img.model"][m, 0, 0], result.data["img.unperturbed"][m, 0, 0]
+        weights = derived.difference_weights(TARGET_IMAGE, unperturbed)
+        assert (result.data["drv.tidal"][m, 0, 0] == weights).all()
+        assert result.img_metrics[m, 0, 0, 0] == metrics.absolute_difference(TARGET_IMAGE, model, weights)
+
+
+def test_a_per_simulation_entry_comes_back_indexed_like_the_simulations():
+    result = simr.run(MODELS, returning(request([MODEL_WIN]), "sim.search_orbit", "drv.model_win"))
+    assert result.derived_configs[0]["level"] == "sim"
+    assert result.data["drv.model_win"].shape == (2, 1)
+    for m in range(2):
+        path = result.data["sim.search_orbit"][m, 0]
+        assert (result.data["drv.model_win"][m, 0] == derived.recent_approach_cosine_window(path)).all()
+    assert result.status["sim"].tolist() == [["ran"], ["ran"]]  # computed even with no metric using it
+
+
+def test_a_run_level_entry_comes_back_as_the_one_array():
+    from concurrent.futures import ProcessPoolExecutor
+
+    request_ = returning(request([WINDOW_ENTRY], [ORBIT_METRIC]), "drv.target_win")
+    solo = simr.run(MODELS, request_, externals={"test_ext_orbit": TARGET})
+    window = derived.recent_approach_cosine_window(TARGET)
+    assert solo.data["drv.target_win"].shape == window.shape and (solo.data["drv.target_win"] == window).all()
+    with ProcessPoolExecutor(max_workers=2) as pool:
+        pooled = simr.run(MODELS, request_, externals={"test_ext_orbit": TARGET}, map=pool.map)
+    assert (pooled.data["drv.target_win"] == window).all()
+
+
+def test_entries_chain_across_levels_and_serve_as_data():
+    entries = [
+        {"name": "target_edges", "method": "detect_edges", "inputs": ["test_ext_image"]},  # once
+        {"name": "model_edges", "method": "detect_edges", "inputs": ["img.model"]},  # per image
+        TIDAL,
+        {"name": "tidal_edges", "method": "detect_edges", "inputs": ["drv.tidal"]},  # per image, from an entry above
+    ]
+    metric = {"method": "absolute_difference", "inputs": ["drv.target_edges", "drv.model_edges", "drv.tidal_edges"]}
+    result = simr.run(PARAMS, returning(request(entries, img_metrics=[metric]), "img.model", "img.unperturbed"),
+                      externals={"test_ext_image": TARGET_IMAGE})
+    assert [entry["level"] for entry in result.derived_configs] == ["run", "img", "img", "img"]
+    model, unperturbed = result.data["img.model"][0, 0, 0], result.data["img.unperturbed"][0, 0, 0]
+    expected = metrics.absolute_difference(
+        derived.detect_edges(TARGET_IMAGE), derived.detect_edges(model),
+        derived.detect_edges(derived.difference_weights(TARGET_IMAGE, unperturbed)),
+    )
+    assert result.img_metrics[0, 0, 0, 0] == expected
+
+
+def test_per_model_entries_match_through_a_pool():
+    from concurrent.futures import ProcessPoolExecutor
+
+    metric = {"method": "absolute_difference", "inputs": ["test_ext_image", "img.model", "drv.tidal"]}
+    request_ = returning(request([TIDAL], img_metrics=[metric]), "drv.tidal")
+    solo = simr.run(MODELS, request_, externals={"test_ext_image": TARGET_IMAGE})
+    with ProcessPoolExecutor(max_workers=2) as pool:
+        pooled = simr.run(MODELS, request_, externals={"test_ext_image": TARGET_IMAGE}, map=pool.map)
+    assert pooled.img_metrics.tolist() == solo.img_metrics.tolist()
+    for m in range(2):
+        assert (pooled.data["drv.tidal"][m, 0, 0] == solo.data["drv.tidal"][m, 0, 0]).all()
+
+
+def test_a_failed_entry_fails_only_what_uses_it_for_that_model():
+    metrics_ = [
+        {"method": "orbit_time_error", "inputs": ["sim.search_orbit", "sim.search_orbit", "drv.model_win"]},
+        {"method": "closest_approach", "inputs": ["sim.search_orbit"], "select": "distance"},
+    ]
+    result = simr.run(np.stack([PARAMS, APPROACHING]), returning(request([MODEL_WIN], metrics_), "drv.model_win"))
+    assert result.status["sim"].tolist() == [["ran"], ["ran"]]  # the simulations are unaffected
+    assert result.data["drv.model_win"][0, 0] is not None and result.data["drv.model_win"][1, 0] is None
+    assert result.status["sim_metrics"][1, 0].tolist() == ["failed", "ran"]  # only the metric that uses it
+    assert "its input drv.model_win failed (ValueError: the window would start" in result.errors["sim_metrics"][1, 0, 0]
+
+
+@pytest.mark.parametrize(
+    ("section", "metric", "message"),
+    [
+        ("sim_metrics", {"method": "absolute_difference", "inputs": ["test_ext_image", "drv.tidal"]},
+         "drv.tidal is made from img.* items, so it belongs in img_metrics, not sim_metrics"),
+        ("img_metrics", {"method": "absolute_difference", "inputs": ["test_ext_image", "drv.target_edges"]},
+         "no simr item among the inputs"),  # both are fixed for the run: nothing depends on the model
+        ("img_metrics", {"method": "orbit_time_error",
+                         "inputs": ["test_ext_orbit", "sim.search_orbit", "drv.model_win"]},
+         "no img.* input; a metric that uses only sim.* items belongs in sim_metrics"),
+    ],
+)
+def test_a_metrics_level_follows_what_its_derived_inputs_are_made_from(section, metric, message):
+    entries = [TIDAL, MODEL_WIN, {"name": "target_edges", "method": "detect_edges", "inputs": ["test_ext_image"]}]
+    with pytest.raises(ValueError, match=message.replace("*", r"\*")):
+        simr.run(PARAMS, {"simulator": SMALL, "derived": entries, section: [metric]},
+                 externals={"test_ext_image": TARGET_IMAGE, "test_ext_orbit": TARGET})
+
+
+def test_a_metric_made_only_from_per_model_derived_entries_is_allowed():
+    entries = [{"name": "model_edges", "method": "detect_edges", "inputs": ["img.model"]},
+               {"name": "plain_edges", "method": "detect_edges", "inputs": ["img.unperturbed"]}]
+    metric = {"method": "absolute_difference", "inputs": ["drv.model_edges", "drv.plain_edges"]}
+    result = simr.run(PARAMS, request(entries, img_metrics=[metric]))
+    assert result.status["img_metrics"].tolist() == [[[["ran"]]]]
+    assert 0 < result.img_metrics[0, 0, 0, 0] <= 1
+
+
+def test_derived_names_in_run_return_and_run_save_are_checked():
+    with pytest.raises(ValueError, match=r"unknown names in run.return: \['drv.nope'\]"):
+        simr.run(PARAMS, returning(request([WINDOW_ENTRY]), "drv.nope"), externals={"test_ext_orbit": TARGET})
+    with pytest.raises(ValueError, match="run.save: derived arrays can't be saved yet"):
+        simr.run(PARAMS, {**request([WINDOW_ENTRY]), "run": {"save": ["drv.target_win"]}},
+                 externals={"test_ext_orbit": TARGET})
 
 
 def test_an_externals_key_cannot_start_with_drv():
