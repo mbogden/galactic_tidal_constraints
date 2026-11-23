@@ -239,6 +239,78 @@ def test_mpi_mode_without_mpirun_exits_1(tmp_path, files):
     assert not (tmp_path / "runs").exists()  # nothing was written
 
 
+# --- Externals (MDRN-4 step 3) ------------------------------------------------------------------------
+
+PCA_CONFIG = {"simulator": SMALL,
+              "sim_metrics": [{"method": "pca_difference", "inputs": ["tng_particles", "sim.particles"]}]}
+TARGET = np.random.default_rng(5).normal(size=(30, 6)).astype(np.float32)
+
+
+def externals_args(tmp_path, entries, name="externals.json", folder="."):
+    """Write an externals JSON file in tmp_path/folder; return the flag and its path."""
+    where = tmp_path / folder
+    where.mkdir(parents=True, exist_ok=True)
+    (where / name).write_text(json.dumps(entries))
+    return ["--externals", str(where / name)]
+
+
+def test_externals_from_a_json_file_relative_to_it(tmp_path, files, monkeypatch):
+    (tmp_path / "exp" / "targets").mkdir(parents=True)
+    np.save(tmp_path / "exp" / "targets" / "particles.npy", TARGET)
+    monkeypatch.chdir(tmp_path)  # a different folder than the JSON file's, so "relative to the file" matters
+    args = files(config=PCA_CONFIG) + externals_args(tmp_path, {"tng_particles": "targets/particles.npy"},
+                                                     folder="exp")
+    assert main(args) == 0
+    [record] = simr.load_catalog(tmp_path / "runs")["runs"]
+    assert record["externals"] == {"tng_particles": {
+        "source": str(tmp_path / "exp" / "targets" / "particles.npy"), "shape": [30, 6],
+        "hash": simr.array_hash(TARGET)}}
+    assert record["status"]["sim_metrics"] == [[["ran"]]]
+
+
+def test_externals_with_an_absolute_path_and_an_expected_hash(tmp_path, files):
+    np.save(tmp_path / "particles.npy", TARGET)
+    entry = {"path": str(tmp_path / "particles.npy"), "hash": simr.array_hash(TARGET)}
+    assert main(files(config=PCA_CONFIG) + externals_args(tmp_path, {"tng_particles": entry})) == 0
+
+
+def test_externals_in_local_mode_are_shared(tmp_path, files, caplog):
+    np.save(tmp_path / "particles.npy", TARGET.astype(np.float64))  # not float32: workers get a shared copy
+    args = files(models=(MODEL, MODEL.replace("301.0", "302.0")), config=PCA_CONFIG)
+    args += externals_args(tmp_path, {"tng_particles": "particles.npy"}) + ["--mode", "local", "--workers", "2"]
+    with caplog.at_level("INFO"):
+        assert main(args) == 0
+    assert "shared with the workers through" in caplog.text
+    [record] = simr.load_catalog(tmp_path / "runs")["runs"]
+    assert record["status"]["sim_metrics"] == [[["ran"]], [["ran"]]]
+
+
+@pytest.mark.parametrize(
+    ("entries", "message"),
+    [
+        ({"tng_particles": "missing.npy"}, r"externals\['tng_particles'\]: can't load .*missing.npy"),
+        ({"tng_particles": {"path": "particles.npy", "hash": "0" * 64}}, "not the expected 0000"),
+        ({"tng_particles": 3}, r"'tng_particles' must be a .npy path or \{\"path\""),
+        ({"tng_particles": {"hash": "abc"}}, r"'tng_particles' must be a .npy path or \{\"path\""),
+        (["particles.npy"], "must hold a JSON object"),
+        ({}, "'tng_particles' isn't a simr item, so it must be a key in externals"),
+    ],
+)
+def test_bad_externals_exit_1_with_a_short_message(tmp_path, files, caplog, entries, message):
+    np.save(tmp_path / "particles.npy", TARGET)
+    assert main(files(config=PCA_CONFIG) + externals_args(tmp_path, entries)) == 1
+    [error] = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert error.exc_info is None
+    assert re.search(message, error.getMessage())
+    assert not (tmp_path / "runs").exists()  # stopped before anything was written
+
+
+def test_externals_file_that_isnt_json_exits_1(tmp_path, files, caplog):
+    (tmp_path / "externals.json").write_text("{not json")
+    assert main(files(config=PCA_CONFIG) + ["--externals", str(tmp_path / "externals.json")]) == 1
+    assert "isn't valid JSON" in caplog.text
+
+
 def test_workers_isnt_for_mpi_mode(files, capsys):
     with pytest.raises(SystemExit):
         main(files() + ["--mode", "mpi", "--workers", "2"])

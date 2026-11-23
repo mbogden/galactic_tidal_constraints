@@ -340,7 +340,7 @@ A run without `save` writes only the catalog: its models and its record, no mode
 ## The command line
 ```bash
 python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--config config.json] \
-    [--mode solo|local|mpi] [--workers N] [--log-level INFO]
+    [--externals externals.json] [--mode solo|local|mpi] [--workers N] [--log-level INFO]
 mpirun -n N python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi ...
 ```
 
@@ -349,6 +349,7 @@ mpirun -n N python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode m
 | `--models` | Required. The models file (below) |
 | `--output` | Required: a folder or a `.json` catalog file, so every run is recorded |
 | `--config` | Optional. The request as JSON, listing only what differs from the defaults; without it, one default simulator entry. `run.return` is ignored, with a warning if it names anything (nothing comes back in memory), so one config works in a notebook and here |
+| `--externals` | Optional. A JSON file mapping each external key a metric names to a `.npy` path, or to `{"path": ..., "hash": ...}`; relative paths are relative to this file's folder. See Externals in [configuration.md](../configuration.md). With `--mode local` or `mpi`, every worker must be on the node that runs the command |
 | `--mode` | `solo` (the default): one process. `local`: a pool of processes on this machine. `mpi`: MPI ranks, launched as above: rank 0 runs the command, the other N-1 are workers. Without `mpi4py`, with one rank, or without `-m mpi4py.futures` it stops with exit code 1 |
 | `--workers` | With `--mode local`: how many processes (default: the CPUs this job may use) |
 | `--log-level` | `DEBUG`, `INFO` (the default), `WARNING` or `ERROR` |

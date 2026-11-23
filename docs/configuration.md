@@ -13,7 +13,7 @@ A run has two inputs:
 
 Either can change while the other stays fixed. There are no command-line overrides: the config file is
 the whole run, and a small change is a new config file. Flags that don't change results stay outside
-it: `--models`, `--output`, `--mode`, `--workers` and `--log-level`
+it: `--models`, `--output`, `--externals`, `--mode`, `--workers` and `--log-level`
 ([modules/simr.md](modules/simr.md#the-command-line)).
 
 ## The sections
@@ -120,7 +120,19 @@ on disk; every worker maps that one copy read-only, and `simr` removes it when t
 - If a run is killed outright, its `simr_externals_*` folder can be left behind in `/dev/shm`; it's
   safe to delete.
 
-Externals can't be given on the command line yet.
+**On the command line**, `--externals externals.json` gives the same dict as a JSON file. Each key maps
+to a `.npy` path, or to a path with its expected hash:
+
+```json
+{
+  "tng_particles": "targets/tng_123_particles.npy",
+  "tng_image": {"path": "targets/tng_123_image.npy", "hash": "7a3be7f6..."}
+}
+```
+
+A relative path is relative to the JSON file's folder, not to where the command runs, so an experiment
+folder holding its configs and targets can be moved or copied to Babbage whole. The run records the
+full path it used. Any problem exits with code 1 before anything is simulated or written.
 
 ## Lists and combinations
 - **Every model runs on every simulator entry, and every simulation is imaged with every image entry.**
