@@ -1256,6 +1256,79 @@ def test_externals_come_back_the_same_through_a_pool():
     assert pooled.sim_metrics.tolist() == solo.sim_metrics.tolist()
 
 
+def _shared_folders():
+    root = simr.SHARED_MEMORY if simr.SHARED_MEMORY.is_dir() else Path(__import__("tempfile").gettempdir())
+    return sorted(root.glob("simr_externals_*"))
+
+
+def test_a_pool_shares_one_copy_and_removes_it_when_the_run_ends(caplog):
+    from concurrent.futures import ProcessPoolExecutor
+
+    before = _shared_folders()
+    with ProcessPoolExecutor(max_workers=2) as pool, caplog.at_level("INFO"):
+        simr.run(MODELS, externals_request(), externals={"tng_particles": EXTERNAL_PARTICLES}, map=pool.map)
+    assert "externals ['tng_particles'] shared with the workers through" in caplog.text
+    assert _shared_folders() == before  # the run's folder is gone
+
+
+def test_the_shared_copy_is_removed_when_the_run_fails(tmp_path):
+    from concurrent.futures import ProcessPoolExecutor
+
+    before = _shared_folders()
+    with ProcessPoolExecutor(max_workers=2) as pool, pytest.raises(ValueError, match="needs an output folder"):
+        simr.run(MODELS, {**externals_request(), "run": {"save": ["sim.orbit"]}},
+                 externals={"tng_particles": EXTERNAL_PARTICLES}, map=pool.map)
+    assert _shared_folders() == before
+
+
+def test_a_solo_run_shares_nothing(caplog):
+    with caplog.at_level("INFO"):
+        simr.run(PARAMS, externals_request(), externals={"tng_particles": EXTERNAL_PARTICLES})
+    assert "shared with the workers" not in caplog.text
+
+
+def test_a_float32_file_is_mapped_as_it_is_and_others_get_a_shared_copy(tmp_path):
+    np.save(tmp_path / "f32.npy", EXTERNAL_PARTICLES.astype(np.float32))
+    np.save(tmp_path / "f64.npy", EXTERNAL_PARTICLES)
+    uses = {"a": ("particles", "here"), "b": ("particles", "here"), "c": ("particles", "here")}
+    arrays, files = simr._read_externals(
+        {"a": tmp_path / "f32.npy", "b": tmp_path / "f64.npy", "c": EXTERNAL_PARTICLES}, uses, []
+    )
+    assert files == {"a": tmp_path / "f32.npy", "b": None, "c": None}
+    paths, folder = simr._share_externals(arrays, files)
+    try:
+        assert paths["a"] == str(tmp_path / "f32.npy")  # the caller's own file: no copy
+        assert Path(paths["b"]).parent == Path(paths["c"]).parent == folder
+        opened = simr._open_externals(paths)
+        for key in uses:
+            assert opened[key].dtype == np.float32 and not opened[key].flags.writeable
+            assert (opened[key] == EXTERNAL_PARTICLES.astype(np.float32)).all()
+        assert simr._open_externals(paths)["b"] is opened["b"]  # mapped once per process
+        simr._open_externals({"a": paths["a"]})
+        assert len(simr._OPEN_EXTERNALS) == 1  # only the latest task's are kept
+    finally:
+        simr._OPEN_EXTERNALS.clear()
+        __import__("shutil").rmtree(folder)
+    only_file, no_folder = simr._share_externals({"a": arrays["a"]}, {"a": files["a"]})
+    assert no_folder is None and only_file == {"a": str(tmp_path / "f32.npy")}
+
+
+def test_too_little_shared_memory_stops_the_run_before_anything_is_written(monkeypatch):
+    from collections import namedtuple
+    from concurrent.futures import ProcessPoolExecutor
+
+    monkeypatch.setattr(simr.shutil, "disk_usage", lambda path: namedtuple("usage", "total used free")(100, 90, 10))
+    before = _shared_folders()
+    with ProcessPoolExecutor(max_workers=2) as pool, pytest.raises(ValueError, match="need 0.0 MB in .* but 0.0 MB is free"):
+        simr.run(MODELS, externals_request(), externals={"tng_particles": EXTERNAL_PARTICLES}, map=pool.map)
+    assert _shared_folders() == before
+
+
+def test_a_worker_that_cannot_see_the_shared_copy_says_why():
+    with pytest.raises(simr.SimrRunError, match="every worker must run on the node that started the run"):
+        simr._open_externals({"tng_particles": "/dev/shm/simr_externals_gone/external_0.npy"})
+
+
 def test_a_metric_gets_its_external_read_only_and_the_callers_array_is_untouched(monkeypatch):
     from dataclasses import replace
 

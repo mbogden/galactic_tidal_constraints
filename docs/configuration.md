@@ -97,6 +97,22 @@ result = simr.run(models, config, externals={"tng_particles": array})
 - **Every entry needs at least one `sim.*` or `img.*` input**, or its value wouldn't depend on the model.
 - **Metrics get externals read-only**, so a method can't change a target by accident.
 
+**Parallel runs share externals on one node.** With a pool (`map=pool.map`), the workers don't each get
+a copy. `simr` writes each external once to `/dev/shm`, a folder that lives in the node's memory, not
+on disk; every worker maps that one copy read-only, and `simr` removes it when the run ends. So:
+
+- **One node only.** `/dev/shm` belongs to one node, so a pool that uses externals must have all its
+  workers on the node that started the run. A worker elsewhere stops the run with a message saying so.
+- **Memory:** the node holds each external once, however many workers use it.
+- **A `float32` `.npy` given by path is mapped from your own file**, with no copy at all. Saving targets
+  as `float32` avoids the copy; a file of another type gets a converted copy in `/dev/shm`.
+- **A run without a pool** uses the arrays straight from memory and writes nothing.
+- **In Docker**, `/dev/shm` is 64 MB unless the container is started with a larger `--shm-size` (e.g.
+  `--shm-size=4g`). Too little room stops the run before anything is simulated. Apptainer uses the
+  node's own `/dev/shm` (on Babbage, half the node's memory).
+- If a run is killed outright, its `simr_externals_*` folder can be left behind in `/dev/shm`; it's
+  safe to delete.
+
 Externals can't be given on the command line yet.
 
 ## Lists and combinations

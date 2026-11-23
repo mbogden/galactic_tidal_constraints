@@ -85,10 +85,14 @@ fails on its own, the same way, and leaves its simulation alone; a failed simula
 output adds them to its record in catalog.json.
 """
 
+import builtins
 import json
 import logging
 import os
+import shutil
+import socket
 import subprocess
+import tempfile
 import time
 import types
 import typing
@@ -270,6 +274,9 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
             of every image entry. A problem with any of them, or a metric input naming a key that isn't
             here, is a ValueError. A key can't start with "sim." or "img."; keys no metric uses are
             ignored, with one log message. Metrics get each external read-only.
+            With a pool, the workers share one copy of each external in the node's memory instead of
+            getting a copy each (see `_share_externals`), so a pool that uses externals must have all
+            its workers on the node that started the run.
 
     Returns:
         A `SimrResult`; see its docstring.
@@ -281,10 +288,24 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     lists). Metric values aren't saved yet; saving them is a later step.
     """
     models = _check_models(models)
-    returned, saved, configs, image_configs, sim_entries, img_entries = _read_request(request)
-    external_arrays = _read_externals(
-        externals, _external_uses({"sim_metrics": sim_entries, "img_metrics": img_entries}), image_configs
+    parts = _read_request(request)
+    arrays, files = _read_externals(
+        externals, _external_uses({"sim_metrics": parts[4], "img_metrics": parts[5]}), image_configs=parts[3]
     )
+    shared_folder = None
+    if arrays and map is not builtins.map:  # a pool: its workers share one copy of each external
+        arrays, shared_folder = _share_externals(arrays, files)
+    try:
+        return _run(models, parts, arrays, output, map)
+    finally:
+        if shared_folder is not None:
+            shutil.rmtree(shared_folder, ignore_errors=True)
+
+
+def _run(models: np.ndarray, parts: tuple, external_arrays: dict, output, map) -> SimrResult:
+    """`run`, once the models, the request and the externals are checked. `external_arrays` holds each
+    external a metric uses: the array itself, or (for a pool) the path its workers map it from."""
+    returned, saved, configs, image_configs, sim_entries, img_entries = parts
     catalog_file, root = output_paths(output) if output is not None else (None, None)
     if saved and root is None:
         where = "no output was given" if output is None else f"{output} is a catalog file, not a folder"
@@ -440,7 +461,7 @@ class _ModelTask:
     saved: list[str]
     sim_metric_configs: list[dict]
     img_metric_configs: list[dict]
-    externals: dict[str, np.ndarray]  # the external arrays the metrics use, by key
+    externals: dict  # the externals the metrics use, by key: the array, or (in a pool) the path to map it from
     folder: Path | None  # the model's folder, when the output is a folder
     versions: dict | None
 
@@ -467,6 +488,7 @@ def _run_model(task: _ModelTask) -> dict:
         "seconds": {stage: np.zeros(shape) for stage, shape in shapes.items()},
         "errors": {stage: np.full(shape, None, dtype=object) for stage, shape in shapes.items()},
     }
+    externals = _open_externals(task.externals)
     sim_returned = [item for item in task.returned if _stage(item) == "sim"]
     sim_saved = [item for item in task.saved if _stage(item) == "sim"]
     metric_sim_needs = [
@@ -532,7 +554,7 @@ def _run_model(task: _ModelTask) -> dict:
             outcome["status"]["sim"][s] = "reused" if stored and not computed else "ran"  # reused: nothing computed
         outcome["seconds"]["sim"][s] = time.perf_counter() - start
         for k, entry in enumerate(task.sim_metric_configs):
-            arrays = [task.externals[name] if name in task.externals else values[name] for name in entry["inputs"]]
+            arrays = [externals[name] if name in externals else values[name] for name in entry["inputs"]]
             _run_metric(task, entry, arrays,
                         outcome, "sim_metrics", (s, k), f"simulator {s}, sim_metrics[{k}]")
         for i, image_config in enumerate(task.image_configs):
@@ -566,7 +588,7 @@ def _run_model(task: _ModelTask) -> dict:
             outcome["seconds"]["img"][s, i] = time.perf_counter() - start
             for k, entry in enumerate(task.img_metric_configs):
                 arrays = [
-                    task.externals[name] if name in task.externals
+                    externals[name] if name in externals
                     else made[name] if name in IMAGE_DATA else values[name]
                     for name in entry["inputs"]
                 ]
@@ -1050,9 +1072,11 @@ def _external_uses(sections: dict[str, list[dict]]) -> dict[str, tuple[str, str]
     return uses
 
 
-def _read_externals(externals, uses: dict[str, tuple[str, str]], image_configs: list) -> dict[str, np.ndarray]:
-    """The external arrays the metrics use, loaded and checked before anything runs: key -> a read-only
-    float32 array. `uses` is `_external_uses`' dict. Raises ValueError for any problem (see `run`)."""
+def _read_externals(externals, uses: dict[str, tuple[str, str]], image_configs: list) -> tuple[dict, dict]:
+    """The external arrays the metrics use, loaded and checked before anything runs. Returns two dicts by
+    key: the read-only float32 array, and the file a pool's workers can map as it is (a float32 .npy the
+    caller gave by path), else None. `uses` is `_external_uses`' dict. Raises ValueError for any problem
+    (see `run`)."""
     if externals is None:
         externals = {}
     if not isinstance(externals, dict):
@@ -1067,9 +1091,9 @@ def _read_externals(externals, uses: dict[str, tuple[str, str]], image_configs: 
     unused = sorted(set(externals) - set(uses))
     if unused:
         logger.info("simr: externals no metric uses, ignored: %s", unused)
-    arrays = {}
+    arrays, files = {}, {}
     for key, (kind, where) in uses.items():
-        array = _external_array(key, externals[key])
+        array, files[key] = _external_array(key, externals[key])
         metrics.check_input(kind, array, f"externals[{key!r}] (used by {where})")
         if kind == "image":
             for i, config in enumerate(image_configs):
@@ -1079,19 +1103,23 @@ def _read_externals(externals, uses: dict[str, tuple[str, str]], image_configs: 
                         f"(height x width), but image[{i}] makes {config.height} x {config.width} images"
                     )
         arrays[key] = array
-    return arrays
+    return arrays, files
 
 
-def _external_array(key: str, value) -> np.ndarray:
-    """One external as a read-only float32 array: `value` itself, or the .npy file it's the path of."""
+def _external_array(key: str, value) -> tuple[np.ndarray, Path | None]:
+    """One external as a read-only float32 array: `value` itself, or the .npy file it's the path of. Also
+    returns that file when it already holds float32, so a pool's workers can map it as it is; else None."""
+    file = None
     if isinstance(value, (str, Path)):
         path = Path(value)
         if not path.is_absolute() or path.suffix != ".npy":
             raise ValueError(f"externals[{key!r}]: a path must be absolute and name a .npy file: {str(value)!r}")
         try:
-            value = np.load(path, allow_pickle=False)
+            value = np.load(path, mmap_mode="r", allow_pickle=False)  # mapped, not read into this process
         except (OSError, ValueError) as error:
             raise ValueError(f"externals[{key!r}]: can't load {path}: {error}") from None
+        if value.dtype == np.float32:
+            file = path
     if not isinstance(value, np.ndarray) or value.dtype.kind not in "fiu":
         got = f"{value.dtype} array" if isinstance(value, np.ndarray) else type(value).__name__
         raise ValueError(f"externals[{key!r}] must be a numeric numpy array or the path of a .npy file: got {got}")
@@ -1100,7 +1128,80 @@ def _external_array(key: str, value) -> np.ndarray:
     if not np.isfinite(array).all():
         raise ValueError(f"externals[{key!r}] holds NaN or inf (as float32)")
     array.flags.writeable = False
-    return array
+    return array, file
+
+
+# Where a pool's workers share externals: a folder that lives in memory, not on disk (Linux). Each node
+# has its own, so sharing through it works only among processes on one node.
+SHARED_MEMORY = Path("/dev/shm")
+
+
+def _share_externals(arrays: dict[str, np.ndarray], files: dict[str, Path | None]) -> tuple[dict, Path | None]:
+    """Put one copy of each external where every worker of a pool on this node can map it, so the tasks
+    carry paths instead of the arrays (which would be copied to a worker once per model).
+
+    An external the caller gave as a float32 .npy file is mapped from that file, with no copy. Every
+    other one is written once to a new folder in `SHARED_MEMORY` (the system's temporary folder, on
+    disk, where there's no /dev/shm). Workers map the files read-only (`_open_externals`), so the
+    node holds each external in memory once, however many workers use it.
+
+    Returns key -> path, and the folder made (None if nothing was written), which `run` removes when
+    the run ends. Raises ValueError, before writing, if the folder's free space is too small.
+    """
+    paths = {key: str(files[key]) for key in arrays if files[key] is not None}
+    to_write = {key: array for key, array in arrays.items() if key not in paths}
+    if not to_write:
+        return paths, None
+    root = SHARED_MEMORY if SHARED_MEMORY.is_dir() else Path(tempfile.gettempdir())
+    needed, free = sum(array.nbytes for array in to_write.values()), shutil.disk_usage(root).free
+    if needed >= free:
+        raise ValueError(
+            f"the externals {sorted(to_write)} need {needed / 2**20:.1f} MB in {root} to be shared with the "
+            f"pool's workers, but {free / 2**20:.1f} MB is free there (in Docker, raise it with --shm-size)"
+        )
+    folder = Path(tempfile.mkdtemp(prefix="simr_externals_", dir=root))
+    try:
+        for n, (key, array) in enumerate(to_write.items()):
+            np.save(folder / f"external_{n}.npy", array)
+            paths[key] = str(folder / f"external_{n}.npy")
+    except BaseException:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+    logger.info("simr: externals %s shared with the workers through %s (%.1f MB)",
+                sorted(to_write), folder, needed / 2**20)
+    return paths, folder
+
+
+# The externals this process has mapped, by (path, modified time, size): a worker maps each once and
+# uses it for every model of a run. Only the latest task's are kept, so a pool that outlives many runs
+# doesn't hold on to the earlier runs' memory.
+_OPEN_EXTERNALS: dict[tuple, np.ndarray] = {}
+
+
+def _open_externals(externals: dict) -> dict[str, np.ndarray]:
+    """A task's externals as arrays: an array is used as it is; a path (`_share_externals`) is mapped
+    read-only, once per process. Raises `SimrRunError` if this process can't see a path, which means
+    it isn't on the node that started the run."""
+    opened, keep = {}, {}
+    for key, value in externals.items():
+        if isinstance(value, np.ndarray):
+            opened[key] = value
+            continue
+        try:
+            stat = os.stat(value)
+        except OSError:
+            raise SimrRunError(
+                f"external {key!r}: this worker (on {socket.gethostname()}) can't see {value}. Externals are "
+                f"shared through one node's memory, so every worker must run on the node that started the run"
+            ) from None
+        identity = (value, stat.st_mtime_ns, stat.st_size)
+        array = _OPEN_EXTERNALS.get(identity)
+        if array is None:
+            array = np.load(value, mmap_mode="r").view(np.ndarray)
+        opened[key] = keep[identity] = array
+    _OPEN_EXTERNALS.clear()
+    _OPEN_EXTERNALS.update(keep)
+    return opened
 
 
 def _names(run_section: dict, key: str) -> list[str]:

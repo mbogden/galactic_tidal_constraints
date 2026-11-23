@@ -59,6 +59,9 @@ uv run pytest -m "not slow"
 - A bind-mounted Windows folder is slower than a copy: the quick tests take about 30 s this way and
   15 s in a copy.
 - To start the environment fresh: `docker volume rm gtc-venv`.
+- A parallel run that compares models with large external arrays shares them through `/dev/shm`, which
+  Docker limits to 64 MB. Add `--shm-size=4g` (or what the arrays need) to `docker run`; see Externals
+  in [configuration.md](../configuration.md).
 
 ### Notebooks
 Start JupyterLab in the same setup, publishing its port to your machine only:
