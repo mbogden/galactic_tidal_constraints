@@ -213,6 +213,12 @@ def test_compute_checks_each_input_against_its_kind(method, inputs, message):
         metrics.compute(method, inputs)
 
 
+def test_check_input_names_what_it_was_given():
+    metrics.check_input("particles", np.zeros((5, 6), dtype=np.float32), "tng_particles")  # fits: no error
+    with pytest.raises(ValueError, match=r"tng_particles must be a 'particles' array, shape \(None, 6\): got \(5, 7\)"):
+        metrics.check_input("particles", np.zeros((5, 7), dtype=np.float32), "tng_particles")
+
+
 def test_compute_rejects_a_nonfinite_scalar():
     def bad_scalar(a, b):
         return float("nan")

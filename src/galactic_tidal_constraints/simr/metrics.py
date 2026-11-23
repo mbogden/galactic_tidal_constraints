@@ -145,6 +145,27 @@ def table() -> dict[str, dict]:
     }
 
 
+def check_input(kind: str, value, where: str) -> None:
+    """Check one array against its input kind's shape (`INPUT_SHAPES`). `compute` runs it on every
+    input; `simr` runs it on each external array before anything is simulated, so both give the same
+    message.
+
+    Args:
+        kind: one of `INPUT_KINDS`.
+        value: the array to check.
+        where: what the array is, to start the error message (e.g. "pca_shape: input 0").
+
+    Raises:
+        ValueError: `value` isn't a numpy array of that kind's shape.
+    """
+    shape = INPUT_SHAPES[kind]
+    if not isinstance(value, np.ndarray) or value.ndim != len(shape) or any(
+        want is not None and got != want for got, want in zip(value.shape, shape)
+    ):
+        got = value.shape if isinstance(value, np.ndarray) else type(value).__name__
+        raise ValueError(f"{where} must be a {kind!r} array, shape {shape}: got {got}")
+
+
 def compute(method: str, inputs: list[np.ndarray], select: str | None = None, params: dict | None = None):
     """Run one registered method on its input arrays and check the value against its declaration.
 
@@ -165,12 +186,7 @@ def compute(method: str, inputs: list[np.ndarray], select: str | None = None, pa
     """
     m = METHODS[method]
     for j, (kind, value) in enumerate(zip(m.inputs, inputs)):
-        shape = INPUT_SHAPES[kind]
-        if not isinstance(value, np.ndarray) or value.ndim != len(shape) or any(
-            want is not None and got != want for got, want in zip(value.shape, shape)
-        ):
-            got = value.shape if isinstance(value, np.ndarray) else type(value).__name__
-            raise ValueError(f"{method}: input {j} must be a {kind!r} array, shape {shape}: got {got}")
+        check_input(kind, value, f"{method}: input {j}")
     value = m.function(*inputs, **(params or {}))
     if m.kind == "scalar":
         if not isinstance(value, (int, float, np.floating, np.integer)) or isinstance(value, bool):

@@ -38,7 +38,7 @@ and for higher-level programs.
 
 `metrics.compute(method, inputs, select=None, params=None)` runs one method on its input arrays and
 checks both sides against the declaration. Each input must fit its kind's shape
-(`metrics.INPUT_SHAPES`; the table under Input kinds), so a wrong array fails cleanly before the
+(`metrics.INPUT_SHAPES`; the table under Input kinds; the check itself is `metrics.check_input`), so a wrong array fails cleanly before the
 method runs, wherever it came from. The value: a scalar must be one finite float; a descriptive dict must
 have exactly the declared keys with the declared shapes and no NaN or inf anywhere. A value that fails
 is a `ValueError` — in `simr`, a metric failure. With `select`, the named single-float output comes
