@@ -24,10 +24,11 @@ Inputs are declared by kind, not by item, so the same method works on arrays fro
   image:     (height, width) float32 in [0, 1] (`img.*`)
   weights:   (n,) float32: one value per row of the array it weighs
 
-Weights are optional. A method that can use them declares the kind it takes (`Metric.weights`) and
-has a `weights=None` argument; they come as one extra input after the declared ones. Without them
-every row or pixel counts equally. Weights must be non-negative and not all zero, and match the
-array they weigh: for row weights, the method's first input (the target, when there is one).
+Weights are optional. A method that can use them says so (`Metric.weights` is True) and has a
+`weights=None` argument; they come as one extra input after the declared ones. Without them every
+row or pixel counts equally. Weights must be non-negative and not all zero, and match the method's
+first input (the target, when there is one): one value per row of an orbit or of particles, or an
+image of the same shape (`check_weights`, the one place this rule lives).
 """
 
 import math
@@ -60,9 +61,8 @@ class Metric:
         function: the method itself: `function(*inputs, **settings)`.
         setup: an optional one-time step, run the first time the method is used in a process (e.g.
             load a network and its weights). None for plain methods.
-        weights: the kind of the optional weights the method takes as one more input after `inputs`
-            ("weights": one per row of its first input; "image": one per pixel). None for a method
-            that takes no weights.
+        weights: True if the method can take weights, as one more input after `inputs`; they must
+            match its first input (`weights_kind`, `check_weights`). False: it takes none.
     """
 
     name: str
@@ -74,7 +74,7 @@ class Metric:
     outputs: dict[str, tuple[int, ...]] | None
     function: Callable
     setup: Callable | None = None
-    weights: str | None = None
+    weights: bool = False
 
     @property
     def scalar_outputs(self) -> tuple[str, ...]:
@@ -95,13 +95,13 @@ def metric(
     range: tuple[float, float] | None = None,
     outputs: dict[str, tuple[int, ...]] | None = None,
     setup: Callable | None = None,
-    weights: str | None = None,
+    weights: bool = False,
 ) -> Callable:
     """Register a metric method in `METHODS`, checking its declaration as the module is imported.
 
     A scalar method declares `best` and `range` and no `outputs`; a descriptive method declares
     `outputs` (key -> shape, () for one float) and neither `best` nor `range`. A method that can
-    use weights declares their kind (`weights`) and takes them as a `weights=None` argument.
+    use weights declares `weights=True` and takes them as a `weights=None` argument.
     """
 
     def register(function: Callable) -> Callable:
@@ -110,7 +110,9 @@ def metric(
             raise ValueError(f"metric {name!r} is already registered")
         if kind not in KINDS:
             raise ValueError(f"{name}: kind must be one of {list(KINDS)}: {kind!r}")
-        unknown = [k for k in (*inputs, *([weights] if weights is not None else [])) if k not in INPUT_KINDS]
+        unknown = [k for k in inputs if k not in INPUT_KINDS]
+        if not isinstance(weights, bool) or (weights and not inputs):
+            raise ValueError(f"{name}: weights is True or False, and a method that takes them has an input to match")
         if unknown:
             raise ValueError(f"{name}: unknown input kinds {unknown}. Known: {list(INPUT_KINDS)}")
         if kind == "scalar":
@@ -144,8 +146,8 @@ def metric(
 
 def table() -> dict[str, dict]:
     """The metrics table as plain data (JSON-ready), one entry per method, for checks and higher-level
-    code: kind, inputs, weights (the kind of its optional weights, or None), settings, best, range and
-    outputs, as declared."""
+    code: kind, inputs, weights (whether it can take them), settings, best, range and outputs, as
+    declared."""
     return {
         name: {
             "kind": m.kind,
@@ -206,15 +208,15 @@ def compute(method: str, inputs: list[np.ndarray], select: str | None = None, pa
     if len(inputs) not in allowed:
         raise ValueError(
             f"{method} takes {len(m.inputs)} input(s) {list(m.inputs)}"
-            + (f", and optionally {m.weights!r} weights after them" if m.weights else "")
+            + (f", and optionally {weights_kind(m)!r} weights after them" if m.weights else "")
             + f": got {len(inputs)}"
         )
     for j, (kind, value) in enumerate(zip(m.inputs, inputs)):
         check_input(kind, value, f"{method}: input {j}")
     keywords = dict(params or {})
     if len(inputs) > len(m.inputs):
-        check_input(m.weights, inputs[-1], f"{method}: the weights")
-        keywords["weights"] = check_weights(inputs[-1], f"{method}: the weights")
+        check_input(weights_kind(m), inputs[-1], f"{method}: the weights")
+        keywords["weights"] = check_weights(inputs[-1], inputs[0], m.inputs[0], f"{method}: the weights")
     value = m.function(*inputs[: len(m.inputs)], **keywords)
     if m.kind == "scalar":
         if not isinstance(value, (int, float, np.floating, np.integer)) or isinstance(value, bool):
@@ -233,13 +235,37 @@ def compute(method: str, inputs: list[np.ndarray], select: str | None = None, pa
     return float(value[select]) if select is not None else value
 
 
-def check_weights(weights: np.ndarray, where: str) -> np.ndarray:
-    """Weights a metric can use: finite, none negative, not all zero. Returns them as float64.
+def weights_kind(method: Metric) -> str | None:
+    """The kind of weights a method takes, which follows from its first input: an image for an image,
+    else "weights" (one value per row). None for a method that takes no weights."""
+    if not method.weights:
+        return None
+    return "image" if method.inputs[0] == "image" else "weights"
+
+
+def check_weights(weights: np.ndarray, first: np.ndarray, kind: str, where: str) -> np.ndarray:
+    """The one rule for every metric's weights: they match the method's first input, and are usable.
+
+    Args:
+        weights: the weights given.
+        first: the method's first input (the target, when there is one), which they weigh.
+        kind: `first`'s kind: for an "image" the weights have its shape; for an "orbit" or
+            "particles", one value per row.
+        where: what the weights are, to start the error message.
+
+    Returns:
+        The weights as float64.
 
     Raises:
-        ValueError: otherwise. A derived array may be all zeros; it can't be used as weights.
+        ValueError: they don't match `first`; or they aren't finite, hold a negative value, or are
+        all zero. A derived array may be all zeros; it can't be used as weights.
     """
     weights = np.asarray(weights, dtype=np.float64)
+    if kind == "image":
+        if weights.shape != first.shape:
+            raise ValueError(f"{where} must have the images' shape {first.shape}: got {weights.shape}")
+    elif weights.shape != (len(first),):
+        raise ValueError(f"{where} must be one per row of the first input, {len(first)}: got {weights.shape}")
     if not np.isfinite(weights).all() or (weights < 0).any():
         raise ValueError(f"{where} must be finite and not negative")
     if not (weights > 0).any():
@@ -276,7 +302,7 @@ def closest_approach(orbit: np.ndarray) -> dict:
     }
 
 
-@metric(kind="scalar", inputs=("image", "image"), best="low", range=(0.0, 1.0), weights="image")
+@metric(kind="scalar", inputs=("image", "image"), best="low", range=(0.0, 1.0), weights=True)
 def absolute_difference(a: np.ndarray, b: np.ndarray, weights: np.ndarray | None = None) -> float:
     """The mean |a - b| over the pixels of two greyscale images of the same shape.
 
@@ -297,9 +323,7 @@ def absolute_difference(a: np.ndarray, b: np.ndarray, weights: np.ndarray | None
     difference = np.abs(a.astype(np.float64) - b.astype(np.float64))
     if weights is None:
         return float(np.mean(difference))
-    weights = check_weights(weights, "the weights")
-    if weights.shape != a.shape:
-        raise ValueError(f"the weights must have the images' shape {a.shape}: got {weights.shape}")
+    weights = check_weights(weights, a, "image", "the weights")
     return float((weights * difference).sum() / weights.sum())
 
 
@@ -325,9 +349,7 @@ def _orbit_pair(target: np.ndarray, model: np.ndarray, weights: np.ndarray | Non
         raise ValueError("the target orbit needs at least 2 rows, with times strictly increasing")
     if weights is None:
         weights = np.ones(len(times))
-    weights = check_weights(weights, "the weights")
-    if weights.shape != times.shape:
-        raise ValueError(f"the weights must be one per target row, {len(times)}: got {weights.shape}")
+    weights = check_weights(weights, target, "orbit", "the weights")
     gaps = np.diff(times)
     spans = np.concatenate(([gaps[0] / 2], (gaps[:-1] + gaps[1:]) / 2, [gaps[-1] / 2]))
     shares = weights * spans
@@ -349,7 +371,7 @@ def _orbit_pair(target: np.ndarray, model: np.ndarray, weights: np.ndarray | Non
     return target[counted, :3].astype(np.float64), times[counted], shares[counted] / shares[counted].sum(), model
 
 
-@metric(kind="scalar", inputs=("orbit", "orbit"), best="low", range=(0.0, math.inf), weights="weights")
+@metric(kind="scalar", inputs=("orbit", "orbit"), best="low", range=(0.0, math.inf), weights=True)
 def orbit_time_error(target: np.ndarray, model: np.ndarray, weights: np.ndarray | None = None) -> float:
     """How far a model's orbit is from a target's at the same times: the weighted time average of the
     squared distance between the two, in SPAM length units squared.
@@ -374,7 +396,7 @@ def orbit_time_error(target: np.ndarray, model: np.ndarray, weights: np.ndarray 
     return float((shares * squared).sum())
 
 
-@metric(kind="scalar", inputs=("orbit", "orbit"), best="low", range=(0.0, math.inf), weights="weights")
+@metric(kind="scalar", inputs=("orbit", "orbit"), best="low", range=(0.0, math.inf), weights=True)
 def orbit_position_error(target: np.ndarray, model: np.ndarray, weights: np.ndarray | None = None) -> float:
     """How far a target's path is from a model's path, whatever the timing: the weighted time average
     of the squared distance from each target point to the nearest model point, in SPAM length units

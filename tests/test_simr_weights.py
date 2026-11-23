@@ -63,8 +63,8 @@ def test_weights_are_optional_and_change_the_value():
 
 def test_weights_of_the_wrong_length_stop_the_run_before_anything_is_simulated(monkeypatch):
     monkeypatch.setitem(simr.SIM_DATA, "sim.search_orbit", lambda params, config: 1 / 0)
-    with pytest.raises(ValueError, match=r"sim_metrics\[0\]: the weights 'test_ext_weights' have 5 values, but "
-                                         r"'test_ext_orbit', which they weigh, has \d+ rows"):
+    with pytest.raises(ValueError, match=r"sim_metrics\[0\]: the weights 'test_ext_weights' \(for 'test_ext_orbit'\) "
+                                         r"must be one per row of the first input, \d+: got \(5,\)"):
         simr.run(PARAMS, request({"method": "orbit_time_error", "inputs": INPUTS + ["test_ext_weights"]}),
                  externals={"test_ext_orbit": TARGET, "test_ext_weights": np.ones(5)})
 
@@ -108,13 +108,29 @@ def test_an_image_metric_takes_a_weight_image():
     assert weighted == metrics.absolute_difference(target_image, image, mask) != plain
 
 
-def test_all_zero_weights_fail_the_cell_and_nothing_else():
+def test_all_zero_weights_known_before_the_run_stop_it_before_anything_is_simulated(monkeypatch):
+    # Both the weights and the target they weigh are externals, so every model's cell would fail the same way.
+    monkeypatch.setitem(simr.SIM_DATA, "sim.search_orbit", lambda params, config: 1 / 0)
+    with pytest.raises(ValueError, match=r"sim_metrics\[0\]: the weights 'test_ext_weights' \(for 'test_ext_orbit'\) "
+                                         r"are all zero"):
+        simr.run(
+            PARAMS,
+            request({"method": "orbit_time_error", "inputs": INPUTS + ["test_ext_weights"]},
+                    {"method": "orbit_time_error", "inputs": INPUTS}),
+            externals={"test_ext_orbit": TARGET, "test_ext_weights": np.zeros(len(TARGET))},
+        )
+
+
+def test_all_zero_weights_made_per_model_fail_that_cell_and_nothing_else():
+    # A weight image made from the model's own image (zero everywhere: it differs from itself nowhere).
+    entry = {"name": "nothing", "method": "difference_weights", "inputs": ["img.model", "img.model"],
+             "params": {"floor": 0.0}}
     result = simr.run(
         PARAMS,
-        request({"method": "orbit_time_error", "inputs": INPUTS + ["test_ext_weights"]},
-                {"method": "orbit_time_error", "inputs": INPUTS}),
-        externals={"test_ext_orbit": TARGET, "test_ext_weights": np.zeros(len(TARGET))},
+        {"simulator": SMALL, "derived": [entry],
+         "img_metrics": [{"method": "absolute_difference", "inputs": ["img.model", "img.unperturbed", "drv.nothing"]},
+                         {"method": "absolute_difference", "inputs": ["img.model", "img.unperturbed"]}]},
     )
-    assert result.status["sim"].tolist() == [["ran"]]
-    assert result.status["sim_metrics"].tolist() == [[["failed", "ran"]]]
-    assert "the weights are all zero" in result.errors["sim_metrics"][0, 0, 0]
+    assert result.status["img"].tolist() == [[["ran"]]]
+    assert result.status["img_metrics"].tolist() == [[[["failed", "ran"]]]]
+    assert "the weights are all zero" in result.errors["img_metrics"][0, 0, 0, 0]

@@ -24,13 +24,33 @@ ON_TARGET = orbit(DENSE, DENSE)
 # --- The declarations and weights through compute -------------------------------------------------------
 
 
-def test_the_orbit_metrics_declare_optional_row_weights():
+def test_a_method_says_whether_it_takes_weights_and_their_kind_follows_its_first_input():
     for name in ("orbit_time_error", "orbit_position_error"):
         method = metrics.METHODS[name]
-        assert (method.kind, method.inputs, method.weights) == ("scalar", ("orbit", "orbit"), "weights")
+        assert (method.kind, method.inputs, method.weights) == ("scalar", ("orbit", "orbit"), True)
         assert (method.best, method.range, method.settings) == ("low", (0.0, np.inf), {})
-    assert metrics.METHODS["absolute_difference"].weights == "image"
-    assert metrics.METHODS["closest_approach"].weights is None
+        assert metrics.weights_kind(method) == "weights"  # one per row of the first input, an orbit
+    assert metrics.METHODS["absolute_difference"].weights is True
+    assert metrics.weights_kind(metrics.METHODS["absolute_difference"]) == "image"  # the images' shape
+    for name in ("closest_approach", "pca_shape", "pca_difference"):
+        assert metrics.METHODS[name].weights is False and metrics.weights_kind(metrics.METHODS[name]) is None
+
+
+def test_check_weights_is_the_one_rule_for_matching_the_first_input():
+    rows, picture = np.zeros((5, 7), dtype=np.float32), np.zeros((4, 3), dtype=np.float32)
+    assert metrics.check_weights(np.ones(5), rows, "orbit", "w").dtype == np.float64
+    assert metrics.check_weights(np.ones(5), rows[:, :6], "particles", "w").shape == (5,)
+    assert metrics.check_weights(np.ones((4, 3)), picture, "image", "w").shape == (4, 3)
+    with pytest.raises(ValueError, match=r"w must be one per row of the first input, 5: got \(4,\)"):
+        metrics.check_weights(np.ones(4), rows, "orbit", "w")
+    with pytest.raises(ValueError, match=r"w must have the images' shape \(4, 3\): got \(3, 4\)"):
+        metrics.check_weights(np.ones((3, 4)), picture, "image", "w")
+
+
+def test_a_weights_declaration_must_be_true_or_false():
+    with pytest.raises(ValueError, match="weights is True or False"):
+        metrics.metric(kind="scalar", inputs=("image",), best="low", range=(0, 1), weights="image")(lambda a: 0.0)
+    assert "<lambda>" not in metrics.METHODS
 
 
 def test_compute_passes_one_extra_input_as_the_weights():
@@ -51,7 +71,8 @@ def test_compute_passes_one_extra_input_as_the_weights():
          r"the weights must be a 'weights' array, shape \(None,\)"),
         ("orbit_time_error", [TARGET, ON_TARGET, np.zeros(41, np.float32)], "the weights are all zero"),
         ("orbit_time_error", [TARGET, ON_TARGET, -np.ones(41, np.float32)], "must be finite and not negative"),
-        ("orbit_time_error", [TARGET, ON_TARGET, np.ones(40, np.float32)], "one per target row, 41: got"),
+        ("orbit_time_error", [TARGET, ON_TARGET, np.ones(40, np.float32)],
+         r"the weights must be one per row of the first input, 41: got \(40,\)"),
     ],
 )
 def test_compute_rejects_bad_weights_and_input_counts(method, inputs, message):

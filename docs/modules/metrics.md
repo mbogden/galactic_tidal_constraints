@@ -45,6 +45,7 @@ a descriptive method the reverse), and recorded in `metrics.METHODS` as a `Metri
 | `outputs` | A descriptive method's keys and shapes; `()` is one float |
 | `function` | The method itself: `function(*inputs, **settings)` |
 | `setup` | An optional one-time step (e.g. load a network), run the first time the method is used in a process; `None` for plain methods |
+| `weights` | `True` if the method can take weights as one more input, which must match its first input; `False` (the default) if it takes none |
 
 `metrics.table()` returns the same information as plain, JSON-ready data, for `simr`'s early checks
 and for higher-level programs.
@@ -77,21 +78,23 @@ source (a `simr` item, or an external array given to `simr.run`; see Externals i
 | `weights` | `(n,)` float32: one value per row of the array it weighs | none yet; made by the Derived stage ([derived.md](derived.md)) or given as an external |
 
 ## Weights
-A method that can use weights declares the kind it takes (`Metric.weights`) and has a `weights=None`
-argument. In a config entry they're one more name after the method's inputs:
+A method that can use weights says so (`weights=True` in its declaration) and has a `weights=None`
+argument; a method that doesn't say so takes none. In a config entry they're one more name after the
+method's inputs:
 
 ```json
 {"method": "orbit_time_error", "inputs": ["test_ext_orbit", "sim.search_orbit", "test_ext_weights"]}
 ```
 
 - **Optional:** without them, every row or pixel counts equally.
-- **They match what they weigh:** row weights are one per row of the method's first input (the
-  target); image weights have the images' shape.
+- **They match the method's first input** (the target, when there is one): one value per row of an
+  orbit or of particles, or an image of the same shape. One function, `metrics.check_weights`, holds
+  this rule for every method.
 - **They must be usable:** finite, none negative, not all zero; otherwise that metric cell fails.
-- **Where they come from:** an external array today, built by your own code or by a derived method
-  ([derived.md](derived.md)) called from Python.
-- When the weights and the input they weigh are both externals, their lengths are compared before
-  anything runs.
+- **Where they come from:** a derived entry (`drv.<name>`; [derived.md](derived.md)) or an external
+  array.
+- When the weights and the input they weigh are both known before the run (externals, or derived from
+  them), they're matched before anything is simulated.
 
 ## The methods
 This table is guarded by a test (`tests/test_metrics.py`) against `metrics.table()`.

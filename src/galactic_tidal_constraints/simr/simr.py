@@ -1201,7 +1201,8 @@ def _metric_entry(where: str, entry, section: str, made: dict[str, dict]) -> dic
             or not len(method.inputs) <= len(inputs) <= len(kinds):
         raise ValueError(
             f"{where}.inputs: {method.name} takes {len(method.inputs)} input(s), one per kind: {list(method.inputs)}"
-            + (f", and optionally its weights (a {method.weights}) after them" if method.weights else "")
+            + (f", and optionally its weights (a {metrics.weights_kind(method)}) after them"
+               if method.weights else "")
         )
     for j, name in enumerate(inputs):
         if section == "sim_metrics" and name in IMAGE_DATA:
@@ -1259,25 +1260,23 @@ def _metric_entry(where: str, entry, section: str, made: dict[str, dict]) -> dic
 
 def _input_kinds(method: metrics.Metric) -> tuple[str, ...]:
     """The kind each place in a metric entry's `inputs` takes: the method's inputs, then, for a method
-    that can use weights, its optional weights."""
-    return method.inputs + ((method.weights,) if method.weights else ())
+    that can use weights, its optional weights (whose kind follows from the first input)."""
+    return method.inputs + ((metrics.weights_kind(method),) if method.weights else ())
 
 
 def _check_external_weights(sections: dict[str, list[dict]], arrays: dict[str, np.ndarray]) -> None:
-    """Before anything runs: where an entry's row weights and the input they weigh (its first) are both
-    externals, they must have the same number of rows. Otherwise every model's cell would fail the same
-    way, after its simulation."""
+    """Before anything runs: where an entry's weights and the input they weigh (its first) are both
+    known already (externals, or derived from them), they must match, by the metrics' own rule
+    (`metrics.check_weights`). Otherwise every model's cell would fail the same way, after its simulation."""
     for section, entries in sections.items():
         for k, entry in enumerate(entries):
             method, inputs = metrics.METHODS[entry["method"]], entry["inputs"]
-            if method.weights != "weights" or len(inputs) <= len(method.inputs):
+            if not method.weights or len(inputs) <= len(method.inputs):
                 continue
             first, weights = inputs[0], inputs[-1]
-            if first in arrays and weights in arrays and len(arrays[first]) != len(arrays[weights]):
-                raise ValueError(
-                    f"{section}[{k}]: the weights {weights!r} have {len(arrays[weights])} values, but "
-                    f"{first!r}, which they weigh, has {len(arrays[first])} rows"
-                )
+            if first in arrays and weights in arrays:
+                metrics.check_weights(arrays[weights], arrays[first], method.inputs[0],
+                                      f"{section}[{k}]: the weights {weights!r} (for {first!r})")
 
 
 def _external_uses(sections: dict[str, list[dict]], derived_entries: list[dict]) -> dict[str, tuple[str, str]]:

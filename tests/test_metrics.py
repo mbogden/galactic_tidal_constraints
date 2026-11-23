@@ -51,7 +51,7 @@ def test_table_is_json_ready_and_matches_the_declarations():
     assert table["closest_approach"] == {
         "kind": "descriptive",
         "inputs": ["orbit"],
-        "weights": None,
+        "weights": False,
         "settings": {},
         "best": None,
         "range": None,
@@ -60,7 +60,7 @@ def test_table_is_json_ready_and_matches_the_declarations():
     assert table["absolute_difference"] == {
         "kind": "scalar",
         "inputs": ["image", "image"],
-        "weights": "image",
+        "weights": True,
         "settings": {},
         "best": "low",
         "range": [0.0, 1.0],
