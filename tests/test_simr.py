@@ -1184,8 +1184,8 @@ def test_a_metric_cell_is_timed_on_its_own():
         ("sim_metrics", [{"method": "closest_approach"}], "takes 1 input"),
         ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.orbit", "sim.orbit"]}], "takes 1 input"),
         ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.timing"]}], "isn't a metric input"),
-        ("sim_metrics", [{"method": "closest_approach", "inputs": ["tng_orbit"]}], "no simr item among the inputs"),
-        ("sim_metrics", [{"method": "pca_difference", "inputs": ["tng_particles", "sim.particles"]}],
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["ext_orbit"]}], "no simr item among the inputs"),
+        ("sim_metrics", [{"method": "pca_difference", "inputs": ["ext_particles", "sim.particles"]}],
          "must be a key in externals, but no externals were given"),
         ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.particles"]}],
          "takes a orbit here, but sim.particles is a particles"),
@@ -1216,8 +1216,8 @@ def test_bad_metric_entries_name_the_problem(section, entries, message):
 
 EXTERNAL_PARTICLES = np.random.default_rng(3).normal(size=(40, 6))  # float64 on purpose: simr converts
 EXTERNAL_IMAGE = np.random.default_rng(4).random((128, 128)).astype(np.float32)
-PARTICLES_ENTRY = {"method": "pca_difference", "inputs": ["tng_particles", "sim.particles"]}
-IMAGE_ENTRY = {"method": "absolute_difference", "inputs": ["tng_image", "img.model"]}
+PARTICLES_ENTRY = {"method": "pca_difference", "inputs": ["ext_particles", "sim.particles"]}
+IMAGE_ENTRY = {"method": "absolute_difference", "inputs": ["ext_image", "img.model"]}
 
 
 def externals_request(sim_metrics=(PARTICLES_ENTRY,), img_metrics=(), returned=()):
@@ -1227,7 +1227,7 @@ def externals_request(sim_metrics=(PARTICLES_ENTRY,), img_metrics=(), returned=(
 
 def test_an_external_array_is_a_metric_input_at_both_levels():
     result = simr.run(PARAMS, externals_request(img_metrics=[IMAGE_ENTRY], returned=["sim.particles", "img.model"]),
-                      externals={"tng_particles": EXTERNAL_PARTICLES, "tng_image": EXTERNAL_IMAGE})
+                      externals={"ext_particles": EXTERNAL_PARTICLES, "ext_image": EXTERNAL_IMAGE})
     assert result.status["sim_metrics"].tolist() == [[["ran"]]]
     assert result.status["img_metrics"].tolist() == [[[["ran"]]]]
     assert result.sim_metrics[0, 0, 0] == metrics.pca_difference(
@@ -1240,16 +1240,16 @@ def test_an_external_array_is_a_metric_input_at_both_levels():
 
 def test_an_external_given_as_a_path_matches_the_array(tmp_path):
     np.save(tmp_path / "particles.npy", EXTERNAL_PARTICLES)
-    from_array = simr.run(PARAMS, externals_request(), externals={"tng_particles": EXTERNAL_PARTICLES})
-    from_path = simr.run(PARAMS, externals_request(), externals={"tng_particles": tmp_path / "particles.npy"})
-    from_string = simr.run(PARAMS, externals_request(), externals={"tng_particles": str(tmp_path / "particles.npy")})
+    from_array = simr.run(PARAMS, externals_request(), externals={"ext_particles": EXTERNAL_PARTICLES})
+    from_path = simr.run(PARAMS, externals_request(), externals={"ext_particles": tmp_path / "particles.npy"})
+    from_string = simr.run(PARAMS, externals_request(), externals={"ext_particles": str(tmp_path / "particles.npy")})
     assert from_array.sim_metrics[0, 0, 0] == from_path.sim_metrics[0, 0, 0] == from_string.sim_metrics[0, 0, 0]
 
 
 def test_externals_come_back_the_same_through_a_pool():
     from concurrent.futures import ProcessPoolExecutor
 
-    externals = {"tng_particles": EXTERNAL_PARTICLES}
+    externals = {"ext_particles": EXTERNAL_PARTICLES}
     solo = simr.run(MODELS, externals_request(), externals=externals)
     with ProcessPoolExecutor(max_workers=2) as pool:
         pooled = simr.run(MODELS, externals_request(), externals=externals, map=pool.map)
@@ -1273,16 +1273,16 @@ def test_the_result_and_the_catalog_record_each_external(tmp_path, caplog):
     digest = simr.array_hash(EXTERNAL_PARTICLES)
     with caplog.at_level("INFO"):
         result = simr.run(PARAMS, externals_request(img_metrics=[IMAGE_ENTRY]), output=tmp_path / "runs",
-                          externals={"tng_particles": EXTERNAL_PARTICLES, "tng_image": tmp_path / "image.npy",
+                          externals={"ext_particles": EXTERNAL_PARTICLES, "ext_image": tmp_path / "image.npy",
                                      "spare": EXTERNAL_IMAGE})
     assert result.externals == {  # only the used ones
-        "tng_particles": {"source": "memory", "shape": [40, 6], "hash": digest},
-        "tng_image": {"source": str(tmp_path / "image.npy"), "shape": [128, 128],
+        "ext_particles": {"source": "memory", "shape": [40, 6], "hash": digest},
+        "ext_image": {"source": str(tmp_path / "image.npy"), "shape": [128, 128],
                       "hash": simr.array_hash(EXTERNAL_IMAGE)},
     }
     [record] = simr.load_catalog(tmp_path / "runs")["runs"]
     assert record["externals"] == result.externals
-    assert f"external 'tng_particles': memory, shape (40, 6), hash {digest}" in caplog.text
+    assert f"external 'ext_particles': memory, shape (40, 6), hash {digest}" in caplog.text
 
 
 def test_a_run_without_externals_records_none(tmp_path):
@@ -1294,8 +1294,8 @@ def test_a_run_without_externals_records_none(tmp_path):
 def test_an_expected_hash_must_match_the_data(tmp_path, monkeypatch):
     np.save(tmp_path / "particles.npy", EXTERNAL_PARTICLES)
     digest = simr.array_hash(EXTERNAL_PARTICLES)
-    given = {"tng_particles": {"path": tmp_path / "particles.npy", "hash": digest}}
-    assert simr.run(PARAMS, externals_request(), externals=given).externals["tng_particles"]["hash"] == digest
+    given = {"ext_particles": {"path": tmp_path / "particles.npy", "hash": digest}}
+    assert simr.run(PARAMS, externals_request(), externals=given).externals["ext_particles"]["hash"] == digest
     np.save(tmp_path / "particles.npy", EXTERNAL_PARTICLES + 1)  # the file changed since the hash was taken
     monkeypatch.setitem(simr.SIM_DATA, "sim.particles", _not_computed)
     with pytest.raises(ValueError, match=f"the data's hash is [0-9a-f]{{64}}, not the expected {digest}"):
@@ -1313,7 +1313,7 @@ def test_an_expected_hash_must_match_the_data(tmp_path, monkeypatch):
 )
 def test_a_bad_external_dict_names_the_problem(value, message):
     with pytest.raises(ValueError, match=message):
-        simr.run(PARAMS, externals_request(), externals={"tng_particles": value})
+        simr.run(PARAMS, externals_request(), externals={"ext_particles": value})
 
 
 def _shared_folders():
@@ -1326,8 +1326,8 @@ def test_a_pool_shares_one_copy_and_removes_it_when_the_run_ends(caplog):
 
     before = _shared_folders()
     with ProcessPoolExecutor(max_workers=2) as pool, caplog.at_level("INFO"):
-        simr.run(MODELS, externals_request(), externals={"tng_particles": EXTERNAL_PARTICLES}, map=pool.map)
-    assert "externals ['tng_particles'] shared with the workers through" in caplog.text
+        simr.run(MODELS, externals_request(), externals={"ext_particles": EXTERNAL_PARTICLES}, map=pool.map)
+    assert "externals ['ext_particles'] shared with the workers through" in caplog.text
     assert _shared_folders() == before  # the run's folder is gone
 
 
@@ -1337,13 +1337,13 @@ def test_the_shared_copy_is_removed_when_the_run_fails(tmp_path):
     before = _shared_folders()
     with ProcessPoolExecutor(max_workers=2) as pool, pytest.raises(ValueError, match="needs an output folder"):
         simr.run(MODELS, {**externals_request(), "run": {"save": ["sim.orbit"]}},
-                 externals={"tng_particles": EXTERNAL_PARTICLES}, map=pool.map)
+                 externals={"ext_particles": EXTERNAL_PARTICLES}, map=pool.map)
     assert _shared_folders() == before
 
 
 def test_a_solo_run_shares_nothing(caplog):
     with caplog.at_level("INFO"):
-        simr.run(PARAMS, externals_request(), externals={"tng_particles": EXTERNAL_PARTICLES})
+        simr.run(PARAMS, externals_request(), externals={"ext_particles": EXTERNAL_PARTICLES})
     assert "shared with the workers" not in caplog.text
 
 
@@ -1381,13 +1381,13 @@ def test_too_little_shared_memory_stops_the_run_before_anything_is_written(monke
     monkeypatch.setattr(simr.shutil, "disk_usage", lambda path: namedtuple("usage", "total used free")(100, 90, 10))
     before = _shared_folders()
     with ProcessPoolExecutor(max_workers=2) as pool, pytest.raises(ValueError, match="need 0.0 MB in .* but 0.0 MB is free"):
-        simr.run(MODELS, externals_request(), externals={"tng_particles": EXTERNAL_PARTICLES}, map=pool.map)
+        simr.run(MODELS, externals_request(), externals={"ext_particles": EXTERNAL_PARTICLES}, map=pool.map)
     assert _shared_folders() == before
 
 
 def test_a_worker_that_cannot_see_the_shared_copy_says_why():
     with pytest.raises(simr.SimrRunError, match="every worker must run on the node that started the run"):
-        simr._open_externals({"tng_particles": "/dev/shm/simr_externals_gone/external_0.npy"})
+        simr._open_externals({"ext_particles": "/dev/shm/simr_externals_gone/external_0.npy"})
 
 
 def test_a_metric_gets_its_external_read_only_and_the_callers_array_is_untouched(monkeypatch):
@@ -1400,7 +1400,7 @@ def test_a_metric_gets_its_external_read_only_and_the_callers_array_is_untouched
     monkeypatch.setitem(metrics.METHODS, "pca_difference",
                         replace(metrics.METHODS["pca_difference"], function=writes))
     mine = EXTERNAL_PARTICLES.astype(np.float32)
-    result = simr.run(PARAMS, externals_request(), externals={"tng_particles": mine})
+    result = simr.run(PARAMS, externals_request(), externals={"ext_particles": mine})
     assert result.status["sim_metrics"].tolist() == [[["failed"]]]
     assert "read-only" in result.errors["sim_metrics"][0, 0, 0]
     assert mine.flags.writeable and (mine == EXTERNAL_PARTICLES.astype(np.float32)).all()
@@ -1409,7 +1409,7 @@ def test_a_metric_gets_its_external_read_only_and_the_callers_array_is_untouched
 def test_externals_no_metric_uses_are_ignored_and_logged(caplog):
     with caplog.at_level("INFO"):
         result = simr.run(PARAMS, externals_request(),
-                          externals={"tng_particles": EXTERNAL_PARTICLES, "spare": "/nowhere/not_loaded.npy"})
+                          externals={"ext_particles": EXTERNAL_PARTICLES, "spare": "/nowhere/not_loaded.npy"})
     assert result.status["sim_metrics"].tolist() == [[["ran"]]]
     assert "ignored: ['spare']" in caplog.text
 
@@ -1426,7 +1426,7 @@ def _not_an_array(tmp_path):
 @pytest.mark.parametrize(
     ("external", "message"),
     [
-        (lambda tmp_path: np.zeros((5, 7)), r"externals\['tng_particles'\] \(used by sim_metrics\[0\].inputs\[0\]\) "
+        (lambda tmp_path: np.zeros((5, 7)), r"externals\['ext_particles'\] \(used by sim_metrics\[0\].inputs\[0\]\) "
                                             r"must be a 'particles' array, shape \(None, 6\): got \(5, 7\)"),
         (lambda tmp_path: np.full((5, 6), np.nan), "holds NaN or inf"),
         (lambda tmp_path: np.full((5, 6), 1e300), "holds NaN or inf"),  # too big for float32
@@ -1441,15 +1441,15 @@ def _not_an_array(tmp_path):
 def test_a_bad_external_stops_the_run_before_anything_is_simulated(external, message, tmp_path, monkeypatch):
     monkeypatch.setitem(simr.SIM_DATA, "sim.particles", _not_computed)
     with pytest.raises(ValueError, match=message):
-        simr.run(PARAMS, externals_request(), externals={"tng_particles": external(tmp_path)})
+        simr.run(PARAMS, externals_request(), externals={"ext_particles": external(tmp_path)})
 
 
 @pytest.mark.parametrize(
     ("externals", "message"),
     [
-        ({"other": EXTERNAL_PARTICLES}, r"'tng_particles' isn't a simr item.*but externals has \['other'\]"),
-        ({"tng_particles": EXTERNAL_PARTICLES, "sim.mine": EXTERNAL_PARTICLES}, "a key must be a string that doesn't"),
-        ({"tng_particles": EXTERNAL_PARTICLES, "img.mine": EXTERNAL_PARTICLES}, "a key must be a string that doesn't"),
+        ({"other": EXTERNAL_PARTICLES}, r"'ext_particles' isn't a simr item.*but externals has \['other'\]"),
+        ({"ext_particles": EXTERNAL_PARTICLES, "sim.mine": EXTERNAL_PARTICLES}, "a key must be a string that doesn't"),
+        ({"ext_particles": EXTERNAL_PARTICLES, "img.mine": EXTERNAL_PARTICLES}, "a key must be a string that doesn't"),
         ([EXTERNAL_PARTICLES], "externals must be a dict"),
     ],
 )
@@ -1461,13 +1461,13 @@ def test_bad_externals_keys_name_the_problem(externals, message):
 def test_an_external_image_must_match_every_image_entry():
     request = {**externals_request(sim_metrics=[], img_metrics=[IMAGE_ENTRY]), "image": [{}, {"width": 64}]}
     with pytest.raises(ValueError, match=r"is 128 x 128 \(height x width\), but image\[1\] makes 128 x 64 images"):
-        simr.run(PARAMS, request, externals={"tng_image": EXTERNAL_IMAGE})
+        simr.run(PARAMS, request, externals={"ext_image": EXTERNAL_IMAGE})
 
 
 def test_one_external_has_one_kind():
-    request = externals_request(img_metrics=[{"method": "absolute_difference", "inputs": ["tng_particles", "img.model"]}])
+    request = externals_request(img_metrics=[{"method": "absolute_difference", "inputs": ["ext_particles", "img.model"]}])
     with pytest.raises(ValueError, match="used as a image here but as a particles in sim_metrics"):
-        simr.run(PARAMS, request, externals={"tng_particles": EXTERNAL_PARTICLES})
+        simr.run(PARAMS, request, externals={"ext_particles": EXTERNAL_PARTICLES})
 
 
 def test_a_method_with_a_setup_step_is_not_supported_yet():
