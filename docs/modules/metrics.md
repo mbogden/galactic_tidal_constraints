@@ -53,7 +53,8 @@ entry]`, with per-cell status, time and error. Details:
 
 ## Input kinds
 A method declares its inputs by kind, not by item, so the same method works on arrays from any
-source (a `simr` item, or an external array once those exist), as long as the shape fits:
+source (a `simr` item, or an external array given to `simr.run`; see Externals in
+[configuration.md](../configuration.md)), as long as the shape fits:
 
 | Kind | Shape | `simr` items |
 |---|---|---|
@@ -77,7 +78,7 @@ This table is guarded by a test (`tests/test_metrics.py`) against `metrics.table
   `start` decides). Row order doesn't matter.
 - **`absolute_difference`**: the mean |a − b| over the pixels of two greyscale images of the same
   shape; 0 is identical. Any two matching images work: model vs unperturbed reads as how perturbed
-  the model is, and an image vs an external target (once externals exist) as how far from the target.
+  the model is, and an image vs an external target as how far from the target.
   Images of another shape are an error; matching frames is the caller's job.
 - **`pca_shape`**: the shape of a particle cloud as its covariance ellipsoid (3D principal component
   analysis), on the whole array as given (for `sim.particles`, both galaxies together). `columns`

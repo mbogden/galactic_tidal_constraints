@@ -75,6 +75,30 @@ for them. An entry with an `img.*` input goes in `img_metrics` (one per simulati
 an entry using only `sim.*` items goes in `sim_metrics` (one per simulation). `sim.timing` isn't a
 metric input.
 
+### Externals
+An input that isn't a `sim.*` or `img.*` item is an **external**: an array from outside the run, such as
+a target's orbit, image or particles. The config holds only its key; the array itself is given to the
+run, like the models:
+
+```json
+"sim_metrics": [{"method": "pca_difference", "inputs": ["tng_particles", "sim.particles"]}]
+```
+```python
+result = simr.run(models, config, externals={"tng_particles": array})
+```
+
+- **A value** is a numeric numpy array, or the absolute path of a `.npy` file, which `simr` loads once.
+- **Its kind** (orbit, particles or image) is the kind of the input place it's used in. One external
+  has one kind.
+- **Checked before anything is simulated:** every key a metric names is in `externals`; each array is
+  turned into `float32` and must hold no NaN or inf, have its kind's shape, and, for an image, the
+  height and width of every image entry. Any problem stops the run with a message naming the key.
+- **A key** can't start with `sim.` or `img.`. Keys no metric uses are ignored, with one log message.
+- **Every entry needs at least one `sim.*` or `img.*` input**, or its value wouldn't depend on the model.
+- **Metrics get externals read-only**, so a method can't change a target by accident.
+
+Externals can't be given on the command line yet.
+
 ## Lists and combinations
 - **Every model runs on every simulator entry, and every simulation is imaged with every image entry.**
   So 2 models, 2 simulator entries and 2 image entries make 4 simulations and 8 images.

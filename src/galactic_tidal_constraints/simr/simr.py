@@ -28,6 +28,15 @@ per-entry filters. A metric's inputs are simr items; simr computes (or loads) wh
 nothing else asks for those items, so an orbit-only request with `sim_metrics` never builds an image.
 Entries are checked against the metrics table (`metrics.METHODS`) before anything runs.
 
+An input that isn't a simr item is an external: a key in the `externals` dict given to `run`, holding
+an array from outside the run (a target orbit, image or particles), or a path to its .npy file:
+
+    request = {"sim_metrics": [{"method": "pca_difference", "inputs": ["tng_particles", "sim.particles"]}]}
+    result = run(models, request, externals={"tng_particles": array})
+
+The request holds only the key; the array takes the input kind of the place it's used. Every external a
+metric uses is loaded once and checked before anything is simulated (see `run`).
+
 With an output (`run(..., output=...)`), every run is recorded in a catalog, whether or not it saves data.
 The output is a folder or a `.json` file, told apart by name:
 
@@ -157,6 +166,9 @@ IMAGE_DATA = {
 CATALOG_WRITE_SECONDS = 60.0
 
 REQUEST_KEYS = ("run", "simulator", "image", "sim_metrics", "img_metrics")
+# What a stage item's name starts with. A metric input without one is a key in the run's externals, so
+# an externals key can't start with one.
+STAGE_PREFIXES = ("sim.", "img.")
 RUN_KEYS = ("return", "save")
 METRIC_ENTRY_KEYS = ("method", "inputs", "select", "params")
 
@@ -220,7 +232,8 @@ class SimrResult:
     errors: dict[str, np.ndarray]
 
 
-def run(models: np.ndarray, request: dict, output: str | Path | None = None, map=map) -> SimrResult:
+def run(models: np.ndarray, request: dict, output: str | Path | None = None, map=map,
+        externals: dict | None = None) -> SimrResult:
     """Run every model on every simulator entry in `request`; return and save the requested data.
 
     Args:
@@ -248,6 +261,15 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
             a minute while results arrive. If a worker dies (a broken pool, e.g. a crash in SPAM's
             Fortran), the unfinished models are logged, the catalog keeps the statuses so far with
             "finished" None, and `SimrRunError` is raised; a rerun reuses what was saved.
+        externals: arrays from outside the run, by key, for metric inputs that aren't simr items (e.g.
+            `{"tng_orbit": orbit, "tng_image": "/data/targets/tng_123/image.npy"}`). Each value is a
+            numeric numpy array or an absolute path to a .npy file. Not part of the request, like the
+            models. Before anything is simulated, each external a metric uses is loaded (once), turned
+            into float32 and checked: no NaN or inf, the shape of the input kind it's used as
+            (`metrics.INPUT_SHAPES`; one external has one kind), and for an image the height and width
+            of every image entry. A problem with any of them, or a metric input naming a key that isn't
+            here, is a ValueError. A key can't start with "sim." or "img."; keys no metric uses are
+            ignored, with one log message. Metrics get each external read-only.
 
     Returns:
         A `SimrResult`; see its docstring.
@@ -260,6 +282,9 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     """
     models = _check_models(models)
     returned, saved, configs, image_configs, sim_entries, img_entries = _read_request(request)
+    external_arrays = _read_externals(
+        externals, _external_uses({"sim_metrics": sim_entries, "img_metrics": img_entries}), image_configs
+    )
     catalog_file, root = output_paths(output) if output is not None else (None, None)
     if saved and root is None:
         where = "no output was given" if output is None else f"{output} is a catalog file, not a folder"
@@ -303,7 +328,7 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     tasks = [
         _ModelTask(row=r[0], model_id=ids[r[0]], params=models[r[0]], configs=configs,
                    image_configs=image_configs, returned=returned, saved=saved,
-                   sim_metric_configs=sim_entries, img_metric_configs=img_entries,
+                   sim_metric_configs=sim_entries, img_metric_configs=img_entries, externals=external_arrays,
                    folder=root / f"model_{ids[r[0]]}" if root is not None else None, versions=versions)
         for r in rows
     ]
@@ -415,6 +440,7 @@ class _ModelTask:
     saved: list[str]
     sim_metric_configs: list[dict]
     img_metric_configs: list[dict]
+    externals: dict[str, np.ndarray]  # the external arrays the metrics use, by key
     folder: Path | None  # the model's folder, when the output is a folder
     versions: dict | None
 
@@ -443,8 +469,9 @@ def _run_model(task: _ModelTask) -> dict:
     }
     sim_returned = [item for item in task.returned if _stage(item) == "sim"]
     sim_saved = [item for item in task.saved if _stage(item) == "sim"]
-    metric_sim_needs = [name for entry in task.sim_metric_configs for name in entry["inputs"]] + [
-        name for entry in task.img_metric_configs for name in entry["inputs"] if name in SIM_DATA
+    metric_sim_needs = [
+        name for entry in task.sim_metric_configs + task.img_metric_configs for name in entry["inputs"]
+        if name in SIM_DATA
     ]
     metric_image_needs = [
         name for entry in task.img_metric_configs for name in entry["inputs"] if name in IMAGE_DATA
@@ -505,7 +532,8 @@ def _run_model(task: _ModelTask) -> dict:
             outcome["status"]["sim"][s] = "reused" if stored and not computed else "ran"  # reused: nothing computed
         outcome["seconds"]["sim"][s] = time.perf_counter() - start
         for k, entry in enumerate(task.sim_metric_configs):
-            _run_metric(task, entry, [values[name] for name in entry["inputs"]],
+            arrays = [task.externals[name] if name in task.externals else values[name] for name in entry["inputs"]]
+            _run_metric(task, entry, arrays,
                         outcome, "sim_metrics", (s, k), f"simulator {s}, sim_metrics[{k}]")
         for i, image_config in enumerate(task.image_configs):
             if not image_items:
@@ -537,7 +565,11 @@ def _run_model(task: _ModelTask) -> dict:
             outcome["status"]["img"][s, i] = "ran" if image_computed else "reused"
             outcome["seconds"]["img"][s, i] = time.perf_counter() - start
             for k, entry in enumerate(task.img_metric_configs):
-                arrays = [made[name] if name in IMAGE_DATA else values[name] for name in entry["inputs"]]
+                arrays = [
+                    task.externals[name] if name in task.externals
+                    else made[name] if name in IMAGE_DATA else values[name]
+                    for name in entry["inputs"]
+                ]
                 _run_metric(task, entry, arrays, outcome, "img_metrics", (s, i, k),
                             f"simulator {s}, image {i}, img_metrics[{k}]")
     return outcome
@@ -962,13 +994,20 @@ def _metric_entry(where: str, entry, section: str) -> dict:
             raise ValueError(f"{where}.inputs[{j}]: an img.* input belongs in img_metrics, not sim_metrics")
         kind = SIM_INPUT_KINDS.get(name, "image" if name in IMAGE_DATA else None)
         if kind is None:
-            raise ValueError(
-                f"{where}.inputs[{j}]: {name!r} isn't a metric input. Known: {[*SIM_INPUT_KINDS, *IMAGE_DATA]}"
-            )
+            if not isinstance(name, str) or name.startswith(STAGE_PREFIXES):
+                raise ValueError(
+                    f"{where}.inputs[{j}]: {name!r} isn't a metric input. Known: "
+                    f"{[*SIM_INPUT_KINDS, *IMAGE_DATA]}, or a key in the run's externals"
+                )
+            continue  # an external: `run` checks its key and its array, as the kind this place takes
         if kind != method.inputs[j]:
             raise ValueError(
                 f"{where}.inputs[{j}]: {method.name} takes a {method.inputs[j]} here, but {name} is a {kind}"
             )
+    if not any(name in SIM_INPUT_KINDS or name in IMAGE_DATA for name in inputs):
+        raise ValueError(
+            f"{where}: no simr item among the inputs {list(inputs)}, so the value wouldn't depend on the model"
+        )
     if section == "img_metrics" and not any(name in IMAGE_DATA for name in inputs):
         raise ValueError(f"{where}: no img.* input; a metric that uses only sim.* items belongs in sim_metrics")
     select = entry.get("select")
@@ -989,6 +1028,79 @@ def _metric_entry(where: str, entry, section: str) -> dict:
     if unknown:
         raise ValueError(f"{where}.params: unknown settings {unknown}. {method.name} has: {list(method.settings)}")
     return {"method": method.name, "inputs": list(inputs), "select": select, "params": {**method.settings, **params}}
+
+
+def _external_uses(sections: dict[str, list[dict]]) -> dict[str, tuple[str, str]]:
+    """The externals the filled-in metric entries use: key -> (the input kind it's used as, the first
+    place that uses it). One external has one kind: using a key as two kinds is an error."""
+    uses: dict[str, tuple[str, str]] = {}
+    for section, entries in sections.items():
+        for k, entry in enumerate(entries):
+            kinds = metrics.METHODS[entry["method"]].inputs
+            for j, name in enumerate(entry["inputs"]):
+                if name in SIM_INPUT_KINDS or name in IMAGE_DATA:
+                    continue
+                where = f"{section}[{k}].inputs[{j}]"
+                if name in uses and uses[name][0] != kinds[j]:
+                    raise ValueError(
+                        f"{where}: the external {name!r} is used as a {kinds[j]} here but as a "
+                        f"{uses[name][0]} in {uses[name][1]}; one external has one kind"
+                    )
+                uses.setdefault(name, (kinds[j], where))
+    return uses
+
+
+def _read_externals(externals, uses: dict[str, tuple[str, str]], image_configs: list) -> dict[str, np.ndarray]:
+    """The external arrays the metrics use, loaded and checked before anything runs: key -> a read-only
+    float32 array. `uses` is `_external_uses`' dict. Raises ValueError for any problem (see `run`)."""
+    if externals is None:
+        externals = {}
+    if not isinstance(externals, dict):
+        raise ValueError(f"externals must be a dict, key -> array or path: got {type(externals).__name__}")
+    for key in externals:
+        if not isinstance(key, str) or key.startswith(STAGE_PREFIXES):
+            raise ValueError(f"externals: a key must be a string that doesn't start with {STAGE_PREFIXES}: {key!r}")
+    for key, (_, where) in uses.items():
+        if key not in externals:
+            given = f"externals has {sorted(externals)}" if externals else "no externals were given"
+            raise ValueError(f"{where}: {key!r} isn't a simr item, so it must be a key in externals, but {given}")
+    unused = sorted(set(externals) - set(uses))
+    if unused:
+        logger.info("simr: externals no metric uses, ignored: %s", unused)
+    arrays = {}
+    for key, (kind, where) in uses.items():
+        array = _external_array(key, externals[key])
+        metrics.check_input(kind, array, f"externals[{key!r}] (used by {where})")
+        if kind == "image":
+            for i, config in enumerate(image_configs):
+                if array.shape != (config.height, config.width):
+                    raise ValueError(
+                        f"externals[{key!r}] (used by {where}) is {array.shape[0]} x {array.shape[1]} "
+                        f"(height x width), but image[{i}] makes {config.height} x {config.width} images"
+                    )
+        arrays[key] = array
+    return arrays
+
+
+def _external_array(key: str, value) -> np.ndarray:
+    """One external as a read-only float32 array: `value` itself, or the .npy file it's the path of."""
+    if isinstance(value, (str, Path)):
+        path = Path(value)
+        if not path.is_absolute() or path.suffix != ".npy":
+            raise ValueError(f"externals[{key!r}]: a path must be absolute and name a .npy file: {str(value)!r}")
+        try:
+            value = np.load(path, allow_pickle=False)
+        except (OSError, ValueError) as error:
+            raise ValueError(f"externals[{key!r}]: can't load {path}: {error}") from None
+    if not isinstance(value, np.ndarray) or value.dtype.kind not in "fiu":
+        got = f"{value.dtype} array" if isinstance(value, np.ndarray) else type(value).__name__
+        raise ValueError(f"externals[{key!r}] must be a numeric numpy array or the path of a .npy file: got {got}")
+    with np.errstate(over="ignore"):  # a value too big for float32 becomes inf, caught just below
+        array = np.ascontiguousarray(value, dtype=np.float32).view()
+    if not np.isfinite(array).all():
+        raise ValueError(f"externals[{key!r}] holds NaN or inf (as float32)")
+    array.flags.writeable = False
+    return array
 
 
 def _names(run_section: dict, key: str) -> list[str]:
