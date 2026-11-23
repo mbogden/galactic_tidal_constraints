@@ -9,7 +9,7 @@ time and knows nothing about disk.
 ```python
 from galactic_tidal_constraints.simr import simr
 
-result = simr.run(models, request, output=None)
+result = simr.run(models, request, output=None, map=map, externals=None)
 ```
 
 Only what exists today is described here. Decisions behind it are in [PLAN.md](../../PLAN.md).
@@ -88,6 +88,15 @@ disks share one pattern, stretched by `rout` and tilted by `theta` and `phi`: me
 between models come only from their parameters. To compare draws, list entries that differ only in
 `seed`. Details: [spam_physics.md](../spam_physics.md), `seed`.
 
+### Externals
+`externals` is a dict of arrays from outside the run (e.g. a target's orbit, image or particles), by
+key: each value an array, a `.npy` path, or `{"path": ..., "hash": ...}`. A metric input that isn't a
+`sim.*` or `img.*` item is one of these keys. Like the models, they aren't part of the request. Each
+external a metric uses is loaded once, converted to `float32`, checked and hashed before anything
+runs, and handed to metrics read-only. Keys, checks, hashes and the command line's `--externals`:
+[configuration.md](../configuration.md#externals). With a pool they're shared through `/dev/shm`
+(see Spreading the work).
+
 ### The output
 `output` is a runtime argument, not part of the request, because it doesn't change any result. With
 an output, **every run is recorded in a catalog**, whether or not it saves data (see The output
@@ -113,6 +122,7 @@ catalog). It's a folder or a `.json` file, told apart by name, so it works befor
 | `sim_metrics` | Each `sim_metrics` entry's value per simulation, an object array `[model, simulator, entry]`: a float (a scalar method, or `select`), a dict (a descriptive method), or `None` (failed or skipped). Shape `(N, S, 0)` with no entries |
 | `img_metrics` | Likewise per image: `[model, simulator, image, entry]` |
 | `sim_metric_configs`, `img_metric_configs` | The filled-in entries (`method`, `inputs`, `select` — `None` when absent — and `params` with every default), so `sim_metrics[..., k]` is entry `sim_metric_configs[k]` |
+| `externals` | Each external a metric used, by key: `{"source"` (its path, or `"memory"`), `"shape"`, `"hash"` (`simr.array_hash`)`}`. Empty when none was used |
 | `ids` | Each row's model id in the output's catalog, or `None` without an output (see The output catalog) |
 | `status`, `seconds`, `errors` | Per stage (`"sim"`, `"img"`, `"sim_metrics"`, `"img_metrics"`), indexed like its data or values; see Failures and status |
 
@@ -158,6 +168,11 @@ with ProcessPoolExecutor(max_workers=simr.available_cpus(), mp_context=multiproc
   the main process and, as the pool's initializer, each worker. Under `mpirun` it names the MPI rank
   instead (below); `use_rank=False` keeps process names, which `--mode local` uses, since a local pool
   started under `mpirun` (as Babbage's job scripts do) would otherwise read rank 0 in every process.
+- **Externals with a pool** aren't copied into each model's task. `simr` writes each one once to
+  `/dev/shm` (memory, not disk; a `float32` `.npy` given by path is used as it is), every worker maps
+  that copy read-only, and the folder is removed when the run ends. `/dev/shm` belongs to one node, so
+  **a pool that uses externals must have all its workers on the calling process's node**; a worker
+  elsewhere raises `SimrRunError`. Details: [configuration.md](../configuration.md#externals).
 - "spawn" starts workers fresh, as MPI does. A script that uses it needs the usual
   `if __name__ == "__main__":` guard.
 
@@ -225,7 +240,7 @@ code (see The command line) depends on the simulations only.
 ### Folder layout
 ```
 <output>/
-    catalog.json                  "models": id -> 14 parameters; "runs": one record per run that saved here
+    catalog.json                  "models": id -> 14 parameters; "runs": one record per run here
     model_000000/                 one folder per model id
         model.json                the model's record
         simulations/
@@ -324,6 +339,7 @@ The catalog (a folder's `catalog.json`, or a `.json` output) is the output's tab
   | `simulator` | The full simulator configs |
   | `image` | The full image configs |
   | `sim_metrics`, `img_metrics` | The filled-in metric entries (the values themselves aren't saved yet) |
+  | `externals` | Each used external's source, shape and hash, as in the result (the data itself isn't saved) |
   | `model_ids` | Row m's model id |
   | `status`, `seconds`, `errors` | As in the result, as lists; added when the run ends |
 

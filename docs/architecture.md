@@ -1,9 +1,10 @@
 # Architecture
 
 > **Status: this is the plan, and it's still in testing and development.** Built so far: the
-> Simulator and Image Creator stages and the `simr` workflow that runs them (see the module docs in
-> [modules/](modules/)). The metrics stage, the applications and the optimizer are still plans, and details may
-> change as they're written. Decisions and rules are in [PLAN.md](../PLAN.md).
+> Simulator, Image Creator and Metrics stages (the metrics with a few first methods, and externals as
+> their targets) and the `simr` workflow that runs them (see the module docs in [modules/](modules/)).
+> Composite scores, the applications and the optimizer are still plans, and details may change as
+> they're written. Decisions and rules are in [PLAN.md](../PLAN.md).
 
 This project simulates galaxy collisions, turns them into images, and scores how well they match a
 target. This page describes how the code is organized to do that: its levels, and what passes
@@ -54,7 +55,8 @@ unclear.
 - Files are flexible per experiment: none (GA fine-tuning), permanent (GZ Merger models) or scratch
   (high-resolution particles to re-visualize later). An application can also take returned data and
   save it its own way.
-- A failure returns `NaN` and writes the error to the log, so one bad model doesn't stop the run.
+- A failure is recorded, not raised: its cells hold `None`, its status is `"failed"` and the error is
+  logged, so one bad model doesn't stop the run ([modules/simr.md](modules/simr.md#failures-and-status)).
 - SIMR's own pool is simple and optional. Higher-level code can run its own and call lower-level
   code directly.
 
@@ -66,7 +68,7 @@ parallelization.
 |---|---|---|---|
 | **Simulator** | One model's encounter parameters | An orbit or particles | `simr/simulation.py` ([modules/simulation.md](modules/simulation.md), [spam_physics.md](spam_physics.md)) |
 | **Image Creator** | One particle set, plus its model (which sets the frame) | One image, `float32` in [0, 1] | `simr/image_creator.py` ([modules/image_creator.md](modules/image_creator.md)) |
-| **Metrics** | An image or orbit, plus the target | One float, or a dict for descriptive metrics | Not yet |
+| **Metrics** | Orbits, particles or images: the model's own, or externals (e.g. a target's) | One float, or a dict for descriptive metrics | `simr/metrics.py` ([modules/metrics.md](modules/metrics.md)) |
 
 - SPAM stays replaceable behind the Simulator stage.
 - The Image Creator is target-free: its config sets the pixels the two galaxies' centers land on, and

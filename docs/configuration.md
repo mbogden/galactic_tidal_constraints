@@ -173,6 +173,7 @@ Types follow JSON:
 ## What's recorded
 - With an output, the run's record in `catalog.json` holds every entry's **full** config, defaults
   filled in, so the output says exactly what ran even when the config file listed almost nothing.
+- It also records each external the metrics used: its source, shape and hash (see Externals).
 - Each model's `model.json` records the full config of every simulation and image entry it saved.
 - A saved simulation or image is reused only when its config matches **exactly**; a different config
   is neither used nor changed ([modules/simr.md](modules/simr.md#reuse)).
