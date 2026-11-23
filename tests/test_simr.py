@@ -1152,6 +1152,56 @@ def test_float_columns_stay_floats_through_a_pool():
     assert np.isfinite(column[:, 0]).all() and np.isnan(column[:, 1]).all()
 
 
+def test_the_result_holds_the_catalogs_config_and_code(tmp_path):
+    result = simr.run(PARAMS, metric_request(), output=tmp_path)
+    [record] = simr.load_catalog(tmp_path)["runs"]
+    assert set(result.config) == set(simr.REQUEST_KEYS)
+    assert result.config == {key: record[key] for key in result.config}
+    assert result.code == record["code"]
+
+
+def test_without_an_output_the_result_still_says_what_ran():
+    result = simr.run(PARAMS, metric_request(img_metrics=[]))
+    assert result.config["simulator"] == [json.loads(json.dumps(asdict(SimulatorConfig(**SMALL))))]
+    assert result.config["image"] == [json.loads(json.dumps(asdict(ImageConfig())))]
+    assert result.config["sim_metrics"] == result.sim_metric_configs
+    assert result.config["composite"] is None
+    for repo in ("galactic_tidal_constraints", "jspam"):
+        assert {"commit", "uncommitted_changes"} <= set(result.code[repo])
+
+
+def test_the_config_is_its_own_copy():
+    result = simr.run(PARAMS, metric_request(img_metrics=[]))
+    result.config["sim_metrics"][0]["method"] = "changed"
+    assert result.sim_metric_configs[0]["method"] == "closest_approach"
+
+
+def test_the_full_config_runs_again_as_a_request():
+    first = simr.run(PARAMS, {**metric_request(), "composite": {}})
+    again = simr.run(PARAMS, first.config)
+    assert again.config == first.config
+    assert again.composite.tolist() == first.composite.tolist()
+
+
+def test_a_full_config_with_derived_entries_runs_again():
+    target = sim.search_orbit(PARAMS, SimulatorConfig(**SMALL)).astype(np.float32)[::-1][::50].copy()
+    request = {
+        "simulator": SMALL,
+        "derived": [{"name": "win", "method": "recent_approach_cosine_window", "inputs": ["ext.target"]},
+                    {"name": "model_win", "method": "recent_approach_cosine_window", "inputs": ["sim.search_orbit"]}],
+        "sim_metrics": [{"method": "orbit_time_error", "inputs": ["ext.target", "sim.search_orbit", "drv.win"]}],
+    }
+    first = simr.run(PARAMS, request, externals={"target": target})
+    assert {"level", "shape", "hash"} <= set(first.config["derived"][0])  # recorded, not given
+    again = simr.run(PARAMS, first.config, externals={"target": target})
+    assert again.config == first.config
+    assert again.sim_metrics[0, 0, 0] == first.sim_metrics[0, 0, 0]
+    # The recorded keys are worked out again, never taken from the request
+    tampered = {**first.config, "derived": [{**first.config["derived"][0], "level": "img", "hash": "x"},
+                                            first.config["derived"][1]]}
+    assert simr.run(PARAMS, tampered, externals={"target": target}).config == first.config
+
+
 def test_the_catalog_records_the_metric_entries_and_statuses(tmp_path):
     simr.run(PARAMS, metric_request(), output=tmp_path)
     [record] = simr.load_catalog(tmp_path)["runs"]

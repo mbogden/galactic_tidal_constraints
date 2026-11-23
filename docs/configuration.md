@@ -158,7 +158,9 @@ as data or as weights:
   entry's alone, for that model: metrics that use it fail with a message naming it, and everything
   else carries on.
 - **Recorded:** the run's record lists every entry with its full settings and level, and for one
-  computed once, its array's shape and hash, so the config says how the weights were made.
+  computed once, its array's shape and hash, so the config says how the weights were made. A config
+  may carry those recorded keys (`level`, `shape`, `hash`), e.g. one saved from `result.config`; they're
+  ignored and worked out again.
 - **Not saved yet:** `run.save` doesn't take `drv.*` names.
 
 ### Externals
@@ -280,6 +282,10 @@ Types follow JSON:
 ## What's recorded
 - With an output, the run's record in `catalog.json` holds every entry's **full** config, defaults
   filled in, so the output says exactly what ran even when the config file listed almost nothing.
+- **The result holds the same**, with or without an output: `result.config` (the full config, as plain
+  JSON-ready data) and `result.code` (each repo's commit and whether it had uncommitted changes).
+  Saved as JSON, `result.config` runs again as a config; a derived entry's recorded `level`, `shape`
+  and `hash` are accepted there and worked out again, never taken from the file.
 - It also records each external the metrics used: its source, shape and hash (see Externals).
 - Each model's `model.json` records the full config of every simulation and image entry it saved.
 - A saved simulation or image is reused only when its config matches **exactly**; a different config

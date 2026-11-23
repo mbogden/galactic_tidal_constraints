@@ -184,6 +184,9 @@ CATALOG_WRITE_SECONDS = 60.0
 REQUEST_KEYS = ("run", "simulator", "image", "derived", "sim_metrics", "img_metrics", "composite")
 COMPOSITE_KEYS = ("sim_weights", "img_weights")
 DERIVED_ENTRY_KEYS = ("name", "method", "inputs", "params")
+# What simr records in a filled-in derived entry (`SimrResult.config`, the catalog). A request may hold them,
+# so a recorded config runs again as it is, but they're ignored: simr always works them out again.
+DERIVED_RECORDED_KEYS = ("level", "shape", "hash")
 # How often a derived entry is computed, from the inputs it's made from: once for the run (externals
 # only), per simulation (any sim.* item) or per image (any img.* item). Later ones include earlier ones.
 DERIVED_LEVELS = ("run", "sim", "img")
@@ -243,6 +246,14 @@ class SimrResult:
         externals: a record of each external the metrics used, by key: `{"source": the path it was
             loaded from, or "memory"; "shape"; "hash": `array_hash` of its data as the metrics saw it}`.
             Empty when no metric uses one. The same dict goes in the catalog's run record.
+        config: the whole request with every default filled in, as plain (JSON-ready) data: "run"
+            (return and save), "simulator" and "image" (every field of each entry), "derived",
+            "sim_metrics" and "img_metrics" (the filled-in entries), and "composite" (the filled-in
+            weights, or None). Exactly what the catalog's run record holds (pairs such as image
+            centers are lists), and its own copy, so a run without an output still says what ran;
+            saved as JSON, it runs again as a request.
+        code: the code that ran (`code_versions`): each repo's commit and whether it had uncommitted
+            changes, as the catalog's "code". Read on every run, with or without an output.
         ids: with an output, each row's model id in its catalog (in a folder, its data goes in
             `model_<id>`). All None without an output.
         status, seconds, errors: per stage ("sim", "img", "sim_metrics", "img_metrics"), each indexed
@@ -270,6 +281,8 @@ class SimrResult:
     composite_weights: dict | None
     derived_configs: list[dict]
     externals: dict[str, dict]
+    config: dict
+    code: dict
     ids: list[str | None]
     status: dict[str, np.ndarray]
     seconds: dict[str, np.ndarray]
@@ -375,20 +388,24 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
         raise ValueError(f"run.save names data to save, which needs an output folder, but {where}")
     catalog = _open_catalog(catalog_file) if catalog_file is not None else None
     ids = _model_ids(catalog, models) if catalog is not None else [None] * len(models)
-    versions = None
+    versions = code_versions()
+    # The whole request, every default filled in: the result's `config` and the catalog's run record hold
+    # the same thing.
+    full_config = {
+        "run": {"return": returned, "save": saved},
+        "simulator": [_json_ready(asdict(config)) for config in configs],
+        "image": [_json_ready(asdict(config)) for config in image_configs],
+        "derived": derived_entries,
+        "sim_metrics": sim_entries,
+        "img_metrics": img_entries,
+        "composite": composite_weights,
+    }
     if catalog is not None:
-        versions = code_versions()
         run_record = {
             "started": _now(),
             "finished": None,
             "code": versions,
-            "run": {"return": returned, "save": saved},
-            "simulator": [_json_ready(asdict(config)) for config in configs],
-            "image": [_json_ready(asdict(config)) for config in image_configs],
-            "derived": derived_entries,
-            "sim_metrics": sim_entries,
-            "img_metrics": img_entries,
-            "composite": composite_weights,
+            **full_config,
             "externals": external_records,
             "model_ids": ids,
         }
@@ -484,7 +501,8 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
                       sim_metrics=metric_values["sim_metrics"], img_metrics=metric_values["img_metrics"],
                       composite=composite, sim_metric_configs=sim_entries, img_metric_configs=img_entries,
                       composite_weights=composite_weights, derived_configs=derived_entries,
-                      externals=external_records, ids=ids, status=status, seconds=seconds, errors=errors)
+                      externals=external_records, config=json.loads(json.dumps(full_config)), code=versions, ids=ids,
+                      status=status, seconds=seconds, errors=errors)
 
 
 LOG_FORMAT = "%(asctime)s %(levelname)s [%(processName)s] %(name)s: %(message)s"
@@ -1223,7 +1241,7 @@ def _derived_entries(request: dict) -> list[dict]:
         where = f"derived[{i}]"
         if not isinstance(entry, dict):
             raise ValueError(f"{where} must be a dict with a name, a method and inputs: {entry!r}")
-        _reject_unknown(where, entry, DERIVED_ENTRY_KEYS)
+        _reject_unknown(where, entry, DERIVED_ENTRY_KEYS + DERIVED_RECORDED_KEYS)
         name = entry.get("name")
         if not isinstance(name, str) or not PLAIN_NAME.fullmatch(name):
             raise ValueError(

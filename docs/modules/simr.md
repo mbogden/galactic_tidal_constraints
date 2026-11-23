@@ -132,6 +132,8 @@ catalog). It's a folder or a `.json` file, told apart by name, so it works befor
 | `composite_weights` | The weights the composite used, filled in: `{"sim_weights", "img_weights"}` as nested lists, a key per level with entries. `None` without the section |
 | `derived_configs` | The filled-in `derived` entries, in order: `name`, `method`, `inputs`, `params` with every default, `level` (`"run"`: computed once; `"sim"`: per simulation; `"img"`: per image), and for `"run"` ones the array's `shape` and `hash` |
 | `externals` | Each external a metric used, by key: `{"source"` (its path, or `"memory"`), `"shape"`, `"hash"` (`simr.array_hash`)`}`. Empty when none was used |
+| `config` | The whole request with every default filled in, as plain JSON-ready data: `run`, `simulator`, `image`, `derived`, `sim_metrics`, `img_metrics`, `composite`. Exactly what the catalog's run record holds, so a run without an output still says what ran, and it runs again as a request (`simr.run(models, result.config, externals=...)`) |
+| `code` | The code that ran: each repo's commit and whether it had uncommitted changes (`simr.code_versions()`, the catalog's `"code"`). Read on every run, with or without an output |
 | `ids` | Each row's model id in the output's catalog, or `None` without an output (see The output catalog) |
 | `status`, `seconds`, `errors` | Per stage (`"sim"`, `"img"`, `"sim_metrics"`, `"img_metrics"`), indexed like its data or values; see Failures and status |
 
