@@ -1,8 +1,8 @@
 # TNG targets (`tng.py`)
 
 The IllustrisTNG (TNG50-1) data this project already has: two readers, two functions that measure a
-galaxy from its particles, and two that convert units. Both files are HDF5 and live in the data
-folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
+galaxy from its particles, one that undoes the simulation box's wrap-around, and two that convert
+units. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
 functions work in whatever units they are given; units change only where `physical` or `spam_units`
 is called. Nothing here changes the frame yet.
 
@@ -90,6 +90,29 @@ turns with the frame. So a spin is moved to another frame by the rotation alone,
 
 **`half_mass_radius(positions, masses, center)`** returns the distance from `center` of the first
 particle, going outward, at which the mass inside reaches half the total.
+
+## The box edge
+TNG50-1 simulates a cube 35,000 ckpc/h on a side (`tng.BOX`), and the cube wraps around: what leaves
+through one face comes back in through the opposite one. Stored coordinates run from 0 to 35,000, so
+two points close together can sit on either side of a face with coordinates almost a whole box apart.
+Longitude works the same way: 179° East and 179° West are 2° apart, not 358°.
+
+**`nearest_image(positions, reference, box=BOX)`** shifts each position by whole box lengths until
+every coordinate is within half a box of `reference`, and returns them as `float64`:
+
+```python
+tng.nearest_image([50.0, 100.0, 200.0], [34950.0, 120.0, 180.0])       # [35050., 100., 200.]
+secondary = tng.nearest_image(table["s_SubhaloPos"], table["p_SubhaloPos"])   # a whole track at once
+apart = secondary - table["p_SubhaloPos"]
+```
+
+- `reference` is one point (a galaxy's center, for its particles) or one per position (a track).
+- Call it on stored values, before `physical`: the box is 35,000 only in comoving ckpc/h.
+- The results may lie outside 0 to 35,000. Only positions relative to the reference are meaningful.
+- In the target table, 20 rows in 6 encounters have the pair split by a face; stored, they look
+  about 34,800 ckpc/h apart. Two target archives (`49000000112167`, `87000000451863`) have galaxies
+  whose own particles are split. An archive's positions can't be mended as read, because they are in
+  the old rotated frame; they have to be taken back to the box frame first.
 
 ## Units
 Two steps, each one function with the factors in one table.

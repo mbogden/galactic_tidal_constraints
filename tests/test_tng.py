@@ -267,6 +267,39 @@ def test_half_mass_radius_errors():
         tng.half_mass_radius(np.zeros((4, 3)), np.ones(4), [0, 0])
 
 
+# --- The box edge ----------------------------------------------------------------------------------------
+
+
+def test_a_position_across_the_face_comes_back_beside_the_reference():
+    assert tng.nearest_image([50.0, 100.0, 34990.0], [34950.0, 120.0, 10.0]).tolist() == [35050.0, 100.0, -10.0]
+
+
+def test_positions_within_half_a_box_do_not_move():
+    positions = np.array([[10.0, 20.0, 30.0], [17000.0, 0.0, 34999.0], [100.0, 17400.0, 18000.0]])
+    moved = tng.nearest_image(positions, [0.0, 0.0, 34000.0])
+    assert np.array_equal(moved[0], [10.0, 20.0, 35030.0])   # only z is more than half a box away
+    assert np.array_equal(moved[1], [17000.0, 0.0, 34999.0])
+    assert np.array_equal(moved[2], [100.0, 17400.0, 18000.0])
+
+
+def test_one_reference_per_row_fixes_a_whole_track():
+    primary = np.array([[34900.0, 500.0, 500.0], [34990.0, 500.0, 500.0], [80.0, 500.0, 500.0]])
+    secondary = np.array([[34950.0, 500.0, 500.0], [40.0, 500.0, 500.0], [130.0, 500.0, 500.0]])
+    apart = tng.nearest_image(secondary, primary) - primary
+    assert apart[:, 0].tolist() == [50.0, 50.0, 50.0]
+
+
+def test_the_box_size_can_be_given_and_results_are_float64():
+    moved = tng.nearest_image(np.array([9.0, 1.0, 5.0], dtype=np.float32), [1.0, 9.0, 5.0], box=10.0)
+    assert moved.tolist() == [-1.0, 11.0, 5.0] and moved.dtype == np.float64
+    assert tng.BOX == 35000.0
+
+
+def test_a_box_of_zero_is_an_error():
+    with pytest.raises(ValueError, match="box must be above 0"):
+        tng.nearest_image([1.0, 2.0, 3.0], [0.0, 0.0, 0.0], box=0.0)
+
+
 # --- Units -----------------------------------------------------------------------------------------------
 
 
@@ -355,6 +388,22 @@ def test_the_real_table():
     for target in TARGETS:
         assert (table["p_SubhaloIDRaw"] == target).sum() == 1
     assert np.allclose(table["scale_factor"], 1 / (1 + table["redshift"]))
+
+
+@needs_data
+def test_real_pairs_split_by_the_box_edge_are_mended_by_nearest_image():
+    table = tng.read_table(DATA / "moi-4-targets.h5")
+    primary, secondary = table["p_SubhaloPos"].astype(np.float64), table["s_SubhaloPos"].astype(np.float64)
+    stored = np.linalg.norm(secondary - primary, axis=1)
+    mended = np.linalg.norm(tng.nearest_image(secondary, primary) - primary, axis=1)
+    split = np.abs(stored - mended) > 1
+    # 20 rows in 6 encounters have the pair on either side of a face: stored, they look a whole box apart.
+    assert split.sum() == 20 and stored[split].min() > 34000
+    assert sorted(set(table["moi_2"][split].tolist())) == [40000000066106, 55000000131486, 55000000306245,
+                                                            67000000260243, 99000000229933, 99000000493433]
+    # Mended, every pair in the table is within 1400 ckpc/h, and the other rows haven't moved.
+    assert mended.max() < 1400
+    assert np.array_equal(stored[~split], mended[~split])
 
 
 @needs_data

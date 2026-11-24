@@ -8,6 +8,7 @@ Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
 
     read_table, read_archive                return the values exactly as stored
     galaxy_properties, half_mass_radius     measure a galaxy from its particles, in the units given
+    nearest_image                           undo the simulation box's wrap-around
     physical, spam_units                    stored values -> kpc, km/s, Msun -> SPAM's units
 
 The readers and the measuring functions convert nothing; units change only where `physical` or
@@ -28,6 +29,10 @@ TABLE_COLUMNS = ("moi_2", "snap", "p_SubhaloIDRaw", "s_SubhaloIDRaw")
 
 # Rows read at a time when only some particle types are wanted (bounds the memory used).
 _CHUNK_ROWS = 4_000_000
+
+# The side of TNG50-1's simulation box, in ckpc/h. The box wraps around: what leaves through one face
+# comes back in through the opposite one, so stored coordinates run from 0 to BOX.
+BOX = 35000.0
 
 # TNG's Hubble parameter h (Planck 2015): its lengths and masses are stored "per h".
 H = 0.6774
@@ -319,3 +324,29 @@ def spam_units(values, quantity: str) -> np.ndarray:
     if quantity not in _SPAM_UNIT:
         raise ValueError(f"Unknown quantity {quantity!r}. Known: {list(_SPAM_UNIT)}")
     return np.asarray(values, dtype=np.float64) / _SPAM_UNIT[quantity]
+
+
+def nearest_image(positions, reference, box: float = BOX) -> np.ndarray:
+    """Move positions to the copy nearest a reference point, undoing the box's wrap-around.
+
+    The simulation box wraps around, so two points close together can sit on either side of a face
+    with coordinates almost a whole box apart (34950 and 50, say). This shifts each position by whole
+    box lengths until every coordinate is within half a box of the reference (50 becomes 35050), so
+    that differences and averages come out right.
+
+    Args:
+        positions: (3,) or (n, 3), stored positions in the box frame (ckpc/h).
+        reference: (3,), the point to stay near: for a galaxy's particles, its center. Or (n, 3),
+            one reference per position: `nearest_image(secondary_track, primary_track)`.
+        box: the box's side, in the units of `positions`. TNG50-1's by default.
+
+    Returns:
+        The positions as float64, in the shape of `positions`. They may lie outside 0 to `box`.
+
+    Call it on stored values, before `physical`: the box is 35000 only in comoving ckpc/h. It can't
+    be used on an archive's positions as read, which are in the old rotated frame.
+    """
+    if not box > 0:
+        raise ValueError(f"box must be above 0, got {box}")
+    positions = np.asarray(positions, dtype=np.float64)
+    return positions - box * np.round((positions - np.asarray(reference, dtype=np.float64)) / box)
