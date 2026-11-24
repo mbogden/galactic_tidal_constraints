@@ -20,7 +20,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def test_the_first_methods_are_registered():
-    assert set(metrics.METHODS) == {"closest_approach", "absolute_difference", "orbit_time_error",
+    assert set(metrics.METHODS) == {"closest_approach", "absolute_difference", "correlation", "orbit_time_error",
                                     "orbit_position_error", "pca_shape", "pca_difference"}
     assert metrics.METHODS["closest_approach"].kind == "descriptive"
     assert metrics.METHODS["absolute_difference"].kind == "scalar"

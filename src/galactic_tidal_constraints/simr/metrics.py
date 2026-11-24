@@ -330,6 +330,45 @@ def absolute_difference(a: np.ndarray, b: np.ndarray, weights: np.ndarray | None
     return float((weights * difference).sum() / weights.sum())
 
 
+# The smallest (weighted) pixel variance a correlation accepts: below it the image counts as flat, so
+# rounding noise in a constant image is never mistaken for a pattern. Images are in [0, 1].
+CORRELATION_MIN_VARIANCE = 1e-20
+
+
+@metric(kind="scalar", inputs=("image", "image"), best="high", range=(-1.0, 1.0), weights=True)
+def correlation(a: np.ndarray, b: np.ndarray, weights: np.ndarray | None = None) -> float:
+    """The Pearson correlation of two greyscale images' pixels: how alike their patterns are, whatever
+    their overall brightness or contrast.
+
+    1 means one image is the other scaled and shifted (b = c * a + d, c > 0), 0 no linear relation,
+    -1 the negative. Unlike `absolute_difference`, a model image that's uniformly dimmer than the
+    target still scores 1. Best is high, where the difference metrics are best low.
+
+    Args:
+        a, b: greyscale images of the same shape, (height, width).
+        weights: None (every pixel counts equally), or a weight per pixel, the images' shape: the
+            means, variances and covariance are then weighted ones, so the pattern counts most where
+            the weights are large (e.g. `derived.difference_weights(target, unperturbed)`).
+
+    Raises:
+        ValueError: the shapes differ; or an image has no variation (where the weights count), so the
+        correlation is undefined: a metric failure, not 0.
+    """
+    if a.shape != b.shape:
+        raise ValueError(f"the images must have the same shape: {a.shape} vs {b.shape}")
+    share = np.ones(a.shape) if weights is None else check_weights(weights, a, "image", "the weights")
+    share = share / share.sum()
+    from_mean_a = a.astype(np.float64) - (share * a).sum()
+    from_mean_b = b.astype(np.float64) - (share * b).sum()
+    variance_a, variance_b = (share * from_mean_a**2).sum(), (share * from_mean_b**2).sum()
+    if variance_a < CORRELATION_MIN_VARIANCE or variance_b < CORRELATION_MIN_VARIANCE:
+        flat = " and ".join(name for name, variance in (("the first", variance_a), ("the second", variance_b))
+                            if variance < CORRELATION_MIN_VARIANCE)
+        raise ValueError(f"the correlation is undefined: {flat} image has no variation where the pixels count")
+    value = (share * from_mean_a * from_mean_b).sum() / math.sqrt(variance_a * variance_b)
+    return float(min(1.0, max(-1.0, value)))  # rounding can step a hair outside [-1, 1]
+
+
 # --- Orbit errors: a model's orbit against a target's ---------------------------------------------------
 
 # The most squared distances held at once while searching for nearest points (about 32 MB as float64).

@@ -103,6 +103,7 @@ This table is guarded by a test (`tests/test_metrics.py`) against `metrics.table
 |---|---|---|---|---|---|---|
 | `closest_approach` | descriptive | orbit | `t` (), `distance` (), `position` (3,), `velocity` (3,) | — | — | — |
 | `absolute_difference` | scalar | image, image; optional image weights | one float | low | [0, 1] | — |
+| `correlation` | scalar | image, image; optional image weights | one float | **high** | [−1, 1] | — |
 | `orbit_time_error` | scalar | orbit (target), orbit (model); optional weights | one float | low | [0, ∞) | — |
 | `orbit_position_error` | scalar | orbit (target), orbit (model); optional weights | one float | low | [0, ∞) | — |
 | `pca_shape` | descriptive | particles | `axes` (3,), `vectors` (3, 3), `center` (3,), `b_a` (), `c_a` () | — | — | `columns="position"`, `center="mean"`, `trim_quantile=None` |
@@ -119,6 +120,14 @@ This table is guarded by a test (`tests/test_metrics.py`) against `metrics.table
   it's the weighted mean, Σ w·|a − b| / Σ w: with a target, a model and weights from
   `derived.difference_weights(target, unperturbed)`, differences count most where the target shows
   tidal features.
+- **`correlation`**: the Pearson correlation of two same-shaped images' pixels: how alike their
+  **patterns** are, whatever their overall brightness or contrast. 1 means one image is the other
+  scaled and shifted, 0 no linear relation, −1 the negative; a model image that's uniformly dimmer than
+  the target still gets 1, where `absolute_difference` sees a gap. With a weight image, the means,
+  variances and covariance are weighted, so the pattern counts most where the weights are large. An
+  image with no variation (where the pixels count) makes it undefined: the cell fails; it isn't 0.
+  **Best is high**, unlike every other scalar method so far, so a composite that mixes it with them
+  pulls two ways unless the application handles it (normalization is a later topic).
 - **`orbit_time_error`**: how far a model's orbit is from a target's **at the same times**: the
   weighted time average of the squared distance between them, in SPAM length units squared. For each
   target row the model's position at the nearest model time is used. 0 means the model is where the
@@ -186,5 +195,5 @@ fitness = metrics.composite(sim_metrics=result.sim_metrics, sim_weights=[[0.5, 0
 - `examples/notebooks/metrics_tour.ipynb`: a hands-on tour: each method on real arrays, externals,
   the derived arrays, weights and the orbit metrics, and one config that uses them all.
 - `tests/test_metrics.py`: the registry's checks and the methods on small synthetic arrays;
-  `tests/test_orbit_metrics.py`: the orbit metrics and weights; `tests/test_simr_weights.py`: through
+  `tests/test_correlation.py`: the correlation; `tests/test_orbit_metrics.py`: the orbit metrics and weights; `tests/test_simr_weights.py`: through
   `simr`; `tests/test_composite.py`: the composite.
