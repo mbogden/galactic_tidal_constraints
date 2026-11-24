@@ -11,6 +11,9 @@ Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
     archive_to_box                          take an archive's particles out of the old frame
     nearest_image                           undo the simulation box's wrap-around
     physical, spam_units                    stored values -> kpc, km/s, Msun -> SPAM's units
+    core_velocity, hubble_rate, relative_to, orbit_rotation
+                                            the frame SPAM uses: primary at the origin and at rest,
+                                            secondary on +x, the orbit in the x-y plane
 
 The readers and the measuring functions convert nothing; units change only where `physical` or
 `spam_units` is called. What the stored values mean is in each function's docstring.
@@ -37,6 +40,10 @@ BOX = 35000.0
 
 # TNG's Hubble parameter h (Planck 2015): its lengths and masses are stored "per h".
 H = 0.6774
+
+# TNG's matter density today, as a fraction of the critical density (Planck 2015). The universe is
+# flat, so dark energy is 1 - OMEGA_M.
+OMEGA_M = 0.3089
 
 # The gravitational constant, in kpc (km/s)^2 / Msun.
 G = 4.30091e-6
@@ -385,3 +392,106 @@ def archive_to_box(positions, velocities, pos_matrix, vel_matrix) -> tuple[np.nd
             raise ValueError(f"{name} doesn't hold a rotation")
         results.append((values - shift) @ rotation)  # row form of R^T (x - t)
     return results[0], results[1]
+
+
+def hubble_rate(scale_factor):
+    """The universe's expansion rate at a snapshot, in TNG's cosmology.
+
+    Args:
+        scale_factor: the snapshot's scale factor a = 1 / (1 + z); a number or an array.
+
+    Returns:
+        H(a) in km/s per kpc: two points a distance d kpc apart are carried apart at H * d km/s.
+        Today (a = 1) it is 0.06774, which is 67.74 km/s per Mpc.
+
+    H(a) = H0 * sqrt(OMEGA_M / a**3 + 1 - OMEGA_M): a flat universe of matter and dark energy.
+    """
+    scale_factor = np.asarray(scale_factor, dtype=np.float64)
+    if np.any(scale_factor <= 0) or np.any(scale_factor > 1):
+        raise ValueError("scale_factor must be above 0 and at most 1")
+    return 0.1 * H * np.sqrt(OMEGA_M / scale_factor ** 3 + 1 - OMEGA_M)  # 100 h km/s/Mpc = 0.1 h km/s/kpc
+
+
+def core_velocity(positions, velocities, masses, center, radius: float) -> np.ndarray:
+    """The mean velocity of the particles within a radius of a center.
+
+    A galaxy's nucleus moves differently from the average of its whole halo, most of all during an
+    encounter. This measures the nucleus: give it the star particles, the nucleus's position and a
+    small radius. Averaging over many stars removes their own motion inside the core.
+
+    Args:
+        positions: (n, 3), the particles' positions.
+        velocities: (n, 3), their velocities.
+        masses: (n,), their masses.
+        center: (3,), the nucleus.
+        radius: how far from the center a particle may be, in the units of `positions`.
+
+    Returns:
+        (3,), the mass-weighted mean velocity of the particles inside, in the units of `velocities`.
+    """
+    positions, velocities, masses = _particles(positions, velocities, masses)
+    center = np.asarray(center, dtype=np.float64)
+    if center.shape != (3,):
+        raise ValueError(f"center has shape {center.shape}, expected (3,)")
+    inside = np.linalg.norm(positions - center, axis=1) < radius
+    if not masses[inside].sum() > 0:
+        raise ValueError(f"No particles within {radius} of the center")
+    return masses[inside] @ velocities[inside] / masses[inside].sum()
+
+
+def relative_to(positions, velocities, center, center_velocity, scale_factor,
+                hubble_flow: bool = True) -> tuple[np.ndarray, np.ndarray]:
+    """Positions and velocities relative to a center: the primary at the origin and at rest.
+
+    Args:
+        positions: (3,) or (n, 3), in kpc (after `nearest_image` and `physical`).
+        velocities: the same shape, in km/s.
+        center: (3,), the primary's nucleus, in kpc.
+        center_velocity: (3,), its velocity, in km/s.
+        scale_factor: the snapshot's scale factor (used for the Hubble flow).
+        hubble_flow: add the universe's expansion to the velocities. On by default.
+
+    Returns:
+        (positions, velocities) relative to the center, in kpc and km/s, as float64.
+
+    TNG's velocities are peculiar: the expansion of the universe is taken out. The rate at which a
+    physical distance really changes includes it, v = v_peculiar + H * r, and that is the velocity a
+    code working in physical coordinates (SPAM) needs. The added part points along r, so it changes
+    speeds a little (H is about 0.1 km/s per kpc) and never the plane of an orbit.
+    """
+    positions = np.asarray(positions, dtype=np.float64) - np.asarray(center, dtype=np.float64)
+    velocities = np.asarray(velocities, dtype=np.float64) - np.asarray(center_velocity, dtype=np.float64)
+    if positions.shape != velocities.shape or positions.shape[-1] != 3:
+        raise ValueError(f"positions {positions.shape} and velocities {velocities.shape} must both be (3,) or (n, 3)")
+    if hubble_flow:
+        velocities = velocities + hubble_rate(scale_factor) * positions
+    return positions, velocities
+
+
+def orbit_rotation(relative_position, relative_velocity) -> np.ndarray:
+    """The rotation into the orbit's own axes: secondary on +x, the orbit in the x-y plane.
+
+    Args:
+        relative_position: (3,), the secondary's nucleus relative to the primary's.
+        relative_velocity: (3,), its velocity relative to the primary's.
+
+    Returns:
+        (3, 3), a rotation matrix R. Its rows are the new axes: x toward the secondary, z along
+        position x velocity (the orbit's angular momentum), y completing them. Apply it with
+        `vectors @ R.T`, the same for positions, velocities and spins. Afterwards the secondary is at
+        (distance, 0, 0), its velocity has no z part, and it moves counter-clockwise seen from +z.
+
+    The plane is the one the pair moves in at this moment. A head-on pair (velocity along the line
+    between the nuclei) has no such plane, which is an error.
+    """
+    position = np.asarray(relative_position, dtype=np.float64)
+    velocity = np.asarray(relative_velocity, dtype=np.float64)
+    if position.shape != (3,) or velocity.shape != (3,):
+        raise ValueError(f"Expected two (3,) vectors, got {position.shape} and {velocity.shape}")
+    momentum = np.cross(position, velocity)
+    size = np.linalg.norm(position) * np.linalg.norm(velocity)
+    if not size > 0 or np.linalg.norm(momentum) < 1e-9 * size:
+        raise ValueError("No orbit plane: the relative velocity is along the line between the two nuclei")
+    x_axis = position / np.linalg.norm(position)
+    z_axis = momentum / np.linalg.norm(momentum)
+    return np.stack([x_axis, np.cross(z_axis, x_axis), z_axis])

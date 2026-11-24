@@ -126,6 +126,79 @@ What this settles:
 - **A spin only turns with a change of frame.** Moving the origin or adding a velocity to everything
   leaves it unchanged; a rotation turns it like any vector.
 
+## A galaxy's velocity
+The catalog's `SubhaloVel` is the mass-weighted mean over every particle bound to the galaxy, which is
+mostly its dark matter halo. During an encounter the halo and the nucleus stop moving together: the
+halos overlap, exchange energy and are stripped, while the dense nuclei keep orbiting each other. SPAM's
+two bodies stand for the nuclei, so the velocity it needs is the nucleus's. Two measures of it:
+
+- **The stars within 1 kpc of the nucleus** (`tng.core_velocity`). A single star won't do: the most
+  bound particle is a star moving at a few hundred km/s inside the core (on the six test galaxies its
+  velocity is 110 to 330 km/s away from the core's mean). Averaging 100,000 or more stars removes that.
+- **The galaxy's central black hole.** Each galaxy in the 61 target archives has exactly one, within
+  0.1 kpc of `SubhaloPos`.
+
+On the three test targets (`test_the_nuclei_move_faster_than_the_catalogs_halo_velocities_say`,
+`test_each_galaxys_black_hole_sits_on_its_nucleus_and_moves_with_its_core_stars`):
+
+| Relative speed of the pair (km/s, Hubble flow included) | `62000000190717` | `75000000121160` | `75000000317209` |
+|---|---|---|---|
+| Catalog `SubhaloVel` | 101 | 65 | 53 |
+| Stars within 1 kpc of each nucleus | 145 | 107 | 87 |
+| The two black holes | 142 | 111 | 90 |
+
+- The nuclei move 40 to 65% faster relative to each other than the halo averages say, and the plane
+  of the orbit differs by 9°, 27° and 33°.
+- The two nucleus measures agree to 5 to 11 km/s, and their orbit planes to 1° to 7.5°.
+- The star measure is steady: between 0.5 and 2 kpc the result changes by 3 to 7 km/s.
+
+**Why the black hole follows the core: TNG moves it there.** A real supermassive black hole is held at
+a galaxy's center by the drag of the stars around it. In the simulation a star or dark matter particle
+is itself 10⁵ M☉ or more, so that drag is "not captured accurately", and close passes with single
+particles would knock a black hole out of its galaxy. TNG therefore uses "an ad hoc centring
+prescription designed to keep black holes very close to the potential minimum": at every global
+timestep the black hole is moved to the potential minimum of its surroundings (a region holding the
+equivalent of 1000 resolution elements), "and its velocity is set to the mean mass-weighted velocity
+of the region" (Weinberger et al. 2017, section 2.2, [arXiv:1607.03486](https://arxiv.org/abs/1607.03486)).
+So a black hole's velocity is itself a local average, and its agreement with the stars is expected,
+not an independent confirmation.
+
+## The Hubble flow
+TNG's velocities are peculiar: the expansion of the universe is taken out. But the rate at which a
+physical distance between two galaxies really changes includes it:
+
+    v = v_peculiar + H(a) × r
+
+where r is the physical separation and H(a) = H0 √(Ωm / a³ + 1 − Ωm) is the expansion rate at that
+snapshot (`tng.hubble_rate`; 0.0677 km/s per kpc today, 0.096 at a = 0.62). SPAM works in physical
+coordinates, so this is the velocity it needs, and `tng.relative_to` adds the H × r part unless told
+not to.
+
+- It is small for close pairs: 3 km/s for nuclei 35 kpc apart, 9 km/s at 111 kpc.
+- It points along the separation, so it changes the speed and never the plane of the orbit.
+
+## The frame SPAM needs
+SPAM puts the primary at the origin and at rest ([spam_physics.md](spam_physics.md#what-spam-is)), and
+any rotation of the whole system is allowed: the physics doesn't change. This project fixes the
+rotation by the orbit itself (`tng.orbit_rotation`), at the target snapshot:
+
+- **x** points from the primary's nucleus to the secondary's.
+- **z** is along the orbit's angular momentum, relative position × relative velocity, so the pair
+  turns counter-clockwise seen from +z.
+- **y** completes them.
+
+The secondary is then at (distance, 0, 0) and its velocity has no z part.
+
+- **This is the plane the pair moves in now, and SPAM's own orbit lies in it**, since the forces
+  on SPAM's two centers lie in that plane.
+- **TNG's earlier orbit need not lie in it.** Real halos are extended and lumpy, so the plane turns
+  over time. Drawn in this frame, the track of `62000000190717` over the last 1.5 Gyr stays within
+  20% of its distance from the plane; those of `75000000121160` and `75000000317209` leave it by half
+  their distance.
+- **A spin only turns:** positions, velocities and spins are all rotated by the same matrix, and
+  nothing else is done to a spin.
+- A pair moving exactly along the line between the nuclei has no orbit plane.
+
 ## SPAM's side
 SPAM works with G = 1 in its own units ([spam_physics.md](spam_physics.md#units)). `tng.spam_units`
 converts physical values into them:

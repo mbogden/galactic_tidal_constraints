@@ -2,9 +2,9 @@
 
 The IllustrisTNG (TNG50-1) data this project already has: two readers, two functions that measure a
 galaxy from its particles, one that takes an archive's particles out of the old frame, one that undoes
-the simulation box's wrap-around, and two that convert units. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
+the simulation box's wrap-around, two that convert units, and four that build the frame SPAM uses. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
 functions work in whatever units they are given; units change only where `physical` or `spam_units`
-is called. The only change of frame so far is `archive_to_box`, back to the simulation box.
+is called, and the frame only where `archive_to_box`, `relative_to` or a rotation is applied.
 
 ```python
 from galactic_tidal_constraints import tng
@@ -168,6 +168,45 @@ SPAM works with G = 1. Its length and mass units are Wallin's (`parameters_modul
 fork); the velocity and time units follow from them, √(G × mass ÷ length) and length ÷ velocity, with
 G = 4.30091 × 10⁻⁶ kpc (km/s)² / M☉ (`tng.G`). They agree with the constants in SPAM's source to
 3 × 10⁻⁵.
+
+## The frame SPAM uses
+SPAM works with the primary's nucleus at the origin and at rest. Four functions build that frame from
+box-frame values in physical units; why each step is what it is, is in
+[tng_physics.md](../tng_physics.md#a-galaxys-velocity).
+
+| Function | Returns |
+|---|---|
+| `core_velocity(positions, velocities, masses, center, radius)` | (3,), the mass-weighted mean velocity of the particles within `radius` of `center`. Units as given. No particle inside is an error |
+| `hubble_rate(scale_factor)` | H at that snapshot, in km/s per kpc (0.06774 today) |
+| `relative_to(positions, velocities, center, center_velocity, scale_factor, hubble_flow=True)` | `(positions, velocities)` relative to the center, in kpc and km/s. With `hubble_flow` on, H × position is added to the velocities |
+| `orbit_rotation(relative_position, relative_velocity)` | (3, 3) rotation `R`: x toward the secondary, z along position × velocity. A head-on pair is an error |
+
+One target, start to finish (`a` is the row's `scale_factor`; `p_pos`, `s_pos` its two `SubhaloPos`):
+
+```python
+positions, velocities = tng.archive_to_box(archive["positions"], archive["velocities"], pos_matrix, vel_matrix)
+positions = tng.physical(tng.nearest_image(positions, p_pos), "length", a)           # kpc, whole galaxies
+velocities = tng.physical(velocities, "particle_velocity", a)                        # km/s
+nucleus = {"p": tng.physical(p_pos, "length", a),
+           "s": tng.physical(tng.nearest_image(s_pos, p_pos), "length", a)}
+
+stars = archive["particle_type"] == tng.PARTICLE_TYPES["stars"]
+moving = {side: tng.core_velocity(positions[stars], velocities[stars], archive["masses"][stars], nucleus[side], 1.0)
+          for side in "ps"}                                                          # each nucleus's velocity
+
+secondary = tng.relative_to(nucleus["s"], moving["s"], nucleus["p"], moving["p"], a)
+R = tng.orbit_rotation(*secondary)
+positions, velocities = tng.relative_to(positions, velocities, nucleus["p"], moving["p"], a)
+positions, velocities = positions @ R.T, velocities @ R.T                            # the same for a spin
+```
+
+- Afterwards the primary's nucleus is at the origin and at rest, the secondary's is at
+  (distance, 0, 0), and the pair turns counter-clockwise in the x-y plane.
+- A rotation is applied with `vectors @ R.T`. There is no shift inside it, so a spin can't pick one up.
+- A galaxy's black hole gives a second measure of its nucleus's velocity: it is one row of the
+  archive, `velocities[archive["particle_type"] == tng.PARTICLE_TYPES["bh"]]`. The tests compare the two.
+- An earlier snapshot's nucleus positions (from the table) can be turned by the same `R` to draw the
+  past orbit in this frame. Only the target snapshot has a measured nucleus velocity.
 
 ## Checked against the TNG catalog
 The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same

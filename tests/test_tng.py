@@ -420,6 +420,79 @@ def test_an_unknown_spam_quantity_is_an_error():
         tng.spam_units(1.0, "spin")
 
 
+# --- The frame SPAM uses ---------------------------------------------------------------------------------
+
+
+def test_the_hubble_rate_today_and_at_half_the_universes_size():
+    assert tng.hubble_rate(1.0) == pytest.approx(0.06774)  # 67.74 km/s per Mpc
+    # At a = 0.5 matter is 8 times denser: H = H0 * sqrt(0.3089 * 8 + 0.6911).
+    assert tng.hubble_rate(0.5) == pytest.approx(0.06774 * np.sqrt(3.1623))
+    assert tng.hubble_rate([1.0, 0.5]).shape == (2,)
+    with pytest.raises(ValueError, match="above 0 and at most 1"):
+        tng.hubble_rate(0.0)
+
+
+def test_core_velocity_averages_only_the_particles_inside_the_radius_by_mass():
+    positions = np.array([[10.0, 0, 0], [10.5, 0, 0], [10.0, 0.9, 0], [12.0, 0, 0]])
+    velocities = np.array([[100.0, 0, 0], [200.0, 0, 0], [0, 400.0, 0], [9999.0, 9999.0, 9999.0]])
+    velocity = tng.core_velocity(positions, velocities, [1.0, 1.0, 2.0, 5.0], [10.0, 0, 0], 1.0)
+    assert velocity.tolist() == [75.0, 200.0, 0.0]  # (100 + 200) / 4 and 2 * 400 / 4; the far particle is left out
+
+
+def test_core_velocity_errors():
+    with pytest.raises(ValueError, match="No particles within 0.5 of the center"):
+        tng.core_velocity(np.ones((3, 3)), np.ones((3, 3)), np.ones(3), [5.0, 5.0, 5.0], 0.5)
+    with pytest.raises(ValueError, match=r"center has shape \(2,\)"):
+        tng.core_velocity(np.ones((3, 3)), np.ones((3, 3)), np.ones(3), [5.0, 5.0], 0.5)
+
+
+def test_relative_to_puts_the_center_at_the_origin_and_at_rest():
+    positions = np.array([[110.0, 20.0, 30.0], [100.0, 20.0, 30.0]])
+    velocities = np.array([[50.0, 60.0, 70.0], [40.0, 60.0, 70.0]])
+    moved, speeds = tng.relative_to(positions, velocities, [100.0, 20.0, 30.0], [40.0, 60.0, 70.0], 1.0, hubble_flow=False)
+    assert moved.tolist() == [[10.0, 0, 0], [0, 0, 0]] and speeds.tolist() == [[10.0, 0, 0], [0, 0, 0]]
+
+
+def test_the_hubble_flow_adds_h_times_the_distance_along_the_separation():
+    without = tng.relative_to([100.0, 0, 0], [0, 80.0, 0], [0, 0, 0], [0, 0, 0], 0.5, hubble_flow=False)
+    with_flow = tng.relative_to([100.0, 0, 0], [0, 80.0, 0], [0, 0, 0], [0, 0, 0], 0.5)  # on by default
+    assert np.array_equal(without[0], with_flow[0])
+    assert with_flow[1] - without[1] == pytest.approx([100 * tng.hubble_rate(0.5), 0, 0])
+    # It points along the separation, so the orbit's plane is the same either way.
+    assert np.cross(with_flow[0], with_flow[1]) == pytest.approx(np.cross(without[0], without[1]))
+
+
+def test_relative_to_needs_matching_shapes():
+    with pytest.raises(ValueError, match="must both be"):
+        tng.relative_to(np.zeros((4, 3)), np.zeros((3, 3)), [0, 0, 0], [0, 0, 0], 1.0)
+
+
+def test_orbit_rotation_puts_a_tilted_orbit_in_the_x_y_plane():
+    # A circular orbit in a tilted plane: the secondary at 30 from the primary, moving at 200.
+    position, velocity = ROTATION @ [0.0, 30.0, 0.0], ROTATION @ [-200.0, 0.0, 0.0]
+    turn = tng.orbit_rotation(position, velocity)
+    assert turn @ turn.T == pytest.approx(np.eye(3), abs=1e-12) and np.linalg.det(turn) == pytest.approx(1.0)
+    assert position @ turn.T == pytest.approx([30.0, 0, 0], abs=1e-12)     # the secondary on +x
+    assert velocity @ turn.T == pytest.approx([0, 200.0, 0], abs=1e-12)    # counter-clockwise, no z part
+    assert np.cross(position, velocity) @ turn.T == pytest.approx([0, 0, 6000.0], abs=1e-9)  # momentum on +z
+
+
+def test_orbit_rotation_keeps_lengths_and_turns_any_vector_the_same_way():
+    turn = tng.orbit_rotation([3.0, 4.0, 0.0], [0.0, 1.0, 2.0])
+    vectors = np.random.default_rng(1).normal(size=(20, 3))
+    assert np.linalg.norm(vectors @ turn.T, axis=1) == pytest.approx(np.linalg.norm(vectors, axis=1))
+
+
+@pytest.mark.parametrize("position, velocity", [
+    ([10.0, 0, 0], [-50.0, 0, 0]),     # falling straight in
+    ([10.0, 0, 0], [0, 0, 0]),         # not moving
+    ([0, 0, 0], [0, 50.0, 0]),         # on top of each other
+])
+def test_a_head_on_pair_has_no_orbit_plane(position, velocity):
+    with pytest.raises(ValueError, match="No orbit plane"):
+        tng.orbit_rotation(position, velocity)
+
+
 # --- The real files (only when GTC_DATA_DIR is set) ------------------------------------------------------
 
 DATA = Path(os.environ["GTC_DATA_DIR"]) / "tng-data" if os.environ.get("GTC_DATA_DIR") else None
@@ -517,6 +590,27 @@ def measured(request):
             tng.physical(masses, "mass"))
         most_bound = in_frame(row["orbital_frame_pos_transform"], row[f"{side}_SubhaloPos"])
         galaxies[side]["half_mass_radius"] = tng.half_mass_radius(positions, masses, most_bound)
+
+    # The frame SPAM uses, built from the nuclei: box frame -> nearest image -> physical -> relative -> rotated.
+    a, origin = row["scale_factor"], row["p_SubhaloPos"]
+    positions = tng.physical(tng.nearest_image(box_positions, origin), "length", a)
+    velocities = tng.physical(box_velocities, "particle_velocity", a)
+    stars = archive["particle_type"] == tng.PARTICLE_TYPES["stars"]
+    frame = {"nucleus": {}, "stars": {}, "black_hole": {}}
+    for galaxy, side in ((0, "p"), (1, "s")):
+        frame["nucleus"][side] = tng.physical(tng.nearest_image(row[f"{side}_SubhaloPos"], origin), "length", a)
+        frame["stars"][side] = tng.core_velocity(positions[stars], velocities[stars], archive["masses"][stars],
+                                                 frame["nucleus"][side], 1.0)
+        hole = (archive["particle_type"] == tng.PARTICLE_TYPES["bh"]) & (archive["subfind_galaxy"] == galaxy)
+        frame["black_hole"][side] = velocities[hole][0]
+        frame["black_hole_offset_" + side] = np.linalg.norm(positions[hole][0] - frame["nucleus"][side])
+    for measure in ("stars", "black_hole"):
+        frame["secondary_" + measure] = tng.relative_to(frame["nucleus"]["s"], frame[measure]["s"],
+                                                        frame["nucleus"]["p"], frame[measure]["p"], a)
+    frame["rotation"] = tng.orbit_rotation(*frame["secondary_stars"])
+    sample = positions[::5000]
+    frame["sample"] = (sample - frame["nucleus"]["p"], (sample - frame["nucleus"]["p"]) @ frame["rotation"].T)
+    galaxies["frame"] = frame
     return row, galaxies
 
 
@@ -633,3 +727,42 @@ def test_a_galaxy_split_by_the_box_edge_is_whole_again_after_nearest_image(targe
     assert np.linalg.norm(galaxy["center_of_mass"] - center) < 5e-3
     assert np.linalg.norm(galaxy["spin"]) * row["scale_factor"] ** 1.5 == pytest.approx(np.linalg.norm(row["p_SubhaloSpin"]), rel=5e-5)
     assert tng.half_mass_radius(mended, masses, nucleus) == pytest.approx(row["p_SubhaloHalfmassRad"], rel=3e-4)
+
+
+# --- Real targets in the frame SPAM uses (only when GTC_DATA_DIR is set) ---------------------------------
+
+
+def test_in_the_new_frame_the_secondary_is_on_x_and_the_orbit_is_in_the_x_y_plane(measured):
+    row, galaxies = measured
+    frame = galaxies["frame"]
+    position, velocity = (vector @ frame["rotation"].T for vector in frame["secondary_stars"])
+    apart = tng.physical(np.linalg.norm(tng.nearest_image(row["s_SubhaloPos"], row["p_SubhaloPos"]) - row["p_SubhaloPos"]),
+                         "length", row["scale_factor"])
+    assert position == pytest.approx([apart, 0, 0], abs=1e-9)         # kpc: the distance between the nuclei
+    assert abs(velocity[2]) < 1e-9 and velocity[1] > 0                # km/s: in the plane, counter-clockwise
+    before, after = frame["sample"]                                   # every 5000th particle, relative to the primary
+    assert np.linalg.norm(after, axis=1) == pytest.approx(np.linalg.norm(before, axis=1))
+
+
+@pytest.mark.parametrize("side", ["p", "s"])
+def test_each_galaxys_black_hole_sits_on_its_nucleus_and_moves_with_its_core_stars(measured, side):
+    """The two measures of a nucleus's velocity agree: its black hole, and the stars within 1 kpc."""
+    frame = measured[1]["frame"]
+    assert frame["black_hole_offset_" + side] < 0.1                                     # kpc (seen: 0.07 at most)
+    assert np.linalg.norm(frame["black_hole"][side] - frame["stars"][side]) < 15        # km/s (seen: 11 at most)
+
+
+def test_the_two_velocity_measures_give_nearly_the_same_orbit(measured):
+    frame = measured[1]["frame"]
+    stars, hole = frame["secondary_stars"][1], frame["secondary_black_hole"][1]
+    assert np.linalg.norm(stars - hole) < 15                                            # km/s (seen: 11 at most)
+    normal = tng.orbit_rotation(frame["secondary_black_hole"][0], hole)[2]
+    assert angle_between(frame["rotation"][2], normal) < 10                             # degrees (seen: 7.5 at most)
+
+
+def test_the_nuclei_move_faster_than_the_catalogs_halo_velocities_say(measured):
+    """`SubhaloVel` averages the whole halo; the nuclei's relative speed is 40 to 65% higher on these targets."""
+    row, galaxies = measured
+    nuclei = np.linalg.norm(galaxies["frame"]["stars"]["s"] - galaxies["frame"]["stars"]["p"])
+    catalog = np.linalg.norm(row["s_SubhaloVel"] - row["p_SubhaloVel"])
+    assert 1.3 < nuclei / catalog < 1.8

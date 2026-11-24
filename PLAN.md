@@ -203,6 +203,12 @@ How it works: [docs/modules/tng.md](docs/modules/tng.md). What the TNG values me
   half-mass radius. The measuring functions work in the units they are given.
 - The box's wrap-around is undone explicitly, on stored positions, relative to a reference point
   (2026-11-24). Only positions relative to a galaxy's center are used after that.
+- A galaxy's center is its nucleus (the catalog's most bound particle) and its velocity is the
+  nucleus's: the mean of the stars within 1 kpc, cross-checked against its black hole (2026-11-24).
+  Not the catalog's halo averages.
+- The frame for SPAM (2026-11-24): the primary's nucleus at the origin and at rest; x toward the
+  secondary and z along the orbit's angular momentum, both at the target snapshot. The Hubble flow is
+  added to relative velocities unless switched off. Rotations are plain 3×3 matrices.
 - Units change in two explicit steps (2026-11-24): stored TNG values to physical (kpc, km/s, M☉),
   then physical to SPAM's units. Each step is one function with its factors in one table.
 
