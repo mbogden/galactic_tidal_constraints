@@ -92,15 +92,18 @@ def test_an_empty_run_return_gives_no_warning(tmp_path, files, caplog):
     assert simr.load_catalog(tmp_path / "runs")["runs"][0]["run"] == {"return": [], "save": ["sim.timing"]}
 
 
-def test_metrics_run_with_a_warning_that_values_arent_saved(tmp_path, files, caplog):
+def test_metrics_run_and_their_values_are_recorded(tmp_path, files, caplog):
     config = {"simulator": SMALL,
               "sim_metrics": [{"method": "closest_approach", "inputs": ["sim.orbit"], "select": "distance"}]}
     assert main(files(config=config)) == 0
-    assert "metric values and composites aren't saved yet" in caplog.text
+    assert "saved yet" not in caplog.text
     record = simr.load_catalog(tmp_path / "runs")["runs"][0]
     assert record["sim_metrics"][0]["select"] == "distance"
     assert record["status"]["sim_metrics"] == [[["ran"]]]
     assert record["composite"] is None
+    [[[distance]]] = record["values"]["sim_metrics"]
+    assert distance > 0 and record["values"]["composite"] is None
+    assert simr.load_metrics(tmp_path / "runs")["sim_metrics"][0, 0, 0] == distance
 
 
 def test_a_composite_section_runs_from_the_command_line(tmp_path, files):

@@ -358,10 +358,12 @@ The catalog (a folder's `catalog.json`, or a `.json` output) is the output's tab
   | `simulator` | The full simulator configs |
   | `image` | The full image configs |
   | `derived` | The filled-in derived entries, as in the result's `derived_configs` |
-  | `sim_metrics`, `img_metrics` | The filled-in metric entries (the values themselves aren't saved yet) |
+  | `sim_metrics`, `img_metrics` | The filled-in metric entries (their values are under `values`) |
+  | `composite` | The filled-in composite weights, or `null` without the section |
   | `externals` | Each used external's source, shape and hash, as in the result (the data itself isn't saved) |
   | `model_ids` | Row m's model id |
   | `status`, `seconds`, `errors` | As in the result, as lists; added when the run ends |
+  | `values` | The metric values: `sim_metrics` and `img_metrics` as nested lists indexed like the result's arrays (`values["sim_metrics"][m][s][k]`), and `composite` (one per model, or `null`). A descriptive entry's cell is its dict, arrays as lists. JSON has no NaN, so **a failed or skipped scalar cell is `null`**; `simr.load_metrics` gives the arrays back with NaN |
 
 A run without `save` writes only the catalog: its models and its record, no model folders.
 **One run at a time per output.**
@@ -405,14 +407,15 @@ isn't a number, is an error naming the line. `simr.read_models(path)` reads one 
 
 A command-line run computes what `run.save` and the metric sections ask for; with neither, it records
 its models and configs but simulates nothing (each simulation's status is `"empty"`). Metric values
-aren't saved yet: a config with metric entries gets one warning saying the values are computed and
-their statuses and configs recorded, but the values themselves discarded.
+and the composite are written to the run's record in the catalog; read them back with
+`simr.load_metrics(output)`.
 
 ## Loading
 | Function | Returns |
 |---|---|
 | `simr.read_models(path)` | A models file's models, `(N, 14)` |
 | `simr.load_catalog(output)` | The catalog (of a folder or a `.json` file) as a dict |
+| `simr.load_metrics(output, run=-1)` | A recorded run's metric values and composite, as the run returned them: `{"sim_metrics", "img_metrics", "composite"}`, arrays indexed like the result's, with NaN for failed scalar cells. `run` picks the run by position (-1: the last) |
 | `simr.load_model(folder)` | A model folder's `model.json` as a dict |
 | `simr.load_simulation(folder, "sim_00")` | That simulation's saved arrays, `{name: array}`, `float32`, exactly as `run` returns them |
 | `simr.load_images(folder, simulation=None, image=None, items=None)` | Saved images, `{(simulation, image, item): array}`, sorted, `float32`; each filter left `None` means all (below) |

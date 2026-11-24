@@ -22,7 +22,8 @@ asking only for "sim.orbit" never runs particles, and an image computes (or load
 needs. Simulated arrays and images come back as float32 (`PLAN.md`, Precision).
 
 Metrics (the Metrics stage, `simr/metrics.py`) are computed whenever their sections list entries, and
-always come back in the result; they aren't part of run.return and aren't saved yet. Every `sim_metrics`
+always come back in the result; they aren't part of run.return. With an output, their values and the
+composite are written to the run's record in the catalog (`load_metrics` reads them back). Every `sim_metrics`
 entry runs on every simulation, and every `img_metrics` entry on every (simulation, image) pair, with no
 per-entry filters. A metric's inputs are simr items; simr computes (or loads) what they need even when
 nothing else asks for those items, so an orbit-only request with `sim_metrics` never builds an image.
@@ -351,7 +352,9 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     "simulator" and "image" (the full configs), "sim_metrics" and "img_metrics" (the filled-in entries),
     "composite" (the filled-in weights, or None), "externals" (each used external's source, shape and hash, as in the result),
     "model_ids" (row m's model id), and at the end "status", "seconds" and "errors" (as in the result, as
-    lists). Metric values and composites aren't saved yet; saving them is a later step.
+    lists) and "values": the metric values, {"sim_metrics", "img_metrics"} as nested lists indexed like
+    the result's arrays, and "composite" (one per model, or None). JSON has no NaN, so a failed or
+    skipped scalar cell is written as null; `load_metrics` gives the arrays back with NaN.
     """
     models = _check_models(models)
     parts = _read_request(request)
@@ -462,14 +465,14 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
                     errors[stage][m] = outcome["errors"][stage]
             done += 1
             if catalog is not None and time.monotonic() - last_write >= CATALOG_WRITE_SECONDS:
-                _record_status(catalog_file, catalog, run_record, status, seconds, errors)
+                _record_status(catalog_file, catalog, run_record, status, seconds, errors, metric_values)
                 last_write = time.monotonic()
     except BrokenExecutor as error:  # a worker died: nothing more can come back from the pool
         unfinished = [ids[r[0]] if ids[r[0]] is not None else r[0] for r in rows[done:]]
         logger.error("a worker died (%s); %d of %d models unfinished: %s", error, len(unfinished), len(rows),
                      unfinished)
         if catalog is not None:
-            _record_status(catalog_file, catalog, run_record, status, seconds, errors)
+            _record_status(catalog_file, catalog, run_record, status, seconds, errors, metric_values)
         raise SimrRunError(f"a worker died with {len(unfinished)} models unfinished; rerun to resume") from error
 
     counts = {word: int((status["sim"] == word).sum()) for word in ("ran", "reused", "failed", "empty")}
@@ -496,7 +499,7 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
                     composite.size, int(np.isnan(composite).sum()))
     if catalog is not None:
         run_record["finished"] = _now()
-        _record_status(catalog_file, catalog, run_record, status, seconds, errors)
+        _record_status(catalog_file, catalog, run_record, status, seconds, errors, metric_values, composite)
     return SimrResult(models=models, simulators=configs, images=image_configs, data=data,
                       sim_metrics=metric_values["sim_metrics"], img_metrics=metric_values["img_metrics"],
                       composite=composite, sim_metric_configs=sim_entries, img_metric_configs=img_entries,
@@ -538,14 +541,40 @@ class SimrRunError(RuntimeError):
     """The run couldn't finish: a worker died. What finished is saved and recorded; rerun to resume."""
 
 
-def _record_status(catalog_file, catalog, run_record, status, seconds, errors) -> None:
-    """Write the statuses so far into the run's record (cells not yet run are None) and the catalog."""
+def _record_status(catalog_file, catalog, run_record, status, seconds, errors, metric_values,
+                   composite=None) -> None:
+    """Write the statuses and metric values so far into the run's record (cells not yet run are None)
+    and the catalog. The composite exists only once the run has ended."""
     run_record.update(
         status={stage: values.tolist() for stage, values in status.items()},
         seconds={stage: values.tolist() for stage, values in seconds.items()},
         errors={stage: values.tolist() for stage, values in errors.items()},
+        values={
+            **{stage: _values_for_json(values) for stage, values in metric_values.items()},
+            "composite": None if composite is None else [_cell_for_json(value) for value in composite],
+        },
     )
     _write_catalog(catalog_file, catalog)
+
+
+def _cell_for_json(value):
+    """One metric cell as JSON can hold it: NaN (a failed scalar) becomes None, since JSON has no NaN;
+    a descriptive entry's dict keeps its keys, with arrays as lists."""
+    if isinstance(value, dict):
+        return {key: _cell_for_json(item) for key, item in value.items()}
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (float, np.floating)):
+        return None if np.isnan(value) else float(value)
+    return value.item() if isinstance(value, np.generic) else value
+
+
+def _values_for_json(cells: np.ndarray) -> list:
+    """A metric section's values as nested lists, each cell through `_cell_for_json`."""
+    ready = np.empty(cells.shape, dtype=object)
+    for index, value in np.ndenumerate(cells):
+        ready[index] = _cell_for_json(value)
+    return ready.tolist()
 
 
 def _stage(name: str) -> str:
@@ -829,6 +858,55 @@ def load_catalog(output: str | Path) -> dict:
     named parameters) and "runs"."""
     with open(output_paths(output)[0], encoding="utf-8") as f:
         return json.load(f)
+
+
+def load_metrics(output: str | Path, run: int = -1) -> dict:
+    """A recorded run's metric values and composite, read back from the catalog as the run returned them.
+
+    Args:
+        output: the output the run was recorded in (a folder, or a `.json` catalog file).
+        run: which of the catalog's runs, by position; -1 (the default) is the last.
+
+    Returns:
+        {"sim_metrics": object array [model, simulator, entry], "img_metrics": object array [model,
+        simulator, image, entry], "composite": float64 (model,), or None if the run had no composite
+        section}, as in `SimrResult`: a failed or skipped cell is NaN where the entry gives one float
+        (written as null in the catalog) and None where it gives a dict, and a dict's arrays are numpy
+        arrays again. Row m is the model `record["model_ids"][m]`. For a run still going, or one that
+        crashed, the cells not yet run read the same as failed ones (their status is None).
+
+    Raises:
+        ValueError: the run recorded no values (it ran before values were saved).
+    """
+    record = load_catalog(output)["runs"][run]
+    if "values" not in record:
+        raise ValueError(f"run {run} of {output} recorded no metric values (it ran before values were saved)")
+    shapes = {
+        "sim_metrics": (len(record["model_ids"]), len(record["simulator"]), len(record["sim_metrics"])),
+        "img_metrics": (len(record["model_ids"]), len(record["simulator"]), len(record["image"]),
+                        len(record["img_metrics"])),
+    }
+    loaded = {}
+    for stage, shape in shapes.items():
+        # An entry's cells hold one float when it selects one, or its method is (still) a scalar one
+        floats = [entry["select"] is not None or getattr(metrics.METHODS.get(entry["method"]), "kind", None) == "scalar"
+                  for entry in record[stage]]
+        cells = np.empty(shape, dtype=object)
+        for index in np.ndindex(*shape):
+            value = record["values"][stage]
+            for i in index:
+                value = value[i]
+            if isinstance(value, dict):
+                value = {key: np.array(item, dtype=np.float64) if isinstance(item, list) else item
+                         for key, item in value.items()}
+            elif value is None and floats[index[-1]]:
+                value = float("nan")
+            cells[index] = value
+        loaded[stage] = cells
+    composite = record["values"]["composite"]
+    loaded["composite"] = None if composite is None else np.array(
+        [np.nan if value is None else value for value in composite], dtype=np.float64)
+    return loaded
 
 
 def output_paths(output: str | Path) -> tuple[Path, Path | None]:

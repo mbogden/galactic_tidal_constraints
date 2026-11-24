@@ -1,6 +1,7 @@
 """Tests for the composite section in simr (MDRN-4 step 5b): one weighted mean per model of its scalar
 metric cells, checked before anything runs and recorded in the catalog."""
 
+import json
 import math
 
 import pytest
@@ -109,7 +110,63 @@ def test_the_catalog_records_the_filled_in_weights(tmp_path):
     simr.run(MODELS, request({}, img_metrics=IMG_METRICS), externals=EXTERNALS, output=tmp_path)
     [record] = simr.load_catalog(tmp_path)["runs"]
     assert record["composite"] == {"sim_weights": [[1.0, 1.0, 0.0]], "img_weights": [[[1.0]]]}
-    assert "composite" not in record["status"]  # values aren't saved yet: a later step
+    assert "composite" not in record["status"]
+
+
+# --- MDRN-4 step 7a: metric values and the composite in the run record ---------------------------------
+
+
+def test_the_record_holds_the_values_and_load_metrics_gives_them_back(tmp_path):
+    result = simr.run(MODELS, request({}, img_metrics=IMG_METRICS), externals=EXTERNALS, output=tmp_path)
+    [record] = simr.load_catalog(tmp_path)["runs"]
+    values = record["values"]
+    assert values["sim_metrics"][1][0][0] == result.sim_metrics[1, 0, 0]  # [model][simulator][entry]
+    assert values["img_metrics"][1][0][0][0] == result.img_metrics[1, 0, 0, 0]
+    assert values["composite"] == result.composite.tolist()
+    assert values["sim_metrics"][0][0][2]["position"] == result.sim_metrics[0, 0, 2]["position"].tolist()
+
+    loaded = simr.load_metrics(tmp_path)
+    assert loaded["sim_metrics"].shape == (2, 1, 3) and loaded["img_metrics"].shape == (2, 1, 1, 1)
+    np.testing.assert_array_equal(loaded["sim_metrics"][..., :2].astype(float),
+                                  result.sim_metrics[..., :2].astype(float))
+    np.testing.assert_array_equal(loaded["img_metrics"].astype(float), result.img_metrics.astype(float))
+    np.testing.assert_array_equal(loaded["composite"], result.composite)
+    assert loaded["composite"].dtype == np.float64
+    approach, expected = loaded["sim_metrics"][1, 0, 2], result.sim_metrics[1, 0, 2]
+    assert set(approach) == set(expected) and approach["t"] == expected["t"]
+    np.testing.assert_array_equal(approach["position"], expected["position"])
+    assert isinstance(approach["position"], np.ndarray)
+
+
+def test_a_failed_scalar_is_null_on_disk_and_nan_when_loaded(tmp_path):
+    models = np.stack([FIRST_APPROACH, PARAMS])
+    config = {**request({}, simulator=FAILING), "run": {"return": ["sim.orbit"]}}
+    simr.run(models, config, externals=EXTERNALS, output=tmp_path / "runs.json")
+    text = (tmp_path / "runs.json").read_text(encoding="utf-8")
+    assert "NaN" not in text  # valid JSON for every reader
+    values = simr.load_catalog(tmp_path / "runs.json")["runs"][0]["values"]
+    assert values["sim_metrics"][0][0] == [None, None, None] and values["composite"][0] is None
+    loaded = simr.load_metrics(tmp_path / "runs.json")
+    assert math.isnan(loaded["sim_metrics"][0, 0, 0]) and math.isnan(loaded["sim_metrics"][0, 0, 1])
+    assert loaded["sim_metrics"][0, 0, 2] is None  # a descriptive entry's failed cell stays None
+    assert math.isnan(loaded["composite"][0]) and math.isfinite(loaded["composite"][1])
+
+
+def test_load_metrics_picks_a_run_and_handles_no_composite(tmp_path):
+    simr.run(PARAMS, request(None), externals=EXTERNALS, output=tmp_path)
+    simr.run(MODELS, request({}), externals=EXTERNALS, output=tmp_path)
+    first, last = simr.load_metrics(tmp_path, run=0), simr.load_metrics(tmp_path)
+    assert first["composite"] is None and first["sim_metrics"].shape == (1, 1, 3)
+    assert last["composite"].shape == (2,) and last["img_metrics"].shape == (2, 1, 1, 0)
+
+
+def test_load_metrics_says_when_a_run_recorded_no_values(tmp_path):
+    simr.run(PARAMS, request(None), externals=EXTERNALS, output=tmp_path)
+    catalog = simr.load_catalog(tmp_path)
+    del catalog["runs"][0]["values"]  # as a run from before values were saved
+    (tmp_path / "catalog.json").write_text(json.dumps(catalog), encoding="utf-8")
+    with pytest.raises(ValueError, match="recorded no metric values"):
+        simr.load_metrics(tmp_path)
 
 
 def _never_simulate(*args):

@@ -71,8 +71,8 @@ items it takes, in the order and kinds the method declares:
 | `params` (optional) | The method's settings; everything left out takes the method's default |
 
 Metrics are computed whenever their sections list entries and always come back in the result; they
-aren't part of `run.return`, and their values aren't saved yet (saving is a later step; on the command
-line a warning says so). `simr` computes (or loads) the items an entry needs even when nothing else asks
+aren't part of `run.return`. With an output, their values are written to the run's record in the
+catalog ([modules/simr.md](modules/simr.md#the-output-catalog)). `simr` computes (or loads) the items an entry needs even when nothing else asks
 for them. An entry with an `img.*` input goes in `img_metrics` (one per simulation and image entry);
 an entry using only `sim.*` items goes in `sim_metrics` (one per simulation). `sim.timing` isn't a
 metric input.
@@ -105,7 +105,8 @@ metric cells over both levels (`metrics.composite`), returned as `result.composi
 - **A failed or skipped cell** with a nonzero weight makes that model's composite NaN; the others are
   unaffected.
 - **Checked before anything runs**, like the metric entries. The run's record holds the filled-in
-  weights (`"composite"`, also `result.composite_weights`); the composite values aren't saved yet.
+  weights (`"composite"`, also `result.composite_weights`), and the composite values with the metric
+  values (`"values"`).
 - Mixing directions or scales is the config's choice: `simr` only applies the weights.
 
 ### Derived entries
