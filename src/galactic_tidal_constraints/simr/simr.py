@@ -891,6 +891,76 @@ def load_catalog(output: str | Path) -> dict:
         return json.load(f)
 
 
+def load_run(output: str | Path, run: int = -1, externals: dict | None = None) -> dict:
+    """A recorded run's inputs, rebuilt from its catalog record, so it can run again:
+
+        simr.run(**simr.load_run("runs"), output="runs")         # the last run there, again
+        simr.run(**simr.load_run("runs", run=3), output="again")
+
+    The config comes back as it ran, its run.save list included, so a run that saved data needs an output
+    folder again (the same one reuses what's saved).
+
+    Args:
+        output: the output the run was recorded in (a folder, or a `.json` catalog file).
+        run: which of the catalog's runs, by position; -1 (the default) is the last.
+        externals: externals to use instead of the recorded ones, by key: an array, or the path of a
+            .npy file. Needed for each external the record can't give back (below); each must hold
+            exactly the recorded data (its hash is checked here for an array, and by `run` for a path).
+
+    Returns:
+        {"models": (N, 14), row m being the run's row m; "request": its full config, every default
+        filled in (`SimrResult.config`); "externals": key -> {"path", "hash"}, or the array given
+        here}: `simr.run`'s own argument names. Each external comes from the first of: `externals`
+        given here; its copy in the output folder, if the run saved one (run.save "ext.<key>"); the
+        path the run was given, where it's still read from. The recorded hash goes with a path, so
+        `run` stops if the file's data has changed.
+
+    Raises:
+        ValueError: an external was given to the run in memory and not saved, and isn't in
+        `externals` here (the message names every such key); a key in `externals` the run didn't use;
+        an array given here whose data isn't what the run used.
+    """
+    catalog = load_catalog(output)
+    record = catalog["runs"][run]
+    models = np.array([[catalog["models"][model_id][name] for name in sim.PARAM_NAMES]
+                       for model_id in record["model_ids"]])
+    request = {key: record[key] for key in REQUEST_KEYS if key in record}
+    recorded, files = record.get("externals", {}), record.get("files", {})
+    given = dict(externals or {})
+    unknown = sorted(set(given) - set(recorded))
+    if unknown:
+        raise ValueError(f"externals {unknown} weren't used by run {run} of {output}, which used {sorted(recorded)}")
+    root = output_paths(output)[1]
+    rebuilt, missing = {}, []
+    for key, entry in recorded.items():
+        if key in given:
+            value = given[key]
+            if isinstance(value, np.ndarray):
+                digest = array_hash(value)
+                if digest != entry["hash"]:
+                    raise ValueError(
+                        f"externals[{key!r}]: the data's hash is {digest}, but run {run} of {output} used "
+                        f"data with the hash {entry['hash']}"
+                    )
+                rebuilt[key] = value
+            else:
+                rebuilt[key] = {"path": str(value), "hash": entry["hash"]}
+        elif EXTERNAL_PREFIX + key in files:
+            rebuilt[key] = {"path": str((root / files[EXTERNAL_PREFIX + key]).absolute()), "hash": entry["hash"]}
+        elif entry["source"] != "memory":
+            rebuilt[key] = {"path": entry["source"], "hash": entry["hash"]}
+        else:
+            missing.append(key)
+    if missing:
+        raise ValueError(
+            f"run {run} of {output} was given the externals {missing} in memory and didn't save them "
+            f'(run.save "ext.<key>"), so they can\'t be rebuilt: give them here, as externals={{key: array or '
+            f"path}}. Their recorded shapes and hashes: "
+            f"{ {key: (recorded[key]['shape'], recorded[key]['hash']) for key in missing} }"
+        )
+    return {"models": models, "request": request, "externals": rebuilt}
+
+
 def load_derived(folder: str | Path, name: str | None = None) -> dict[tuple, np.ndarray]:
     """A model folder's saved derived arrays, as model.json lists them.
 

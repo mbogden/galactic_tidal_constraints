@@ -302,6 +302,9 @@ Types follow JSON:
   Saved as JSON, `result.config` runs again as a config; a derived entry's recorded `level`, `shape`
   and `hash` are accepted there and worked out again, never taken from the file.
 - It also records each external the metrics used: its source, shape and hash (see Externals).
+- So a recorded run can be run again from its catalog: `simr.run(**simr.load_run(output), output=...)`
+  ([modules/simr.md](modules/simr.md#loading)). An external given in memory is recoverable only if the
+  run saved it (`run.save` `ext.<key>`).
 - Each model's `model.json` records the full config of every simulation and image entry it saved.
 - A saved simulation or image is reused only when its config matches **exactly**; a different config
   is neither used nor changed ([modules/simr.md](modules/simr.md#reuse)).

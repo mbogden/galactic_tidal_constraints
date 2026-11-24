@@ -477,11 +477,29 @@ and the composite are written to the run's record in the catalog; read them back
 | `simr.read_models(path)` | A models file's models, `(N, 14)` |
 | `simr.load_catalog(output)` | The catalog (of a folder or a `.json` file) as a dict |
 | `simr.load_metrics(output, run=-1)` | A recorded run's metric values and composite, as the run returned them: `{"sim_metrics", "img_metrics", "composite"}`, arrays indexed like the result's, with NaN for failed scalar cells. `run` picks the run by position (-1: the last) |
+| `simr.load_run(output, run=-1, externals=None)` | A recorded run's inputs, ready to run again: `{"models", "request", "externals"}` (below) |
 | `simr.load_model(folder)` | A model folder's `model.json` as a dict |
 | `simr.load_simulation(folder, "sim_00")` | That simulation's saved arrays, `{name: array}`, `float32`, exactly as `run` returns them |
 | `simr.load_derived(folder, name=None)` | A model folder's saved derived arrays: `{(name, simulation): array}` for entries made per simulation, `{(name, simulation, image): array}` for those made per image, sorted; `name` picks one entry |
 | `simr.load_images(folder, simulation=None, image=None, items=None)` | Saved images, `{(simulation, image, item): array}`, sorted, `float32`; each filter left `None` means all (below) |
 | `simr.code_versions()` | The current code versions, in the form `model.json` records |
+
+`load_run` rebuilds a run's inputs from its catalog record, under `simr.run`'s own argument names:
+
+```python
+simr.run(**simr.load_run("runs"), output="runs")           # the last run there, again
+simr.run(**simr.load_run("runs", run=3), output="again")   # the fourth, into another folder
+```
+
+- **`models`**: the run's rows, in order, from the catalog's `models`.
+- **`request`**: its full config, every default filled in (`result.config`). Its `run.save` list is
+  included, so a run that saved data needs an output folder again; the same folder reuses what's saved.
+- **`externals`**: each one as `{"path", "hash"}`, from its copy in the output folder if the run saved
+  one (`run.save` `ext.<key>`), else from the path the run was given. The recorded hash goes with it,
+  so the rerun stops if the file's data has changed.
+- **An external given in memory and not saved can't be rebuilt.** `load_run` raises a `ValueError`
+  naming each one, with its recorded shape and hash; give those as `externals={key: array or path}`.
+  An array given there must hold exactly the recorded data (its hash is checked).
 
 `load_images` picks by any mix of simulation, image entry and item:
 
