@@ -19,4 +19,8 @@ galaxy-collision simulations, scoring and optimization) as an installable, repro
   there and push, then update the pinned commit in `pyproject.toml` and `uv.lock`.
 - Run tests and code inside the project's image (Docker locally, Apptainer on clusters), as the
   README's Install and Tests sections show. Not natively or in WSL.
+- When adding code, remake `examples/notebooks/next_step.ipynb` (gitignored, never committed) to show
+  just that step's new features: worked examples and the data structures they return. Append lasting
+  features to the tour notebooks. Execute it in the image and render it (HTML) for the user to review.
+  For changes with no user-facing code (docs, refactors), skip it.
 - Follow the decisions in `PLAN.md`. Don't add tools or structure that aren't listed there without asking.

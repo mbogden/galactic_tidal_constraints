@@ -18,9 +18,14 @@ what tidal features can tell us about how galaxies interact. Formerly `galaxyJSP
 - **The Image Creator stage** (`simr/image_creator.py`, a first draft): turns a particle set into an image,
   with the two galaxies' centers on chosen pixels, and maps orbits into the same pixels. `simr` returns,
   saves and reuses images (`img.model`, `img.unperturbed`).
+- **The Metrics stage** (`simr/metrics.py`, a first draft) and **derived arrays** (`simr/derived.py`):
+  metrics compare a model's orbit, particles or images with each other or with arrays from outside
+  the run (externals, e.g. a target); derived arrays (windows, weight images, edge maps) feed them as
+  data or weights. `simr` computes them for every model, combines the scalar ones into one composite
+  score per model, and records the values in the catalog.
 - **Running on Babbage**, MTSU's Slurm cluster, with the project's image.
 
-**Next:** the metrics stage, the optimizer and the TNG application.
+**Next:** more image metrics, the optimizer and the TNG application.
 
 ## SPAM
 Collisions are simulated with SPAM, by John Wallin and collaborators, through a modified fork of the
@@ -76,8 +81,9 @@ request, the output folder and catalog, failures, modes) is in
 [docs/modules/simr.md](docs/modules/simr.md).
 
 The notebooks in [`examples/notebooks/`](examples/notebooks/) are the guided way in:
-`simulator_tour.ipynb` for the Simulator stage, `simr_tour.ipynb` for the workflow and
-`image_tour.ipynb` for the Image Creator (on its own, through `simr`, and saving and loading images).
+`simulator_tour.ipynb` for the Simulator stage, `simr_tour.ipynb` for the workflow,
+`image_tour.ipynb` for the Image Creator (on its own, through `simr`, and saving and loading images)
+and `metrics_tour.ipynb` for metrics, externals, derived arrays, the composite and what a run records.
 
 ## Docs
 | Doc | What it covers |
@@ -88,6 +94,8 @@ The notebooks in [`examples/notebooks/`](examples/notebooks/) are the guided way
 | [modules/simr.md](docs/modules/simr.md) | How `simr` works: inputs, results, saving and reuse, the catalog, the command line |
 | [modules/simulation.md](docs/modules/simulation.md) | How the Simulator stage works: a model, `SimulatorConfig`, the functions and what they return, costs |
 | [modules/image_creator.md](docs/modules/image_creator.md) | How the Image Creator works: the config, the pixel frame, the image steps |
+| [modules/metrics.md](docs/modules/metrics.md) | How the Metrics stage works: the metrics table, input kinds, weights, each method, the composite |
+| [modules/derived.md](docs/modules/derived.md) | Derived arrays: arrays made from other arrays, for metrics to use as data or weights |
 | [guides/running_spam.md](docs/guides/running_spam.md) | Compile and run SPAM itself, from Python or as the Fortran program |
 | [guides/running_on_babbage.md](docs/guides/running_on_babbage.md) | Set up an experiment and run `simr` on Babbage |
 | [guides/docker_image.md](docs/guides/docker_image.md) | Run in the project's image (copies, working in place, notebooks, saving data, Apptainer), check it, and make a new tag |
@@ -95,7 +103,8 @@ The notebooks in [`examples/notebooks/`](examples/notebooks/) are the guided way
 ## Repo layout
 ```
 src/galactic_tidal_constraints/
-└── simr/            simulation.py (Simulator stage), simr.py (workflow), image_creator.py (Image Creator), __main__.py (command line)
+└── simr/            simulation.py (Simulator stage), simr.py (workflow), image_creator.py (Image Creator),
+                     metrics.py (Metrics stage), derived.py (derived arrays), __main__.py (command line)
 docs/                the docs above: overview and references at the top
 ├── modules/         one per code module
 └── guides/          how-to guides

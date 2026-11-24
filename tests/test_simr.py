@@ -1,6 +1,7 @@
 """Tests for the SIMR workflow (simr/simr.py). Each section covers one step of the rebuild."""
 
 import json
+import math
 from dataclasses import asdict
 from pathlib import Path
 
@@ -306,14 +307,18 @@ def test_a_run_without_save_writes_only_the_catalog(tmp_path):
     simr.run(MODELS, request(["sim.orbit"]), output=tmp_path)
     assert [p.name for p in tmp_path.iterdir()] == ["catalog.json"]
     [record] = simr.load_catalog(tmp_path)["runs"]
-    assert record["run"] == {"return": ["sim.orbit"], "save": []}
-    assert record["status"] == {"sim": [["ran"], ["ran"]], "img": [[["empty"]], [["empty"]]]}  # no images asked for
+    assert record["run"] == {"return": ["sim.orbit"], "save": [], "max_return_gb": "auto", "max_hours": 4.0}
+    assert record["status"] == {"sim": [["ran"], ["ran"]], "img": [[["empty"]], [["empty"]]],  # no images asked for
+                                "sim_metrics": [[[]], [[]]], "img_metrics": [[[[]]], [[[]]]]}  # no metric entries
 
 
 def test_nothing_requested_is_empty(tmp_path):
     result = simr.run(MODELS, request([]), output=tmp_path)
     assert result.status["sim"].tolist() == [["empty"], ["empty"]]
-    assert simr.load_catalog(tmp_path)["runs"][0]["status"] == {"sim": [["empty"], ["empty"]], "img": [[["empty"]], [["empty"]]]}
+    assert simr.load_catalog(tmp_path)["runs"][0]["status"] == {
+        "sim": [["empty"], ["empty"]], "img": [[["empty"]], [["empty"]]],
+        "sim_metrics": [[[]], [[]]], "img_metrics": [[[[]]], [[[]]]],
+    }
 
 
 def test_a_model_the_folder_doesnt_have_is_computed_and_added_to_the_catalog(tmp_path):
@@ -331,10 +336,11 @@ def test_catalog_lists_the_models_and_the_run(tmp_path):
     assert catalog["models"] == {"000000": simr.model_parameters(PARAMS), "000001": simr.model_parameters(HEAVIER)}
     [record] = catalog["runs"]
     assert record["started"] <= record["finished"]
-    assert record["run"] == {"return": [], "save": ["sim.orbit"]}
+    assert record["run"] == {"return": [], "save": ["sim.orbit"], "max_return_gb": "auto", "max_hours": 4.0}
     assert record["simulator"] == [asdict(SimulatorConfig(**SMALL)), asdict(SimulatorConfig(**SMALL, lnl=0.01))]
     assert record["image"] == [json.loads(json.dumps(asdict(ImageConfig())))]  # the default entry
-    assert record["fitness"] == []
+    assert record["sim_metrics"] == [] and record["img_metrics"] == []
+    assert "fitness" not in record  # replaced by the metric sections
     assert record["model_ids"] == ["000000", "000001"]
     assert record["code"] == simr.code_versions()
 
@@ -449,15 +455,18 @@ def test_reused_only_when_everything_came_from_disk(tmp_path):
 def test_status_seconds_and_errors_have_the_datas_shape():
     result = simr.run(MODELS, request(["sim.orbit"], simulator=[SMALL, SMALL]))
     for field in (result.status, result.seconds, result.errors):
-        assert list(field) == ["sim", "img"] and field["sim"].shape == (2, 2)
+        assert list(field) == ["sim", "img", "sim_metrics", "img_metrics"] and field["sim"].shape == (2, 2)
         assert field["img"].shape == (2, 2, 1)  # one default image entry
+        assert field["sim_metrics"].shape == (2, 2, 0)  # no metric entries
+        assert field["img_metrics"].shape == (2, 2, 1, 0)
     assert (result.seconds["sim"] > 0).all()
 
 
 def test_the_catalog_records_each_simulations_status(tmp_path):
     simr.run(np.stack([PARAMS, FIRST_APPROACH]), save_request(["sim.orbit"], simulator=FAILING), output=tmp_path)
     [record] = simr.load_catalog(tmp_path)["runs"]
-    assert record["status"] == {"sim": [["ran"], ["failed"]], "img": [[["empty"]], [["empty"]]]}
+    assert record["status"] == {"sim": [["ran"], ["failed"]], "img": [[["empty"]], [["empty"]]],
+                                "sim_metrics": [[[]], [[]]], "img_metrics": [[[[]]], [[[]]]]}
     assert record["errors"]["sim"][0] == [None] and record["errors"]["sim"][1][0].startswith("ValueError")
     assert len(record["seconds"]["sim"]) == 2 and record["finished"] is not None
 
@@ -669,7 +678,8 @@ def test_a_broken_pool_records_what_finished_and_raises(tmp_path, caplog):
     assert "1 of 2 models unfinished: ['000001']" in caplog.text
     [record] = simr.load_catalog(tmp_path)["runs"]
     assert record["finished"] is None
-    assert record["status"] == {"sim": [["ran"], [None]], "img": [[["empty"]], [[None]]]}
+    assert record["status"] == {"sim": [["ran"], [None]], "img": [[["empty"]], [[None]]],
+                                "sim_metrics": [[[]], [[]]], "img_metrics": [[[[]]], [[[]]]]}
     again = simr.run(MODELS, save_request(["sim.orbit"]), output=tmp_path)  # a rerun resumes
     assert again.status["sim"][:, 0].tolist() == ["reused", "ran"]
 
@@ -817,10 +827,10 @@ def test_images_use_saved_particles(tmp_path):
 
 
 def test_the_catalog_records_the_image_entries(tmp_path):
-    simr.run(MODELS, {**request(["img.model"]), "image": [{}, {"brightness": "log"}]}, output=tmp_path)
+    simr.run(MODELS, {**request(["img.model"]), "image": [{}, {"brightness": "linear"}]}, output=tmp_path)
     [record] = simr.load_catalog(tmp_path)["runs"]
-    assert [entry["brightness"] for entry in record["image"]] == ["linear", "log"]
-    assert record["image"][0]["primary_center"] == [48.0, 64.0]
+    assert [entry["brightness"] for entry in record["image"]] == ["log", "linear"]
+    assert record["image"][0]["primary_center"] == [32.0, 64.0]
     assert record["status"]["img"] == [[["ran", "ran"]], [["ran", "ran"]]]
 
 
@@ -995,3 +1005,597 @@ def test_a_stopped_run_resumes_its_images(tmp_path):
         simr.run(MODELS, image_request(["img.model"]), output=tmp_path, map=dying_map)
     again = simr.run(MODELS, image_request(["img.model"]), output=tmp_path)
     assert again.status["img"].tolist() == [[["reused", "reused"]], [["ran", "ran"]]]
+
+
+# --- MDRN-4 step 1: sim.search_orbit as an item -------------------------------------------------------
+
+
+def test_search_orbit_matches_calling_sim_directly():
+    result = simr.run(MODELS, request(["sim.search_orbit"]))
+    assert result.data["sim.search_orbit"].shape == (2, 1)
+    expected = sim.search_orbit(HEAVIER, SimulatorConfig(**SMALL)).astype(np.float32)
+    np.testing.assert_array_equal(result.data["sim.search_orbit"][1, 0], expected)
+    assert result.data["sim.search_orbit"][0, 0].dtype == np.float32
+
+
+def test_search_orbit_spans_now_back_to_minus_30():
+    path = simr.run(PARAMS, request(["sim.search_orbit"])).data["sim.search_orbit"][0, 0]
+    assert path.shape[1] == 7
+    assert path[0, 6] == 0.0  # row 0 is now
+    np.testing.assert_allclose(path[-1, 6], -30.0, atol=0.01)
+
+
+def test_search_orbit_saves_and_loads_back(tmp_path):
+    simr.run(PARAMS, save_request(["sim.search_orbit"]), output=tmp_path)
+    folder = tmp_path / "model_000000"
+    assert (folder / "simulations/sim_00_search_orbit.npy").exists()
+    loaded = simr.load_simulation(folder, "sim_00")["sim.search_orbit"]
+    np.testing.assert_array_equal(loaded, sim.search_orbit(PARAMS, SimulatorConfig(**SMALL)).astype(np.float32))
+
+
+# --- MDRN-4 step 2b: the metrics stage in simr ---------------------------------------------------------
+
+from galactic_tidal_constraints.simr import metrics  # noqa: E402
+
+SIM_METRICS = [
+    {"method": "closest_approach", "inputs": ["sim.search_orbit"]},
+    {"method": "closest_approach", "inputs": ["sim.search_orbit"], "select": "distance"},
+]
+IMG_METRICS = [{"method": "absolute_difference", "inputs": ["img.model", "img.unperturbed"]}]
+
+
+def metric_request(returned=(), sim_metrics=SIM_METRICS, img_metrics=IMG_METRICS, simulator=SMALL):
+    return {"run": {"return": list(returned)}, "simulator": simulator,
+            "sim_metrics": sim_metrics, "img_metrics": img_metrics}
+
+
+def test_metric_values_match_calling_metrics_directly():
+    result = simr.run(MODELS, metric_request(returned=["img.model", "img.unperturbed"]))
+    assert result.sim_metrics.shape == (2, 1, 2)
+    assert result.img_metrics.shape == (2, 1, 1, 1)
+    path = sim.search_orbit(HEAVIER, SimulatorConfig(**SMALL)).astype(np.float32)
+    expected = metrics.closest_approach(path)
+    value = result.sim_metrics[1, 0, 0]
+    assert value["t"] == expected["t"] and value["distance"] == expected["distance"]
+    assert result.sim_metrics[1, 0, 1] == expected["distance"]
+    assert isinstance(result.sim_metrics[1, 0, 1], float)
+    difference = metrics.absolute_difference(
+        result.data["img.model"][1, 0, 0], result.data["img.unperturbed"][1, 0, 0]
+    )
+    assert result.img_metrics[1, 0, 0, 0] == difference
+
+
+def test_filled_in_entries_record_all_four_keys():
+    result = simr.run(PARAMS, metric_request())
+    assert result.sim_metric_configs == [
+        {"method": "closest_approach", "inputs": ["sim.search_orbit"], "select": None, "params": {}},
+        {"method": "closest_approach", "inputs": ["sim.search_orbit"], "select": "distance", "params": {}},
+    ]
+    assert result.img_metric_configs == [
+        {"method": "absolute_difference", "inputs": ["img.model", "img.unperturbed"], "select": None, "params": {}},
+    ]
+
+
+def test_metrics_force_computation_without_returning_data():
+    result = simr.run(PARAMS, metric_request(img_metrics=[]))
+    assert result.data == {}
+    assert result.status["sim"].tolist() == [["ran"]]  # not "empty": the metrics needed the search orbit
+    assert result.status["img"].tolist() == [[["empty"]]]  # no img metrics, no images
+    assert result.img_metrics.shape == (1, 1, 1, 0)
+    assert result.sim_metrics[0, 0, 0]["distance"] > 0
+
+
+def test_img_metrics_alone_compute_their_images():
+    result = simr.run(PARAMS, metric_request(sim_metrics=[]))
+    assert result.data == {}
+    assert result.status["img"].tolist() == [[["ran"]]]
+    assert result.status["img_metrics"].tolist() == [[[["ran"]]]]
+    assert 0.0 <= result.img_metrics[0, 0, 0, 0] <= 1.0
+
+
+def test_empty_metric_sections_are_allowed():
+    result = simr.run(PARAMS, {"run": {"return": ["sim.orbit"]}, "simulator": SMALL,
+                               "sim_metrics": [], "img_metrics": []})
+    assert result.sim_metrics.shape == (1, 1, 0)
+    assert result.img_metrics.shape == (1, 1, 1, 0)
+    assert result.status["sim_metrics"].size == 0 and result.status["img_metrics"].size == 0
+
+
+def test_a_failed_simulation_skips_its_metrics():
+    request = metric_request(simulator=[SMALL, FAILING])
+    result = simr.run(np.stack([FIRST_APPROACH, FIRST_APPROACH]), request)
+    assert result.status["sim"][0].tolist() == ["ran", "failed"]
+    assert result.status["sim_metrics"][0].tolist() == [["ran", "ran"], ["skipped", "skipped"]]
+    assert result.status["img_metrics"][0].tolist() == [[["ran"]], [["skipped"]]]
+    # A skipped cell: None for a descriptive entry, NaN for one giving a float (a select, a scalar method)
+    assert result.sim_metrics[0, 1, 0] is None
+    assert math.isnan(result.sim_metrics[0, 1, 1]) and math.isnan(result.img_metrics[0, 1, 0, 0])
+
+
+def test_a_failed_metric_is_recorded_and_everything_else_moves_on(monkeypatch):
+    from dataclasses import replace
+
+    def broken(orbit):
+        raise RuntimeError("boom")
+
+    monkeypatch.setitem(metrics.METHODS, "closest_approach",
+                        replace(metrics.METHODS["closest_approach"], function=broken))
+    result = simr.run(PARAMS, metric_request(returned=["sim.orbit"]))
+    assert result.status["sim"].tolist() == [["ran"]]  # the simulation is unaffected
+    assert result.status["sim_metrics"].tolist() == [[["failed", "failed"]]]
+    assert result.errors["sim_metrics"][0, 0, 0] == "RuntimeError: boom"
+    assert result.sim_metrics[0, 0, 0] is None  # descriptive: None
+    assert math.isnan(result.sim_metrics[0, 0, 1])  # select: one float, so NaN
+    assert result.status["img_metrics"].tolist() == [[[["ran"]]]]  # the image metric still ran
+
+
+def test_a_nan_metric_value_is_a_failure(monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setitem(metrics.METHODS, "absolute_difference",
+                        replace(metrics.METHODS["absolute_difference"], function=lambda a, b: float("nan")))
+    result = simr.run(PARAMS, metric_request(sim_metrics=[]))
+    assert result.status["img"].tolist() == [[["ran"]]]  # the image is unaffected
+    assert result.status["img_metrics"].tolist() == [[[["failed"]]]]
+    assert "nan" in result.errors["img_metrics"][0, 0, 0, 0]
+    assert math.isnan(result.img_metrics[0, 0, 0, 0])
+
+
+def test_float_columns_stay_floats_through_a_pool():
+    from concurrent.futures import ProcessPoolExecutor
+
+    request = metric_request(simulator=[SMALL, FAILING])
+    with ProcessPoolExecutor(max_workers=2) as pool:
+        result = simr.run(np.stack([FIRST_APPROACH, FIRST_APPROACH]), request, map=pool.map)
+    assert result.status["sim"][:, 1].tolist() == ["failed", "failed"]
+    column = result.sim_metrics[..., 1].astype(float)  # the select entry: usable as a float array
+    assert np.isfinite(column[:, 0]).all() and np.isnan(column[:, 1]).all()
+
+
+def test_the_result_holds_the_catalogs_config_and_code(tmp_path):
+    result = simr.run(PARAMS, metric_request(), output=tmp_path)
+    [record] = simr.load_catalog(tmp_path)["runs"]
+    assert set(result.config) == set(simr.REQUEST_KEYS)
+    assert result.config == {key: record[key] for key in result.config}
+    assert result.code == record["code"]
+
+
+def test_without_an_output_the_result_still_says_what_ran():
+    result = simr.run(PARAMS, metric_request(img_metrics=[]))
+    assert result.config["simulator"] == [json.loads(json.dumps(asdict(SimulatorConfig(**SMALL))))]
+    assert result.config["image"] == [json.loads(json.dumps(asdict(ImageConfig())))]
+    assert result.config["sim_metrics"] == result.sim_metric_configs
+    assert result.config["composite"] is None
+    for repo in ("galactic_tidal_constraints", "jspam"):
+        assert {"commit", "uncommitted_changes"} <= set(result.code[repo])
+
+
+def test_the_config_is_its_own_copy():
+    result = simr.run(PARAMS, metric_request(img_metrics=[]))
+    result.config["sim_metrics"][0]["method"] = "changed"
+    assert result.sim_metric_configs[0]["method"] == "closest_approach"
+
+
+def test_the_full_config_runs_again_as_a_request():
+    first = simr.run(PARAMS, {**metric_request(), "composite": {}})
+    again = simr.run(PARAMS, first.config)
+    assert again.config == first.config
+    assert again.composite.tolist() == first.composite.tolist()
+
+
+def test_a_full_config_with_derived_entries_runs_again():
+    target = sim.search_orbit(PARAMS, SimulatorConfig(**SMALL)).astype(np.float32)[::-1][::50].copy()
+    request = {
+        "simulator": SMALL,
+        "derived": [{"name": "win", "method": "recent_approach_cosine_window", "inputs": ["ext.target"]},
+                    {"name": "model_win", "method": "recent_approach_cosine_window", "inputs": ["sim.search_orbit"]}],
+        "sim_metrics": [{"method": "orbit_time_error", "inputs": ["ext.target", "sim.search_orbit", "drv.win"]}],
+    }
+    first = simr.run(PARAMS, request, externals={"target": target})
+    assert {"level", "shape", "hash"} <= set(first.config["derived"][0])  # recorded, not given
+    again = simr.run(PARAMS, first.config, externals={"target": target})
+    assert again.config == first.config
+    assert again.sim_metrics[0, 0, 0] == first.sim_metrics[0, 0, 0]
+    # The recorded keys are worked out again, never taken from the request
+    tampered = {**first.config, "derived": [{**first.config["derived"][0], "level": "img", "hash": "x"},
+                                            first.config["derived"][1]]}
+    assert simr.run(PARAMS, tampered, externals={"target": target}).config == first.config
+
+
+def test_the_catalog_records_the_metric_entries_and_statuses(tmp_path):
+    simr.run(PARAMS, metric_request(), output=tmp_path)
+    [record] = simr.load_catalog(tmp_path)["runs"]
+    assert "fitness" not in record
+    assert [entry["method"] for entry in record["sim_metrics"]] == ["closest_approach", "closest_approach"]
+    assert record["img_metrics"][0]["inputs"] == ["img.model", "img.unperturbed"]
+    assert record["status"]["sim_metrics"] == [[["ran", "ran"]]]
+    assert record["status"]["img_metrics"] == [[[["ran"]]]]
+
+
+def test_metrics_come_back_the_same_through_a_pool():
+    from concurrent.futures import ProcessPoolExecutor
+
+    solo = simr.run(MODELS, metric_request())
+    with ProcessPoolExecutor(max_workers=2) as pool:
+        pooled = simr.run(MODELS, metric_request(), map=pool.map)
+    for m in range(len(MODELS)):
+        assert solo.sim_metrics[m, 0, 1] == pooled.sim_metrics[m, 0, 1]
+        assert solo.img_metrics[m, 0, 0, 0] == pooled.img_metrics[m, 0, 0, 0]
+    assert pooled.status["sim_metrics"].tolist() == solo.status["sim_metrics"].tolist()
+
+
+def test_metrics_use_saved_arrays_instead_of_computing(tmp_path, monkeypatch):
+    simr.run(PARAMS, save_request(["sim.search_orbit"]), output=tmp_path)
+    fresh = simr.run(PARAMS, metric_request(img_metrics=[]))
+    for item in ("sim.particles", "sim.unperturbed", "sim.orbit", "sim.search_orbit"):
+        monkeypatch.setitem(simr.SIM_DATA, item, _not_computed)
+    reused = simr.run(PARAMS, metric_request(img_metrics=[]), output=tmp_path)
+    assert reused.status["sim"].tolist() == [["reused"]]
+    assert reused.status["sim_metrics"].tolist() == [[["ran", "ran"]]]
+    assert reused.sim_metrics[0, 0, 1] == fresh.sim_metrics[0, 0, 1]
+
+
+def test_a_metric_cell_is_timed_on_its_own():
+    result = simr.run(PARAMS, metric_request())
+    assert result.seconds["sim_metrics"].shape == (1, 1, 2)
+    assert (result.seconds["sim_metrics"] >= 0).all()
+    assert (result.seconds["img_metrics"] >= 0).all()
+
+
+@pytest.mark.parametrize(
+    ("section", "entries", "message"),
+    [
+        ("sim_metrics", [{"method": "nope", "inputs": []}], "unknown method"),
+        ("sim_metrics", [{"inputs": ["sim.orbit"]}], 'needs a "method"'),
+        ("sim_metrics", [{"method": "closest_approach"}], "takes 1 input"),
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.orbit", "sim.orbit"]}], "takes 1 input"),
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.timing"]}], "isn't a metric input"),
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["ext.test_orbit"]}], "no simr item among the inputs"),
+        ("sim_metrics", [{"method": "pca_difference", "inputs": ["ext.test_particles", "sim.particles"]}],
+         "names an external the run wasn't given: no externals were given"),
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.particles"]}],
+         "takes a orbit here, but sim.particles is a particles"),
+        ("sim_metrics", [{"method": "absolute_difference", "inputs": ["img.model", "img.unperturbed"]}],
+         "belongs in img_metrics"),
+        ("img_metrics", [{"method": "closest_approach", "inputs": ["sim.search_orbit"]}],
+         "belongs in sim_metrics"),
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.orbit"], "select": "position"}],
+         "isn't a single-float output"),
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.orbit"], "select": "nope"}],
+         "isn't a single-float output"),
+        ("img_metrics", [{"method": "absolute_difference", "inputs": ["img.model", "img.model"],
+                          "select": "distance"}], "is a scalar method"),
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.orbit"], "params": {"h": 1}}],
+         "unknown settings"),
+        ("sim_metrics", [{"method": "closest_approach", "inputs": ["sim.orbit"], "extra": 1}],
+         "unknown keys in sim_metrics"),
+        ("sim_metrics", ["closest_approach"], "must be a dict"),
+        ("sim_metrics", "closest_approach", "must be a metric entry"),
+    ],
+)
+def test_bad_metric_entries_name_the_problem(section, entries, message):
+    with pytest.raises(ValueError, match=message):
+        simr.run(PARAMS, {"simulator": SMALL, section: entries})
+
+
+# --- Externals: arrays from outside the run, as metric inputs (MDRN-4 step 3) -------------------------
+
+EXTERNAL_PARTICLES = np.random.default_rng(3).normal(size=(40, 6))  # float64 on purpose: simr converts
+EXTERNAL_IMAGE = np.random.default_rng(4).random((128, 128)).astype(np.float32)
+PARTICLES_ENTRY = {"method": "pca_difference", "inputs": ["ext.test_particles", "sim.particles"]}
+IMAGE_ENTRY = {"method": "absolute_difference", "inputs": ["ext.test_image", "img.model"]}
+
+
+def externals_request(sim_metrics=(PARTICLES_ENTRY,), img_metrics=(), returned=()):
+    return {"run": {"return": list(returned)}, "simulator": SMALL,
+            "sim_metrics": list(sim_metrics), "img_metrics": list(img_metrics)}
+
+
+def test_an_external_array_is_a_metric_input_at_both_levels():
+    result = simr.run(PARAMS, externals_request(img_metrics=[IMAGE_ENTRY], returned=["sim.particles", "img.model"]),
+                      externals={"test_particles": EXTERNAL_PARTICLES, "test_image": EXTERNAL_IMAGE})
+    assert result.status["sim_metrics"].tolist() == [[["ran"]]]
+    assert result.status["img_metrics"].tolist() == [[[["ran"]]]]
+    assert result.sim_metrics[0, 0, 0] == metrics.pca_difference(
+        EXTERNAL_PARTICLES.astype(np.float32), result.data["sim.particles"][0, 0]
+    )
+    assert result.img_metrics[0, 0, 0, 0] == metrics.absolute_difference(
+        EXTERNAL_IMAGE, result.data["img.model"][0, 0, 0]
+    )
+
+
+def test_an_external_given_as_a_path_matches_the_array(tmp_path):
+    np.save(tmp_path / "particles.npy", EXTERNAL_PARTICLES)
+    from_array = simr.run(PARAMS, externals_request(), externals={"test_particles": EXTERNAL_PARTICLES})
+    from_path = simr.run(PARAMS, externals_request(), externals={"test_particles": tmp_path / "particles.npy"})
+    from_string = simr.run(PARAMS, externals_request(), externals={"test_particles": str(tmp_path / "particles.npy")})
+    assert from_array.sim_metrics[0, 0, 0] == from_path.sim_metrics[0, 0, 0] == from_string.sim_metrics[0, 0, 0]
+
+
+def test_externals_come_back_the_same_through_a_pool():
+    from concurrent.futures import ProcessPoolExecutor
+
+    externals = {"test_particles": EXTERNAL_PARTICLES}
+    solo = simr.run(MODELS, externals_request(), externals=externals)
+    with ProcessPoolExecutor(max_workers=2) as pool:
+        pooled = simr.run(MODELS, externals_request(), externals=externals, map=pool.map)
+    assert pooled.sim_metrics.tolist() == solo.sim_metrics.tolist()
+
+
+def test_array_hash_is_sha256_of_the_shape_and_the_float32_values():
+    import hashlib
+
+    as_float32 = EXTERNAL_PARTICLES.astype("<f4")
+    expected = hashlib.sha256(b"float32(40, 6)" + as_float32.tobytes()).hexdigest()
+    assert simr.array_hash(as_float32) == expected
+    assert simr.array_hash(EXTERNAL_PARTICLES) == expected  # float64 in: hashed as the float32 simr uses
+    assert simr.array_hash(np.asfortranarray(as_float32)) == expected  # memory layout doesn't matter
+    assert simr.array_hash(as_float32.reshape(6, 40)) != expected  # the shape does
+    assert simr.array_hash(as_float32 + 1) != expected
+
+
+def test_the_result_and_the_catalog_record_each_external(tmp_path, caplog):
+    np.save(tmp_path / "image.npy", EXTERNAL_IMAGE)
+    digest = simr.array_hash(EXTERNAL_PARTICLES)
+    with caplog.at_level("INFO"):
+        result = simr.run(PARAMS, externals_request(img_metrics=[IMAGE_ENTRY]), output=tmp_path / "runs",
+                          externals={"test_particles": EXTERNAL_PARTICLES, "test_image": tmp_path / "image.npy",
+                                     "spare": EXTERNAL_IMAGE})
+    assert result.externals == {  # only the used ones
+        "test_particles": {"source": "memory", "shape": [40, 6], "hash": digest},
+        "test_image": {"source": str(tmp_path / "image.npy"), "shape": [128, 128],
+                      "hash": simr.array_hash(EXTERNAL_IMAGE)},
+    }
+    [record] = simr.load_catalog(tmp_path / "runs")["runs"]
+    assert record["externals"] == result.externals
+    assert f"external 'test_particles': memory, shape (40, 6), hash {digest}" in caplog.text
+
+
+def test_a_run_without_externals_records_none(tmp_path):
+    result = simr.run(PARAMS, metric_request(), output=tmp_path)
+    assert result.externals == {}
+    assert simr.load_catalog(tmp_path)["runs"][0]["externals"] == {}
+
+
+def test_an_expected_hash_must_match_the_data(tmp_path, monkeypatch):
+    np.save(tmp_path / "particles.npy", EXTERNAL_PARTICLES)
+    digest = simr.array_hash(EXTERNAL_PARTICLES)
+    given = {"test_particles": {"path": tmp_path / "particles.npy", "hash": digest}}
+    assert simr.run(PARAMS, externals_request(), externals=given).externals["test_particles"]["hash"] == digest
+    np.save(tmp_path / "particles.npy", EXTERNAL_PARTICLES + 1)  # the file changed since the hash was taken
+    monkeypatch.setitem(simr.SIM_DATA, "sim.particles", _not_computed)
+    with pytest.raises(ValueError, match=f"the data's hash is [0-9a-f]{{64}}, not the expected {digest}"):
+        simr.run(PARAMS, externals_request(), externals=given)
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ({"hash": "abc"}, 'a dict holds "path" and, optionally, "hash"'),
+        ({"path": "/x.npy", "sha": "abc"}, 'a dict holds "path" and, optionally, "hash"'),
+        ({"path": "/x.npy", "hash": 12}, "the hash must be a string"),
+        ({"path": EXTERNAL_PARTICLES}, "the path must be a string or Path"),
+    ],
+)
+def test_a_bad_external_dict_names_the_problem(value, message):
+    with pytest.raises(ValueError, match=message):
+        simr.run(PARAMS, externals_request(), externals={"test_particles": value})
+
+
+def _shared_folders():
+    root = simr.SHARED_MEMORY if simr.SHARED_MEMORY.is_dir() else Path(__import__("tempfile").gettempdir())
+    return sorted(root.glob("simr_externals_*"))
+
+
+def test_a_pool_shares_one_copy_and_removes_it_when_the_run_ends(caplog):
+    from concurrent.futures import ProcessPoolExecutor
+
+    before = _shared_folders()
+    with ProcessPoolExecutor(max_workers=2) as pool, caplog.at_level("INFO"):
+        simr.run(MODELS, externals_request(), externals={"test_particles": EXTERNAL_PARTICLES}, map=pool.map)
+    assert "externals ['ext.test_particles'] shared with the workers through" in caplog.text
+    assert _shared_folders() == before  # the run's folder is gone
+
+
+def test_the_shared_copy_is_removed_when_the_run_fails(tmp_path):
+    from concurrent.futures import ProcessPoolExecutor
+
+    before = _shared_folders()
+    with ProcessPoolExecutor(max_workers=2) as pool, pytest.raises(ValueError, match="needs an output folder"):
+        simr.run(MODELS, {**externals_request(), "run": {"save": ["sim.orbit"]}},
+                 externals={"test_particles": EXTERNAL_PARTICLES}, map=pool.map)
+    assert _shared_folders() == before
+
+
+def test_a_solo_run_shares_nothing(caplog):
+    with caplog.at_level("INFO"):
+        simr.run(PARAMS, externals_request(), externals={"test_particles": EXTERNAL_PARTICLES})
+    assert "shared with the workers" not in caplog.text
+
+
+def test_a_float32_file_is_mapped_as_it_is_and_others_get_a_shared_copy(tmp_path):
+    np.save(tmp_path / "f32.npy", EXTERNAL_PARTICLES.astype(np.float32))
+    np.save(tmp_path / "f64.npy", EXTERNAL_PARTICLES)
+    uses = {"a": ("particles", "here"), "b": ("particles", "here"), "c": ("particles", "here")}
+    arrays, files, records = simr._read_externals(
+        {"a": tmp_path / "f32.npy", "b": tmp_path / "f64.npy", "c": EXTERNAL_PARTICLES}, uses, []
+    )
+    assert files == {"ext.a": tmp_path / "f32.npy", "ext.b": None, "ext.c": None}
+    named = {f"ext.{key}": record for key, record in records.items()}
+    paths, folder = simr._share_externals(arrays, files, named)
+    try:
+        assert paths["ext.a"] == str(tmp_path / "f32.npy")  # the caller's own file: no copy
+        assert paths["ext.b"] == paths["ext.c"] == str(folder / f"{records['b']['hash']}.npy")  # same data: once
+        assert len(list(folder.iterdir())) == 1
+        opened = simr._open_externals(paths)
+        for key in uses:
+            name = f"ext.{key}"
+            assert opened[name].dtype == np.float32 and not opened[name].flags.writeable
+            assert (opened[name] == EXTERNAL_PARTICLES.astype(np.float32)).all()
+        assert simr._open_externals(paths)["ext.b"] is opened["ext.b"]  # mapped once per process
+        simr._open_externals({"ext.a": paths["ext.a"]})
+        assert len(simr._OPEN_EXTERNALS) == 1  # only the latest task's are kept
+    finally:
+        simr._OPEN_EXTERNALS.clear()
+        __import__("shutil").rmtree(folder)
+    only_file, no_folder = simr._share_externals({"ext.a": arrays["ext.a"]}, {"ext.a": files["ext.a"]}, named)
+    assert no_folder is None and only_file == {"ext.a": str(tmp_path / "f32.npy")}
+
+
+def test_too_little_shared_memory_stops_the_run_before_anything_is_written(monkeypatch):
+    from collections import namedtuple
+    from concurrent.futures import ProcessPoolExecutor
+
+    monkeypatch.setattr(simr.shutil, "disk_usage", lambda path: namedtuple("usage", "total used free")(100, 90, 10))
+    before = _shared_folders()
+    with ProcessPoolExecutor(max_workers=2) as pool, pytest.raises(ValueError, match="need 0.0 MB in .* but 0.0 MB is free"):
+        simr.run(MODELS, externals_request(), externals={"test_particles": EXTERNAL_PARTICLES}, map=pool.map)
+    assert _shared_folders() == before
+
+
+MULTI_NODE_MPI = [
+    {"OMPI_COMM_WORLD_LOCAL_SIZE": "2", "OMPI_COMM_WORLD_SIZE": "4"},  # OpenMPI: 4 ranks, 2 on this node
+    {"MPI_LOCALNRANKS": "1", "PMI_SIZE": "3"},  # MPICH / Intel MPI
+]
+
+
+@pytest.mark.parametrize("variables", MULTI_NODE_MPI)
+def test_a_multi_node_mpi_job_with_shared_externals_stops_before_anything_is_written(
+        tmp_path, monkeypatch, variables):
+    from concurrent.futures import ProcessPoolExecutor  # stands in for the MPI pool: any pool shares
+
+    for name, value in variables.items():
+        monkeypatch.setenv(name, value)
+    before = _shared_folders()
+    with ProcessPoolExecutor(max_workers=2) as pool, pytest.raises(
+            ValueError, match=r"externals \['ext.test_particles'\] are shared through this node's memory .* only "):
+        simr.run(MODELS, externals_request(), output=tmp_path / "runs",
+                 externals={"test_particles": EXTERNAL_PARTICLES}, map=pool.map)
+    assert not (tmp_path / "runs").exists()  # no catalog
+    assert _shared_folders() == before  # nothing in /dev/shm
+
+
+def test_float32_files_need_no_shared_copy_so_a_multi_node_job_may_use_them(tmp_path, monkeypatch):
+    from concurrent.futures import ProcessPoolExecutor
+
+    monkeypatch.setenv("OMPI_COMM_WORLD_LOCAL_SIZE", "2")
+    monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "4")
+    np.save(tmp_path / "particles.npy", EXTERNAL_PARTICLES.astype(np.float32))
+    with ProcessPoolExecutor(max_workers=2) as pool:
+        result = simr.run(MODELS, externals_request(), externals={"test_particles": tmp_path / "particles.npy"},
+                          map=pool.map)
+    assert result.status["sim_metrics"].tolist() == [[["ran"]], [["ran"]]]
+
+
+@pytest.mark.parametrize("pooled", [False, True])
+def test_one_node_mpi_jobs_and_solo_runs_are_not_stopped(monkeypatch, pooled):
+    from concurrent.futures import ProcessPoolExecutor
+
+    monkeypatch.setenv("OMPI_COMM_WORLD_LOCAL_SIZE", "4")
+    monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "4")  # every rank on this node
+    if not pooled:
+        monkeypatch.setenv("OMPI_COMM_WORLD_LOCAL_SIZE", "1")  # solo shares nothing, so nothing to check
+    externals = {"test_particles": EXTERNAL_PARTICLES}
+    if pooled:
+        with ProcessPoolExecutor(max_workers=2) as pool:
+            result = simr.run(MODELS, externals_request(), externals=externals, map=pool.map)
+    else:
+        result = simr.run(MODELS, externals_request(), externals=externals)
+    assert result.status["sim_metrics"].tolist() == [[["ran"]], [["ran"]]]
+
+
+def test_a_worker_that_cannot_see_the_shared_copy_says_why():
+    with pytest.raises(simr.SimrRunError, match="every worker must run on the node that started the run"):
+        simr._open_externals({"test_particles": "/dev/shm/simr_externals_gone/external_0.npy"})
+
+
+def test_a_metric_gets_its_external_read_only_and_the_callers_array_is_untouched(monkeypatch):
+    from dataclasses import replace
+
+    def writes(a, b, **settings):
+        a[0, 0] = 1.0
+        return 0.0
+
+    monkeypatch.setitem(metrics.METHODS, "pca_difference",
+                        replace(metrics.METHODS["pca_difference"], function=writes))
+    mine = EXTERNAL_PARTICLES.astype(np.float32)
+    result = simr.run(PARAMS, externals_request(), externals={"test_particles": mine})
+    assert result.status["sim_metrics"].tolist() == [[["failed"]]]
+    assert "read-only" in result.errors["sim_metrics"][0, 0, 0]
+    assert mine.flags.writeable and (mine == EXTERNAL_PARTICLES.astype(np.float32)).all()
+
+
+def test_externals_no_metric_uses_are_ignored_and_logged(caplog):
+    with caplog.at_level("INFO"):
+        result = simr.run(PARAMS, externals_request(),
+                          externals={"test_particles": EXTERNAL_PARTICLES, "spare": "/nowhere/not_loaded.npy"})
+    assert result.status["sim_metrics"].tolist() == [[["ran"]]]
+    assert "ignored: ['spare']" in caplog.text
+
+
+def _missing(tmp_path):
+    return tmp_path / "missing.npy"
+
+
+def _not_an_array(tmp_path):
+    (tmp_path / "text.npy").write_text("not an array")
+    return tmp_path / "text.npy"
+
+
+@pytest.mark.parametrize(
+    ("external", "message"),
+    [
+        (lambda tmp_path: np.zeros((5, 7)), r"externals\['test_particles'\] \(used by sim_metrics\[0\].inputs\[0\]\) "
+                                            r"must be a 'particles' array, shape \(None, 6\): got \(5, 7\)"),
+        (lambda tmp_path: np.full((5, 6), np.nan), "holds NaN or inf"),
+        (lambda tmp_path: np.full((5, 6), 1e300), "holds NaN or inf"),  # too big for float32
+        (lambda tmp_path: np.zeros((5, 6), dtype=bool), "must be a numeric numpy array.*got bool array"),
+        (lambda tmp_path: [[0.0] * 6] * 5, "must be a numeric numpy array.*got list"),
+        (lambda tmp_path: "particles.npy", "a path must be absolute and name a .npy file"),
+        (lambda tmp_path: tmp_path / "particles.txt", "a path must be absolute and name a .npy file"),
+        (_missing, "can't load"),
+        (_not_an_array, "can't load"),
+    ],
+)
+def test_a_bad_external_stops_the_run_before_anything_is_simulated(external, message, tmp_path, monkeypatch):
+    monkeypatch.setitem(simr.SIM_DATA, "sim.particles", _not_computed)
+    with pytest.raises(ValueError, match=message):
+        simr.run(PARAMS, externals_request(), externals={"test_particles": external(tmp_path)})
+
+
+@pytest.mark.parametrize(
+    ("externals", "message"),
+    [
+        ({"other": EXTERNAL_PARTICLES}, r"ext.test_particles names an external the run wasn't given: externals has \['other'\]"),
+        ({"test_particles": EXTERNAL_PARTICLES, "sim.mine": EXTERNAL_PARTICLES}, "a key must be letters, digits and _"),
+        ({"test_particles": EXTERNAL_PARTICLES, "img.mine": EXTERNAL_PARTICLES}, "a key must be letters, digits and _"),
+        ([EXTERNAL_PARTICLES], "externals must be a dict"),
+    ],
+)
+def test_bad_externals_keys_name_the_problem(externals, message):
+    with pytest.raises(ValueError, match=message):
+        simr.run(PARAMS, externals_request(), externals=externals)
+
+
+def test_an_external_image_must_match_every_image_entry():
+    request = {**externals_request(sim_metrics=[], img_metrics=[IMAGE_ENTRY]), "image": [{}, {"width": 64}]}
+    with pytest.raises(ValueError, match=r"is 128 x 128 \(height x width\), but image\[1\] makes 128 x 64 images"):
+        simr.run(PARAMS, request, externals={"test_image": EXTERNAL_IMAGE})
+
+
+def test_one_external_has_one_kind():
+    request = externals_request(img_metrics=[{"method": "absolute_difference", "inputs": ["ext.test_particles", "img.model"]}])
+    with pytest.raises(ValueError, match="used as a image here but as a particles in sim_metrics"):
+        simr.run(PARAMS, request, externals={"test_particles": EXTERNAL_PARTICLES})
+
+
+def test_a_method_with_a_setup_step_is_not_supported_yet():
+    from dataclasses import replace
+
+    original = metrics.METHODS["closest_approach"]
+    metrics.METHODS["closest_approach"] = replace(original, setup=lambda: None)
+    try:
+        with pytest.raises(NotImplementedError, match="setup step"):
+            simr.run(PARAMS, metric_request(img_metrics=[]))
+    finally:
+        metrics.METHODS["closest_approach"] = original

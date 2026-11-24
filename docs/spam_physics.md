@@ -142,6 +142,13 @@ so the lead is 4.0 and the run starts at −6.91.
   starts at −5: after the pass the search chose, and too late to show it.
 - **The window, the −12 cap, the −5 fallback and the 10 are fixed in the Fortran.** `sim` keeps the
   window and the 10 (`sim.LEAD_FACTOR`) and has no cap or fallback.
+- **A run's times are labeled from `t_start`, not from the grid time it starts at.** Placement steps the
+  secondary back in steps of 0.001 while `t_start < t`, so it stops on the first grid time at or before
+  `t_start` (the `sim.search_orbit` row there, exactly), but `sim.orbit` labels that row `t_start`. Every
+  later row keeps the offset, which is under one step (0.001, about 87 kyr): for the SDSS model the run
+  starts at the grid time −6.915, labeled −6.914585, and ends truly 1 step past now, labeled 1.4 steps
+  past. Too small to matter for any fit; only reading `sim.orbit`'s times as exact to better than 0.001
+  would notice it. Unclear whether Wallin meant it.
 
 ## The settings we expose (`SimulatorConfig`)
 Everything `sim.SimulatorConfig` can change, apart from the parameters. For each, what

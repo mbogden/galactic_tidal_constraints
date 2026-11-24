@@ -53,11 +53,11 @@ class ImageConfig:
 
     width: int = 128
     height: int = 128
-    primary_center: tuple[float, float] = (48.0, 64.0)
-    secondary_center: tuple[float, float] = (80.0, 64.0)
+    primary_center: tuple[float, float] = (32.0, 64.0)
+    secondary_center: tuple[float, float] = (96.0, 64.0)
     blur_sigma: float = 0.0
     blur_truncate: float = 4.0
-    brightness: str = "linear"
+    brightness: str = "log"
 
     def __post_init__(self) -> None:
         """Check the values when the config is made, so mistakes show up before any run. Centers given as

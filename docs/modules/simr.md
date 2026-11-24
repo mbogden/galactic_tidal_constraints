@@ -9,7 +9,7 @@ time and knows nothing about disk.
 ```python
 from galactic_tidal_constraints.simr import simr
 
-result = simr.run(models, request, output=None)
+result = simr.run(models, request, output=None, map=map, externals=None)
 ```
 
 Only what exists today is described here. Decisions behind it are in [PLAN.md](../../PLAN.md).
@@ -31,6 +31,8 @@ request = {
     },
     "simulator": [{"lnl": 0.1}, {"lnl": 0.01}],  # one dict or a list; each becomes a SimulatorConfig
     "image": [{}, {"blur_sigma": 1.0}],          # one dict or a list; each becomes an ImageConfig
+    "sim_metrics": [{"method": "closest_approach", "inputs": ["sim.search_orbit"], "select": "distance"}],
+    "img_metrics": [{"method": "absolute_difference", "inputs": ["img.model", "img.unperturbed"]}],
 }
 ```
 
@@ -38,11 +40,21 @@ request = {
 |---|---|---|
 | `run.return` | `[]` | Names of the data to hand back |
 | `run.save` | `[]` | Names of the data to save. Independent of `return`: a run can do both |
+| `run.max_return_gb` | `"auto"` | The most data `run.return` may hold, in GB. `"auto"`: half the memory this process may use; `null`: no cap. A run that would return more stops before anything is computed (see Planning a run) |
+| `run.max_hours` | `4.0` | The longest the run's simulations may take, in hours of wall time, at the worst case and over all its workers; `null`: no cap. A run that could take longer stops before anything is computed (see Planning a run) |
 | `simulator` | one `SimulatorConfig()` | A dict (keys are `SimulatorConfig` fields) or a `SimulatorConfig`, or a list of them |
 | `image` | one `ImageConfig()` | A dict (keys are `ImageConfig` fields) or an `ImageConfig`, or a list of them. Centers are lists in JSON (`[column, row]`). See [image_creator.md](image_creator.md) |
+| `derived` | none | Named entries, in order: arrays made from other arrays, which metrics name as `drv.<name>`. See [derived.md](derived.md) and [configuration.md](../configuration.md#derived-entries) |
+| `sim_metrics` | none | Metric entries whose inputs are `sim.*` items: one dict or a list ([] is also none). See [metrics.md](metrics.md) and [configuration.md](../configuration.md#metric-entries) |
+| `img_metrics` | none | Metric entries with at least one `img.*` input, likewise |
 
 **Every model runs on every simulator entry, and every simulation is imaged with every image
-entry.** Unknown keys, unknown names, wrong types and bad values are errors that say where the
+entry.** Every `sim_metrics` entry runs on every simulation, and every `img_metrics` entry on every
+(simulation, image) pair; metrics always come back in the result (they aren't part of `return`), and
+`simr` computes (or loads) the items they name even when nothing else asks for them, so an orbit-only
+request with `sim_metrics` never builds an image. Entries are checked against the metrics table
+(`metrics.METHODS`) before anything runs; an entry naming a method with a `setup` step is a
+`NotImplementedError` until the DL step wires setup in. Unknown keys, unknown names, wrong types and bad values are errors that say where the
 problem is (e.g. `simulator[0].lnl must be a number: '0.1'`, `simulator[1]: lnl can't be negative`,
 `image[0].primary_center must be a list of 2 (a number, a number)`), raised before anything runs.
 Types are checked against the config's type hints; an integer is fine for a number field (JSON writes
@@ -56,6 +68,7 @@ The Simulator stage can hand back:
 | `sim.particles` | `sim.simulate_particles`: every particle at the end, `(n1 + n2 + 1, 6)` |
 | `sim.unperturbed` | `sim.unperturbed_particles`: the same disks at today's centers, `(n1 + n2 + 1, 6)` |
 | `sim.orbit` | `sim.simulate_orbit`: the secondary's center at every step, `(n_steps + 1, 7)` |
+| `sim.search_orbit` | `sim.search_orbit`: the secondary's center from now back to t = −30, the path every run's start lies on, `(about 30001, 7)` |
 | `sim.timing` | the dict from `sim.get_timing` (start time, steps, which pass) |
 
 The Image Creator stage can hand back (`simr.IMAGE_DATA`; each made with `img.create_image`, from the
@@ -65,6 +78,20 @@ simulation's own particles and that simulator's `n1` and `n2`):
 |---|---|---|
 | `img.model` | `sim.particles` | The model image, `float32` `(height, width)` in [0, 1] |
 | `img.unperturbed` | `sim.unperturbed` | The unperturbed image, in the same frame |
+
+`run.return` also takes derived entries, as `drv.<name>`
+([configuration.md](../configuration.md#derived-entries)): one made per simulation or per image comes
+back indexed like that stage's data, and one computed once for the run comes back as the array
+itself.
+
+`run.save` also takes `ext.<key>`, an external some entry uses, and any derived entry's `drv.<name>`
+(see Saving). Where each goes follows from what it's made from:
+
+| Name | Saved in |
+|---|---|
+| `ext.<key>` | `<output>/externals/<hash>.npy`: once for the output |
+| `drv.<name>`, made only from externals | `<output>/derived/<hash>.npy`: once for the output |
+| `drv.<name>`, made from a model's data (`sim.*`, `img.*`) | That model's folder, `model_<id>/derived/` |
 
 **Only what `return` and `save` name is computed.** Asking only for `sim.orbit` never runs
 particles. An image needs the `sim` items it's made from, so `simr` computes them (or loads them, if
@@ -77,6 +104,15 @@ for every model. SPAM draws the same random numbers for any model, so with one s
 disks share one pattern, stretched by `rout` and tilted by `theta` and `phi`: metric differences
 between models come only from their parameters. To compare draws, list entries that differ only in
 `seed`. Details: [spam_physics.md](../spam_physics.md), `seed`.
+
+### Externals
+`externals` is a dict of arrays from outside the run (e.g. a target's orbit, image or particles), by
+key: each value an array, a `.npy` path, or `{"path": ..., "hash": ...}`. A metric or derived entry
+names one as `ext.<key>`. Like the models, they aren't part of the request. Each
+external a metric uses is loaded once, converted to `float32`, checked and hashed before anything
+runs, and handed to metrics read-only. Keys, checks, hashes and the command line's `--externals`:
+[configuration.md](../configuration.md#externals). With a pool they're shared through `/dev/shm`
+(see Spreading the work).
 
 ### The output
 `output` is a runtime argument, not part of the request, because it doesn't change any result. With
@@ -100,8 +136,17 @@ catalog). It's a folder or a `.json` file, told apart by name, so it works befor
 | `simulators` | The simulator entries as `SimulatorConfig`s, every default filled in: entry s is simulator s |
 | `images` | The image entries as `ImageConfig`s, likewise: entry i is image i |
 | `data` | One entry per name in `return`, and nothing else |
+| `sim_metrics` | Each `sim_metrics` entry's value per simulation, an object array `[model, simulator, entry]`: a float (a scalar method, or `select`) or a dict (a descriptive method). A failed or skipped cell holds NaN where the entry gives a float, `None` where it gives a dict. Shape `(N, S, 0)` with no entries |
+| `img_metrics` | Likewise per image: `[model, simulator, image, entry]` |
+| `composite` | With a `composite` section: one `float64` per model, shape `(N,)`, the weighted mean of its metric cells (`metrics.composite`); NaN for a model whose weighted cell failed or was skipped. `None` without the section ([configuration.md](../configuration.md#composite)) |
+| `sim_metric_configs`, `img_metric_configs` | The filled-in entries (`method`, `inputs`, `select` — `None` when absent — and `params` with every default), so `sim_metrics[..., k]` is entry `sim_metric_configs[k]` |
+| `composite_weights` | The weights the composite used, filled in: `{"sim_weights", "img_weights"}` as nested lists, a key per level with entries. `None` without the section |
+| `derived_configs` | The filled-in `derived` entries, in order: `name`, `method`, `inputs`, `params` with every default, `level` (`"run"`: computed once; `"sim"`: per simulation; `"img"`: per image), and for `"run"` ones the array's `shape` and `hash` |
+| `externals` | Each external a metric used, by key: `{"source"` (its path, or `"memory"`), `"shape"`, `"hash"` (`simr.array_hash`)`}`. Empty when none was used |
+| `config` | The whole request with every default filled in, as plain JSON-ready data: `run`, `simulator`, `image`, `derived`, `sim_metrics`, `img_metrics`, `composite`. Exactly what the catalog's run record holds, so a run without an output still says what ran, and it runs again as a request (`simr.run(models, result.config, externals=...)`) |
+| `code` | The code that ran: each repo's commit and whether it had uncommitted changes (`simr.code_versions()`, the catalog's `"code"`). Read on every run, with or without an output |
 | `ids` | Each row's model id in the output's catalog, or `None` without an output (see The output catalog) |
-| `status`, `seconds`, `errors` | Per stage (`"sim"`, `"img"`), indexed like its data; see Failures and status |
+| `status`, `seconds`, `errors` | Per stage (`"sim"`, `"img"`, `"sim_metrics"`, `"img_metrics"`), indexed like its data or values; see Failures and status |
 
 Each `data` entry is a NumPy object array of cells, indexed by the levels its stage depends on:
 `[model, simulator]` for `sim.*`, `[model, simulator, image]` for `img.*`. A cell holds that
@@ -112,6 +157,130 @@ result.data["sim.orbit"][12, 1]         # model 12's orbit from simulator entry 
 result.data["img.model"][12, 1, 0]    # its image from image entry 0
 result.simulators[1].lnl                # what entry 1 was
 ```
+
+## Planning a run: `simr.plan`
+A config multiplies quickly (models × simulator entries × image entries × metric entries), and
+everything `run.return` names comes back into the memory of the one process that called `run`.
+`simr.plan` says what a run would do before it's started:
+
+```python
+plan = simr.plan(models, request, externals=None, output=None, time=None, workers=1, speed=None)
+print(simr.format_plan(plan))
+```
+```
+1000 models x 2 simulator entries x 1 image entries
+  simulations: 2,000 (each computes sim.particles, sim.search_orbit)
+  images:      2,000 (each makes img.model)
+  derived:     1 once for the run, 0 per simulation, 0 per image
+  metrics:     4,000 simulation-level cells, 2,000 image-level cells, and one composite per model
+  external tng_orbit: shape (601, 7), 16.43 KB, from /data/targets/tng_123/orbit.npy
+  returned in memory: 216.60 MB
+    sim.particles: 2,000 arrays, 91.60 MB
+    img.model: 2,000 arrays, 125.00 MB
+  saved to disk: up to 1.56 GB
+    sim.search_orbit: 2,000 arrays, up to 1.56 GB
+```
+
+- **It makes every check `run` makes before simulating** (the models, the request, the externals, the
+  derived entries made from them), through the same code, so a plan that comes back is a run that
+  would start. Externals are loaded and hashed, and once-per-run derived arrays computed, as `run` does
+  first. **Nothing is simulated and nothing is written.**
+- **`plan`** is a plain, JSON-ready dict: the counts (`models`, `simulations`, `images`, `derived`,
+  `metric_cells`), what each simulation and image computes (`sim_items`, `image_items`), the
+  `externals` used, and `return` and `save`, each with its total `bytes` and its `items`.
+- **Sizes** are the arrays as `float32`. They're exact for particles and images, which follow from
+  the config. An orbit's length depends on each model's start, which isn't known until it runs, so
+  every orbit is counted at the longest one can be (`simr.ORBIT_ROWS_AT_MOST` rows, about 840 KB) and
+  marked `upper_bound` ("up to" in the text). `sim.timing` and the metric values are a few numbers each
+  and count as 0.
+- **`output`** is only checked by name (`run.save` needs a folder). What's already saved there isn't
+  read, so a plan counts every simulation, though a run into that folder would reuse some.
+
+### How long it would take: `time=`
+With `time="worst"` or `time="exact"`, the plan adds an estimate of the simulations' time:
+
+```
+  time: about 2.1 hours of one core (every run counted at its longest); about 4.1 minutes on 31 workers.
+  Simulations only; nothing taken as already saved
+```
+
+SPAM's particles don't pull on each other, so a simulation's time is close to **particles × steps ×
+one number for the machine** (measured: 59 to 67 ns per particle-step from 100 to 10,000 particles on a
+2023 desktop, a straight line). Every simulation also costs its orbit, about 0.03 s.
+
+| | |
+|---|---|
+| `time="worst"` | Every run counted at its longest: a start at t = −30, so 30,002 steps. Free to work out, and a ceiling. A simulator entry with a fixed `start` is counted at that start |
+| `time="exact"` | Each model's real start, from `sim.get_timing` (no particles run): about 0.03 s per simulation, so 30 s for 1,000. A model whose start can't be found would fail; it's counted in `no_start` and costs nothing |
+| `workers` | How many processes the run would be spread over; the wall time is the core time divided by it |
+| `speed` | The machine's speed, from `simr.measure_speed()`. Left out, it's measured on the spot with one small simulation (well under a second), so there's no table of machines to keep |
+
+- `plan["time"]` holds `core_seconds`, `wall_seconds`, `workers`, `steps`, `particle_steps`,
+  `no_start` and the `speed` used; it's `None` without `time=`, so a plain plan stays instant.
+- **It's an estimate of the simulations only.** Images and metrics aren't counted (small beside a
+  particle run, though `orbit_position_error` on a long target can add up), nothing is taken as already
+  saved, and a pool's startup and uneven workers aren't modeled. Expect it within a few tens of percent.
+- Measure the speed on the machine the run will use: a plan made on a laptop for a cluster job uses the
+  laptop's speed unless `speed=` says otherwise.
+
+### The two caps: `run.max_return_gb` and `run.max_hours`
+`run` works out the same plan first and **stops, before anything is computed or written**, if the run
+is over either cap. Both are settings in the config's `run` section, so each run can set its own:
+
+```json
+"run": {"return": ["sim.particles"], "max_return_gb": 24, "max_hours": 12}
+```
+
+| Setting | Default | Counts | `null` |
+|---|---|---|---|
+| `max_return_gb` | `"auto"`: half the memory this process may use | Everything `run.return` would hand back, for the whole run | No cap |
+| `max_hours` | `4.0` | The simulations' wall time at the worst case, over all the run's workers | No cap |
+
+**Returned data.** It all lands in the memory of the one process that called `run`, whatever the number
+of workers, beside what its workers on the same node are using. So the default cap is half of
+`simr.available_memory()`: the machine's RAM, or its container's or Slurm job's memory limit when
+that's lower. On a 32 GB node, 16 GB.
+
+```
+ValueError: run.return would hold 20.5 GB in this process's memory, more than run.max_return_gb allows
+(16 GB, half of the 32 GB this process may use): sim.particles 20.5 GB (458,000 arrays). Save it instead
+(run.save, with an output folder), return less, or set run.max_return_gb to a number of GB (null for no
+cap). simr.plan(models, request) shows the sizes without running
+```
+
+- Only `run.return` counts. Saved data goes to disk, and metric values are a few numbers per model.
+- Orbits count at their longest (about 840 KB each), so a run returning many orbits can be stopped
+  though its real orbits would have fit; set the cap for those.
+- Where the memory can't be read (not Linux), `"auto"` is 1 GB.
+- On the command line `run.return` is ignored, so this cap never applies there.
+
+**Time.** The simulations' time is counted at the **worst case** (every run from t = −30, or its
+simulator entry's fixed start), as particles × steps × this machine's speed, and **divided by the run's
+workers**: 1 for built-in `map`, a pool's own count (`ProcessPoolExecutor`, `MPIPoolExecutor`), else the
+MPI launcher's ranks less one, or the CPUs this process may use. If that's more than `run.max_hours`,
+the run doesn't start:
+
+```
+ValueError: the run's 20,000 simulations could take about 21.0 hours on 1 worker (21.0 hours of one core,
+every run counted at its longest), more than run.max_hours = 4 allows. Use more workers, fewer models or
+particles, or raise run.max_hours (null for no cap). simr.plan(models, request, time="exact", workers=...)
+gives a closer estimate from each model's real start, without running
+```
+
+- **It's the worst case, so it's cautious**: real starts are usually later than t = −30, so a run
+  typically finishes in a third to a half of it. A run stopped here that `time="exact"` shows to be
+  fine needs a higher `max_hours`.
+- It applies on the command line too, and `--dry-run` exits 1 for a run that's over it.
+- It doesn't know what's already saved: a rerun into a folder that holds most of the run is still
+  counted in full, so resuming a big run can need a higher cap.
+- The machine's speed is measured once per process, and only when a run isn't plainly under the cap:
+  ordinary runs are let through without timing anything.
+- Images, metrics and a pool's startup aren't counted.
+
+`simr.plan` raises for neither cap: it reports `plan["return"]["over_cap"]` and
+`plan["time"]["over_cap"]`, with the caps as they work out here (`plan["max_return_gb"]`,
+`plan["available_memory_gb"]`, `plan["max_hours"]`), and `format_plan` says "OVER THE CAP". Those are
+the cases where a plan comes back for a run that wouldn't start.
 
 ## Spreading the work: `map`
 `simr.run(..., map=...)` takes a `map` function, built-in `map` by default. Each call handles **one
@@ -145,6 +314,15 @@ with ProcessPoolExecutor(max_workers=simr.available_cpus(), mp_context=multiproc
   the main process and, as the pool's initializer, each worker. Under `mpirun` it names the MPI rank
   instead (below); `use_rank=False` keeps process names, which `--mode local` uses, since a local pool
   started under `mpirun` (as Babbage's job scripts do) would otherwise read rank 0 in every process.
+- **Externals with a pool** aren't copied into each model's task. `simr` writes each one once to
+  `/dev/shm` (memory, not disk; a `float32` `.npy` given by path is used as it is), every worker maps
+  that copy read-only, and the folder is removed when the run ends. `/dev/shm` belongs to one node, so
+  **a pool that shares externals there must have all its workers on the calling process's node**. Under
+  an MPI launcher, `simr` reads how many ranks are on this node (`OMPI_COMM_WORLD_LOCAL_SIZE` vs
+  `OMPI_COMM_WORLD_SIZE`; `MPI_LOCALNRANKS` vs `PMI_SIZE` for MPICH) and stops a multi-node job with a
+  `ValueError` before anything is written. Without those variables, a worker that can't see the copy
+  raises `SimrRunError` when it starts. `float32` files on a shared disk need no copy, so they work
+  across nodes. Details: [configuration.md](../configuration.md#externals).
 - "spawn" starts workers fresh, as MPI does. A script that uses it needs the usual
   `if __name__ == "__main__":` guard.
 
@@ -187,13 +365,19 @@ An image (one simulation with one image entry) fails on its own, the same way: i
 `None`, the error is logged, and its simulation is unaffected. When a simulation fails, its images are
 `"skipped"`.
 
+A metric cell that fails or is skipped holds **NaN** if its entry gives one float (a scalar method, or
+`select`), so a float column stays all floats and can be used as a float array, and `None` if it gives a
+dict.
+
 Each outcome comes back per stage, indexed like the data:
 
 | Field | Each cell |
 |---|---|
-| `result.status["sim"][m, s]` | `"ran"`, `"reused"` (saved, and nothing had to be computed), `"failed"`, or `"empty"` (nothing was asked of it: nothing returned or saved, and no image needs it) |
+| `result.status["sim"][m, s]` | `"ran"`, `"reused"` (saved, and nothing had to be computed), `"failed"`, or `"empty"` (nothing was asked of it: nothing returned or saved, and no image or metric needs it) |
 | `result.status["img"][m, s, i]` | `"ran"`, `"reused"` (saved, and nothing had to be made), `"failed"`, `"skipped"` (its simulation failed), or `"empty"` (no image was asked for) |
-| `result.seconds[stage][...]` | Wall time, loading included. A simulation's time doesn't include its images |
+| `result.status["sim_metrics"][m, s, k]` | `"ran"`, `"failed"` (the method raised, returned NaN or inf, or didn't match its declaration; the simulation is unaffected), or `"skipped"` (its simulation failed). With no entries there are no cells |
+| `result.status["img_metrics"][m, s, i, k]` | The same per image; `"skipped"` also when the image it needs failed |
+| `result.seconds[stage][...]` | Wall time, loading included. A simulation's time doesn't include its images or metrics; each metric cell is timed on its own |
 | `result.errors[stage][...]` | `"Type: message"` for a failure, else `None` |
 
 ```python
@@ -210,7 +394,11 @@ code (see The command line) depends on the simulations only.
 ### Folder layout
 ```
 <output>/
-    catalog.json                  "models": id -> 14 parameters; "runs": one record per run that saved here
+    catalog.json                  "models": id -> 14 parameters; "runs": one record per run here
+    externals/
+        <hash>.npy                an external `run.save` named (`ext.<key>`), stored once by its hash
+    derived/
+        <hash>.npy                a once-per-run derived array `run.save` named (`drv.<name>`)
     model_000000/                 one folder per model id
         model.json                the model's record
         simulations/
@@ -219,12 +407,59 @@ code (see The command line) depends on the simulations only.
         images/
             sim_00_img_0000_model.npy        one file per saved image: <simulation>_<image>_<item>.npy
             sim_00_img_0000_unperturbed.npy
+        derived/                  derived arrays made from this model's data that `run.save` named
+            sim_00_drv_model_win.npy         one made per simulation: <simulation>_drv_<name>.npy
+            sim_00_img_0000_drv_tidal.npy    one made per image: <simulation>_<image>_drv_<name>.npy
 ```
 
 A simulation's name is `sim_<s>` for simulator entry s (`sim_00`, `sim_01`, …; `simr.simulation_name`),
 and an image entry's is `img_<i>` with four digits (`img_0000`, …; `simr.image_name`). Arrays are
 `.npy` files, one per array, `float32`, uncompressed, so one array can be added or deleted without
 touching the others.
+
+### Once-per-run arrays: `externals/` and `derived/`
+An external is copied into the output **only when `run.save` names it** (`"save": ["ext.tng_orbit"]`),
+and so is a derived array made only from externals (`drv.<name>`). Large files that stay where they
+are needn't be copied: the record keeps an external's path either way (`externals` → `source`).
+
+- **Named by hash:** the file is `<hash>.npy`, the hash being `simr.array_hash` of its data (the one
+  the record already holds). The same data is stored once, whatever key or run it came under, and two
+  different arrays can never collide.
+- **Written before anything is simulated**, as `float32`, atomically. A file of that hash already
+  there is left alone.
+- **The run's record lists them** under `files`: name → path relative to the output folder, e.g.
+  `{"ext.tng_orbit": "externals/6cfc….npy"}`.
+- The external must be one a metric or derived entry uses (only those are loaded, checked and
+  hashed); naming another is an error before anything is written.
+
+### A model's derived arrays: `model_<id>/derived/`
+A derived entry made from a model's data (any `sim.*` or `img.*` input, directly or through another
+entry) is saved in that model's folder when `run.save` names it, and listed in `model.json` under
+`derived`, by name:
+
+```json
+"derived": {
+  "tidal": {
+    "config": {"name": "tidal", "method": "difference_weights", "inputs": ["ext.tng_image", "img.unperturbed"],
+               "params": {"floor": 0.05, "threshold": null}, "level": "img"},
+    "made_from": {"ext.tng_image": {"shape": [128, 128], "hash": "7a3b…"}},
+    "files": {"sim_00": {"img_0000": "derived/sim_00_img_0000_drv_tidal.npy"}}
+  }
+}
+```
+
+- **`config`** is the filled-in entry. **`made_from`** is everything behind it besides the model's own
+  data: each external (shape and hash) and each derived entry it uses, directly or through others.
+- **`files`** are by simulation for an entry made per simulation (`"sim_00": "derived/…"`), and by
+  simulation then image for one made per image.
+- **A record, not reused.** Unlike simulations and images, a saved derived array is never loaded by a
+  later run: each run that names it writes its own, replacing the file. If the entry, or anything in
+  `made_from`, differs from what's listed, the listing starts again with this run's (a warning is
+  logged; the earlier files stay on disk, unlisted).
+- Its simulation (and image entry) is recorded too, so the file's configs are on record. Nothing is
+  added under a simulation or image entry that was saved with a different config.
+- A derived entry that fails for a model saves nothing for it.
+- `simr.load_derived(folder)` reads them back.
 
 ### `model.json`
 One per model folder: the model's 14 named parameters, each saved simulation by name, and each saved
@@ -308,9 +543,14 @@ The catalog (a folder's `catalog.json`, or a `.json` output) is the output's tab
   | `run` | Its `return` and `save` lists |
   | `simulator` | The full simulator configs |
   | `image` | The full image configs |
-  | `fitness` | Empty until that stage exists |
+  | `derived` | The filled-in derived entries, as in the result's `derived_configs` |
+  | `sim_metrics`, `img_metrics` | The filled-in metric entries (their values are under `values`) |
+  | `composite` | The filled-in composite weights, or `null` without the section |
+  | `externals` | Each used external's source (its path, or `"memory"`), shape and hash, as in the result |
+  | `files` | Each once-per-run array `run.save` named (`ext.<key>`, `drv.<name>`) → its file, relative to the output folder. `{}` when none was |
   | `model_ids` | Row m's model id |
   | `status`, `seconds`, `errors` | As in the result, as lists; added when the run ends |
+  | `values` | The metric values: `sim_metrics` and `img_metrics` as nested lists indexed like the result's arrays (`values["sim_metrics"][m][s][k]`), and `composite` (one per model, or `null`). A descriptive entry's cell is its dict, arrays as lists. JSON has no NaN, so **a failed or skipped scalar cell is `null`**; `simr.load_metrics` gives the arrays back with NaN |
 
 A run without `save` writes only the catalog: its models and its record, no model folders.
 **One run at a time per output.**
@@ -325,7 +565,8 @@ A run without `save` writes only the catalog: its models and its record, no mode
 ## The command line
 ```bash
 python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--config config.json] \
-    [--mode solo|local|mpi] [--workers N] [--log-level INFO]
+    [--externals externals.json] [--mode solo|local|mpi] [--workers N] [--log-level INFO] \
+    [--dry-run [worst|exact]]
 mpirun -n N python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi ...
 ```
 
@@ -334,9 +575,11 @@ mpirun -n N python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode m
 | `--models` | Required. The models file (below) |
 | `--output` | Required: a folder or a `.json` catalog file, so every run is recorded |
 | `--config` | Optional. The request as JSON, listing only what differs from the defaults; without it, one default simulator entry. `run.return` is ignored, with a warning if it names anything (nothing comes back in memory), so one config works in a notebook and here |
+| `--externals` | Optional. A JSON file mapping each external key a metric names to a `.npy` path, or to `{"path": ..., "hash": ...}`; relative paths are relative to this file's folder. See Externals in [configuration.md](../configuration.md). With `--mode local` or `mpi`, every worker must be on the node that runs the command |
 | `--mode` | `solo` (the default): one process. `local`: a pool of processes on this machine. `mpi`: MPI ranks, launched as above: rank 0 runs the command, the other N-1 are workers. Without `mpi4py`, with one rank, or without `-m mpi4py.futures` it stops with exit code 1 |
 | `--workers` | With `--mode local`: how many processes (default: the CPUs this job may use) |
 | `--log-level` | `DEBUG`, `INFO` (the default), `WARNING` or `ERROR` |
+| `--dry-run [worst\|exact]` | Check the inputs as a run checks them and log the plan (`simr.plan`: counts, sizes and about how long; see Planning a run), without simulating or writing anything. The time counts every run at its longest (`worst`, the default) or uses each model's real start (`exact`), over the workers `--mode` and `--workers` would give. Exit code 0 if the run would start, 1 if something would stop it, including a worst case over `run.max_hours`. Worth running before submitting a job |
 
 **The models file:** one model per line; the first 14 comma-separated values on the line are the
 model. Longer lines (SPAM's 22-value strings, JSPAM's `archive/data.txt`) are fine, and one log
@@ -347,23 +590,47 @@ isn't a number, is an error naming the line. `simr.read_models(path)` reads one 
 
 | Code | Meaning |
 |---|---|
-| 0 | The run ran, even if some simulations failed (they're in the catalog and the log) |
+| 0 | The run ran, even if some simulations failed (they're in the catalog and the log). With `--dry-run`: nothing would stop the run |
 | 1 | It couldn't run or finish: a bad models file, config or output, or a worker that died (a short message, no traceback). Under MPI a crashed worker usually ends the job with `mpirun`'s own error code |
 | 2 | It ran, but every simulation failed: almost always a setup mistake |
 
-Until the metrics stage exists, a run computes only what `run.save` asks for, so a command-line run without
-`run.save` records its models and configs but simulates nothing: each simulation's status is
-`"empty"`.
+A command-line run computes what `run.save` and the metric sections ask for; with neither, it records
+its models and configs but simulates nothing (each simulation's status is `"empty"`). Metric values
+and the composite are written to the run's record in the catalog; read them back with
+`simr.load_metrics(output)`.
 
 ## Loading
 | Function | Returns |
 |---|---|
 | `simr.read_models(path)` | A models file's models, `(N, 14)` |
+| `simr.plan(models, request, externals=None, output=None, time=None, workers=1, speed=None)` | What a run would do, without simulating or writing: counts, the externals used, the bytes `return` would hold and `save` would write, and with `time=` about how long (see Planning a run). `simr.format_plan(plan)` gives it as text |
+| `simr.measure_speed()` | This machine's simulation speed, from one small run: `{"seconds_per_particle_step", "seconds_per_orbit"}` |
+| `simr.available_memory()` | The memory this process may use, in bytes: the machine's RAM, or its container's or Slurm job's limit when lower. `None` where it can't be read |
 | `simr.load_catalog(output)` | The catalog (of a folder or a `.json` file) as a dict |
+| `simr.load_metrics(output, run=-1)` | A recorded run's metric values and composite, as the run returned them: `{"sim_metrics", "img_metrics", "composite"}`, arrays indexed like the result's, with NaN for failed scalar cells. `run` picks the run by position (-1: the last) |
+| `simr.load_run(output, run=-1, externals=None)` | A recorded run's inputs, ready to run again: `{"models", "request", "externals"}` (below) |
 | `simr.load_model(folder)` | A model folder's `model.json` as a dict |
 | `simr.load_simulation(folder, "sim_00")` | That simulation's saved arrays, `{name: array}`, `float32`, exactly as `run` returns them |
+| `simr.load_derived(folder, name=None)` | A model folder's saved derived arrays: `{(name, simulation): array}` for entries made per simulation, `{(name, simulation, image): array}` for those made per image, sorted; `name` picks one entry |
 | `simr.load_images(folder, simulation=None, image=None, items=None)` | Saved images, `{(simulation, image, item): array}`, sorted, `float32`; each filter left `None` means all (below) |
 | `simr.code_versions()` | The current code versions, in the form `model.json` records |
+
+`load_run` rebuilds a run's inputs from its catalog record, under `simr.run`'s own argument names:
+
+```python
+simr.run(**simr.load_run("runs"), output="runs")           # the last run there, again
+simr.run(**simr.load_run("runs", run=3), output="again")   # the fourth, into another folder
+```
+
+- **`models`**: the run's rows, in order, from the catalog's `models`.
+- **`request`**: its full config, every default filled in (`result.config`). Its `run.save` list is
+  included, so a run that saved data needs an output folder again; the same folder reuses what's saved.
+- **`externals`**: each one as `{"path", "hash"}`, from its copy in the output folder if the run saved
+  one (`run.save` `ext.<key>`), else from the path the run was given. The recorded hash goes with it,
+  so the rerun stops if the file's data has changed.
+- **An external given in memory and not saved can't be rebuilt.** `load_run` raises a `ValueError`
+  naming each one, with its recorded shape and hash; give those as `externals={key: array or path}`.
+  An array given there must hold exactly the recorded data (its hash is checked).
 
 `load_images` picks by any mix of simulation, image entry and item:
 

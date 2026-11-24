@@ -44,14 +44,62 @@ def test_a_run_records_its_catalog(tmp_path, files):
     assert main(files(config={"simulator": SMALL})) == 0
     catalog = simr.load_catalog(tmp_path / "runs")
     assert len(catalog["models"]) == 1
-    # Nothing saved or returned: nothing to do (until fitness)
-    assert catalog["runs"][0]["status"] == {"sim": [["empty"]], "img": [[["empty"]]]}
+    # Nothing saved or returned, no metrics listed: nothing to do
+    assert catalog["runs"][0]["status"] == {"sim": [["empty"]], "img": [[["empty"]]],
+                                            "sim_metrics": [[[]]], "img_metrics": [[[[]]]]}
 
 
 def test_the_config_is_optional(tmp_path, files):
     assert main(files()) == 0  # no --config: one default simulator entry
     [record] = simr.load_catalog(tmp_path / "runs")["runs"]
     assert record["simulator"][0]["n1"] == 1000  # the full defaults are recorded
+
+
+def test_a_dry_run_logs_the_plan_and_writes_nothing(tmp_path, files, caplog, monkeypatch):
+    def never(*args, **kwargs):
+        raise AssertionError("a dry run must not run")
+
+    monkeypatch.setattr(simr, "run", never)
+    config = {"run": {"save": ["sim.particles"]}, "simulator": [SMALL, {**SMALL, "lnl": 0.01}],
+              "sim_metrics": [{"method": "closest_approach", "inputs": ["sim.orbit"], "select": "distance"}]}
+    with caplog.at_level("INFO"):
+        assert main(files(models=(MODEL, FIRST_APPROACH), config=config) + ["--dry-run"]) == 0
+    assert "dry run: nothing is simulated or written" in caplog.text
+    assert "2 models x 2 simulator entries x 1 image entries" in caplog.text
+    assert "simulations: 4 (each computes sim.particles, sim.orbit)" in caplog.text
+    assert "sim.particles: 4 arrays, 2.91 KB" in caplog.text
+    assert "time: about " in caplog.text and "(every run counted at its longest)" in caplog.text
+    assert "on 1 worker." in caplog.text
+    assert not (tmp_path / "runs").exists()
+
+
+def test_a_dry_run_can_use_each_models_real_start_and_count_the_workers(tmp_path, files, caplog):
+    config = {"run": {"save": ["sim.particles"]}, "simulator": SMALL}
+    with caplog.at_level("INFO"):
+        assert main(files(config=config) + ["--dry-run", "exact", "--mode", "local", "--workers", "3"]) == 0
+    assert "(each model's real start)" in caplog.text and "on 3 workers." in caplog.text
+    assert not (tmp_path / "runs").exists()
+
+
+def test_the_time_cap_applies_on_the_command_line(tmp_path, files, caplog, monkeypatch):
+    monkeypatch.setattr(simr, "_SPEED", {"seconds_per_particle_step": 1e-4, "seconds_per_orbit": 0.0})
+    monkeypatch.setattr(simr, "measure_speed", lambda: {"seconds_per_particle_step": 1e-4, "seconds_per_orbit": 0.0})
+    config = {"run": {"save": ["sim.particles"], "max_hours": 0.001}, "simulator": SMALL}  # 3.6 s allowed
+    assert main(files(config=config)) == 1  # one worst-case run there is 93 s
+    assert "more than run.max_hours = 0.001 allows" in caplog.text and not (tmp_path / "runs").exists()
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        assert main(files(config=config) + ["--dry-run"]) == 1  # a dry run says so too
+    assert "OVER THE CAP" in caplog.text and "the run would not start" in caplog.text
+    assert main(files(config={**config, "run": {"save": ["sim.particles"], "max_hours": None}})) == 0
+
+
+def test_a_dry_run_finds_what_would_stop_the_run(tmp_path, files):
+    assert main(files(config={"simulater": SMALL}) + ["--dry-run"]) == 1  # a bad config
+    saving = {"run": {"save": ["sim.orbit"]}, "simulator": SMALL}
+    assert main(files(config=saving, output="runs.json") + ["--dry-run"]) == 1  # run.save needs a folder
+    assert main(files(config=saving) + ["--dry-run"]) == 0
+    assert not (tmp_path / "runs").exists() and not (tmp_path / "runs.json").exists()
 
 
 def test_save_writes_model_data(tmp_path, files):
@@ -80,7 +128,7 @@ def test_run_return_is_ignored_with_a_warning(tmp_path, files, caplog):
     config = {"run": {"return": ["sim.orbit"], "save": ["sim.timing"]}, "simulator": SMALL}
     assert main(files(config=config)) == 0
     assert "run.return is ignored on the command line" in caplog.text
-    assert simr.load_catalog(tmp_path / "runs")["runs"][0]["run"] == {"return": [], "save": ["sim.timing"]}
+    assert simr.load_catalog(tmp_path / "runs")["runs"][0]["run"] == {"return": [], "save": ["sim.timing"], "max_return_gb": "auto", "max_hours": 4.0}
 
 
 def test_an_empty_run_return_gives_no_warning(tmp_path, files, caplog):
@@ -88,7 +136,28 @@ def test_an_empty_run_return_gives_no_warning(tmp_path, files, caplog):
     config = {"run": {"return": [], "save": ["sim.timing"]}, "simulator": SMALL}
     assert main(files(config=config)) == 0
     assert "run.return" not in caplog.text
-    assert simr.load_catalog(tmp_path / "runs")["runs"][0]["run"] == {"return": [], "save": ["sim.timing"]}
+    assert simr.load_catalog(tmp_path / "runs")["runs"][0]["run"] == {"return": [], "save": ["sim.timing"], "max_return_gb": "auto", "max_hours": 4.0}
+
+
+def test_metrics_run_and_their_values_are_recorded(tmp_path, files, caplog):
+    config = {"simulator": SMALL,
+              "sim_metrics": [{"method": "closest_approach", "inputs": ["sim.orbit"], "select": "distance"}]}
+    assert main(files(config=config)) == 0
+    assert "saved yet" not in caplog.text
+    record = simr.load_catalog(tmp_path / "runs")["runs"][0]
+    assert record["sim_metrics"][0]["select"] == "distance"
+    assert record["status"]["sim_metrics"] == [[["ran"]]]
+    assert record["composite"] is None
+    [[[distance]]] = record["values"]["sim_metrics"]
+    assert distance > 0 and record["values"]["composite"] is None
+    assert simr.load_metrics(tmp_path / "runs")["sim_metrics"][0, 0, 0] == distance
+
+
+def test_a_composite_section_runs_from_the_command_line(tmp_path, files):
+    config = {"simulator": SMALL, "composite": {},
+              "sim_metrics": [{"method": "closest_approach", "inputs": ["sim.orbit"], "select": "distance"}]}
+    assert main(files(config=config)) == 0
+    assert simr.load_catalog(tmp_path / "runs")["runs"][0]["composite"] == {"sim_weights": [[1.0]]}
 
 
 # Until fitness exists, a run computes only what run.save asks for, so these save sim.timing (the cheapest).
@@ -212,6 +281,26 @@ def test_mpi_mode_matches_solo(tmp_path, files, caplog):
         np.testing.assert_array_equal(mpi_data["sim.orbit"], solo_data["sim.orbit"])
 
 
+@pytest.mark.slow
+def test_mpi_mode_with_externals_on_one_node(tmp_path, files):
+    """A real mpirun on this machine: the launcher's node variables say every rank is here, so shared
+    externals are allowed, and the workers map the copy in /dev/shm."""
+    pytest.importorskip("mpi4py")
+    if shutil.which("mpirun") is None:
+        pytest.skip("no mpirun")
+    np.save(tmp_path / "particles.npy", TARGET.astype(np.float64))  # not float32: shared through /dev/shm
+    args = files(models=(MODEL, MODEL.replace("301.0", "302.0")), config=PCA_CONFIG, output="mpi")
+    args += externals_args(tmp_path, {"test_particles": "particles.npy"})
+    env = {**os.environ, "OMPI_ALLOW_RUN_AS_ROOT": "1", "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM": "1"}
+    result = subprocess.run(["mpirun", "-n", "3", "--oversubscribe", sys.executable, "-m", "mpi4py.futures",
+                             "-m", "galactic_tidal_constraints.simr", *args, "--mode", "mpi"],
+                            capture_output=True, text=True, env=env, timeout=300)
+    assert result.returncode == 0, result.stderr
+    assert "shared with the workers through" in result.stderr
+    [record] = simr.load_catalog(tmp_path / "mpi")["runs"]
+    assert record["status"]["sim_metrics"] == [[["ran"]], [["ran"]]]
+
+
 def test_mpi_mode_without_mpi4py_exits_1(files, caplog, monkeypatch):
     monkeypatch.setitem(sys.modules, "mpi4py", None)  # makes `import mpi4py` fail
     assert main(files() + ["--mode", "mpi"]) == 1
@@ -226,6 +315,78 @@ def test_mpi_mode_without_mpirun_exits_1(tmp_path, files):
     assert result.returncode == 1
     assert "--mode mpi needs 2 or more ranks" in result.stderr
     assert not (tmp_path / "runs").exists()  # nothing was written
+
+
+# --- Externals (MDRN-4 step 3) ------------------------------------------------------------------------
+
+PCA_CONFIG = {"simulator": SMALL,
+              "sim_metrics": [{"method": "pca_difference", "inputs": ["ext.test_particles", "sim.particles"]}]}
+TARGET = np.random.default_rng(5).normal(size=(30, 6)).astype(np.float32)
+
+
+def externals_args(tmp_path, entries, name="externals.json", folder="."):
+    """Write an externals JSON file in tmp_path/folder; return the flag and its path."""
+    where = tmp_path / folder
+    where.mkdir(parents=True, exist_ok=True)
+    (where / name).write_text(json.dumps(entries))
+    return ["--externals", str(where / name)]
+
+
+def test_externals_from_a_json_file_relative_to_it(tmp_path, files, monkeypatch):
+    (tmp_path / "exp" / "targets").mkdir(parents=True)
+    np.save(tmp_path / "exp" / "targets" / "particles.npy", TARGET)
+    monkeypatch.chdir(tmp_path)  # a different folder than the JSON file's, so "relative to the file" matters
+    args = files(config=PCA_CONFIG) + externals_args(tmp_path, {"test_particles": "targets/particles.npy"},
+                                                     folder="exp")
+    assert main(args) == 0
+    [record] = simr.load_catalog(tmp_path / "runs")["runs"]
+    assert record["externals"] == {"test_particles": {
+        "source": str(tmp_path / "exp" / "targets" / "particles.npy"), "shape": [30, 6],
+        "hash": simr.array_hash(TARGET)}}
+    assert record["status"]["sim_metrics"] == [[["ran"]]]
+
+
+def test_externals_with_an_absolute_path_and_an_expected_hash(tmp_path, files):
+    np.save(tmp_path / "particles.npy", TARGET)
+    entry = {"path": str(tmp_path / "particles.npy"), "hash": simr.array_hash(TARGET)}
+    assert main(files(config=PCA_CONFIG) + externals_args(tmp_path, {"test_particles": entry})) == 0
+
+
+def test_externals_in_local_mode_are_shared(tmp_path, files, caplog):
+    np.save(tmp_path / "particles.npy", TARGET.astype(np.float64))  # not float32: workers get a shared copy
+    args = files(models=(MODEL, MODEL.replace("301.0", "302.0")), config=PCA_CONFIG)
+    args += externals_args(tmp_path, {"test_particles": "particles.npy"}) + ["--mode", "local", "--workers", "2"]
+    with caplog.at_level("INFO"):
+        assert main(args) == 0
+    assert "shared with the workers through" in caplog.text
+    [record] = simr.load_catalog(tmp_path / "runs")["runs"]
+    assert record["status"]["sim_metrics"] == [[["ran"]], [["ran"]]]
+
+
+@pytest.mark.parametrize(
+    ("entries", "message"),
+    [
+        ({"test_particles": "missing.npy"}, r"externals\['test_particles'\]: can't load .*missing.npy"),
+        ({"test_particles": {"path": "particles.npy", "hash": "0" * 64}}, "not the expected 0000"),
+        ({"test_particles": 3}, r"'test_particles' must be a .npy path or \{\"path\""),
+        ({"test_particles": {"hash": "abc"}}, r"'test_particles' must be a .npy path or \{\"path\""),
+        (["particles.npy"], "must hold a JSON object"),
+        ({}, "ext.test_particles names an external the run wasn't given"),
+    ],
+)
+def test_bad_externals_exit_1_with_a_short_message(tmp_path, files, caplog, entries, message):
+    np.save(tmp_path / "particles.npy", TARGET)
+    assert main(files(config=PCA_CONFIG) + externals_args(tmp_path, entries)) == 1
+    [error] = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert error.exc_info is None
+    assert re.search(message, error.getMessage())
+    assert not (tmp_path / "runs").exists()  # stopped before anything was written
+
+
+def test_externals_file_that_isnt_json_exits_1(tmp_path, files, caplog):
+    (tmp_path / "externals.json").write_text("{not json")
+    assert main(files(config=PCA_CONFIG) + ["--externals", str(tmp_path / "externals.json")]) == 1
+    assert "isn't valid JSON" in caplog.text
 
 
 def test_workers_isnt_for_mpi_mode(files, capsys):

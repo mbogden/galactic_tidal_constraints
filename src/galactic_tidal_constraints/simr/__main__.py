@@ -1,13 +1,19 @@
 """The command line for SIMR.
 
     python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--config config.json]
-        [--mode solo|local|mpi] [--workers N] [--log-level INFO]
+        [--externals externals.json] [--mode solo|local|mpi] [--workers N] [--log-level INFO] [--dry-run [worst|exact]]
+
+With --dry-run nothing is simulated or written: the inputs are checked as a run checks them, and the plan
+(`simr.plan`: the counts, the sizes run.save would write, and about how long the simulations would take) is
+logged. The time counts every run at its longest ("worst", the default) or looks up each model's real
+start ("exact": about 0.03 s per simulation).
 
 With MPI (`uv sync --group mpi`), rank 0 runs the command and every other rank is a worker:
 
     mpirun -n N python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi --models ... --output ...
 
-Exit codes: 0 when the run ran (even if some simulations failed: they're in the catalog and the log), 1 when
+Exit codes: 0 when the run ran (even if some simulations failed: they're in the catalog and the log) or a
+dry run found nothing wrong, 1 when
 it couldn't run or finish (a bad models file, config or output, or a worker that died), 2 when it ran but
 every simulation failed. Under MPI a worker that crashes usually ends the whole job instead; a rerun resumes.
 """
@@ -16,8 +22,10 @@ import argparse
 import json
 import logging
 import multiprocessing
+import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 
 from galactic_tidal_constraints.simr import simr
 
@@ -36,14 +44,23 @@ def main(argv: list[str] | None = None) -> int:
     try:
         models = simr.read_models(args.models)
         request = _read_config(args.config)
+        externals = _read_externals(args.externals)
+        if args.dry_run:
+            plan = simr.plan(models, request, externals=externals, output=args.output, time=args.dry_run,
+                             workers=_planned_workers(args))
+            logger.info("dry run: nothing is simulated or written. The run would be:\n%s", simr.format_plan(plan))
+            if plan["time"]["over_cap"]:
+                logger.error("the run would not start: its worst case is over run.max_hours (see the plan above)")
+                return COULD_NOT_RUN
+            return RAN
         if args.mode == "local":
-            result = _run_local(models, request, args)
+            result = _run_local(models, request, externals, args)
         elif args.mode == "mpi":
-            result = _run_mpi(models, request, args)
+            result = _run_mpi(models, request, externals, args)
         else:
-            result = simr.run(models, request, output=args.output)
-    except (OSError, ValueError, ImportError, simr.SimrRunError) as error:  # a short message, no traceback
-        logger.error("%s", error)
+            result = simr.run(models, request, output=args.output, externals=externals)
+    except (OSError, ValueError, ImportError, NotImplementedError, simr.SimrRunError) as error:
+        logger.error("%s", error)  # a short message, no traceback
         return COULD_NOT_RUN
 
     status = result.status["sim"]
@@ -54,17 +71,30 @@ def main(argv: list[str] | None = None) -> int:
     return RAN
 
 
-def _run_local(models, request, args) -> simr.SimrResult:
+def _planned_workers(args) -> int:
+    """How many processes the run would use, for a dry run's wall time: 1 for solo; --workers or the CPUs
+    this job may use for local; for mpi, the ranks the launcher started less the one that runs the command
+    (1 when not under a launcher)."""
+    if args.mode == "local":
+        return args.workers or simr.available_cpus()
+    if args.mode == "mpi":
+        for _, size_name in simr.MPI_NODE_VARIABLES:
+            if size_name in os.environ:
+                return max(1, int(os.environ[size_name]) - 1)
+    return 1
+
+
+def _run_local(models, request, externals, args) -> simr.SimrResult:
     """The run on a pool of processes on this machine, created once and closed at the end. Workers are
     started fresh ("spawn"), as MPI's are, and set up their logging as they start."""
     workers = args.workers or simr.available_cpus()
     logger.info("local mode: %d workers", workers)
     with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
                              initializer=simr.configure_logging, initargs=(args.log_level, False)) as pool:
-        return simr.run(models, request, output=args.output, map=pool.map)
+        return simr.run(models, request, output=args.output, map=pool.map, externals=externals)
 
 
-def _run_mpi(models, request, args) -> simr.SimrResult:
+def _run_mpi(models, request, externals, args) -> simr.SimrResult:
     """The run on MPI ranks, launched with `mpirun -n N python -m mpi4py.futures -m ...`: rank 0 runs this
     and the other N-1 ranks wait for tasks. Workers set up their logging as they start."""
     try:
@@ -81,7 +111,7 @@ def _run_mpi(models, request, args) -> simr.SimrResult:
                          f"launch with {launch}")
     logger.info("mpi mode: %d workers", ranks - 1)
     with MPIPoolExecutor(initializer=simr.configure_logging, initargs=(args.log_level,)) as pool:
-        return simr.run(models, request, output=args.output, map=pool.map)
+        return simr.run(models, request, output=args.output, map=pool.map, externals=externals)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -94,12 +124,19 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True,
                         help="a folder (catalog.json, plus model folders for run.save) or a .json catalog file")
     parser.add_argument("--config", help="JSON request, listing only what differs from the defaults")
+    parser.add_argument("--externals",
+                        help='JSON file: each external key -> a .npy path, or {"path": ..., "hash": ...}; '
+                             "relative paths are relative to this file's folder")
     parser.add_argument("--mode", default="solo", choices=["solo", "local", "mpi"],
                         help="solo: one process (the default); local: a pool of processes on this machine; "
                              "mpi: MPI ranks, launched with mpirun ... python -m mpi4py.futures -m ...")
     parser.add_argument("--workers", type=int,
                         help="with --mode local: how many processes (default: the CPUs this job may use)")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument("--dry-run", nargs="?", const="worst", choices=["worst", "exact"],
+                        help="check the inputs and log what the run would do (counts, sizes and about how "
+                             "long), without simulating or writing anything. The time counts every run at its "
+                             "longest (worst, the default) or looks up each model's real start (exact)")
     return parser
 
 
@@ -122,6 +159,31 @@ def _read_config(path: str | None) -> dict:
             logger.warning("run.return is ignored on the command line: nothing is returned in memory")
         request = {**request, "run": {key: value for key, value in run_section.items() if key != "return"}}
     return request
+
+
+def _read_externals(path: str | None) -> dict | None:
+    """The externals from a JSON file: each key -> a .npy file's path, or `{"path": ..., "hash": ...}`. A
+    relative path is relative to the JSON file's folder, so an experiment folder can be moved or copied
+    to a cluster whole; it becomes an absolute path here, which is what the run records. `simr.run`
+    checks everything else (the files, their data, the hashes). None without a file."""
+    if path is None:
+        return None
+    with open(path, encoding="utf-8") as f:
+        try:
+            given = json.load(f)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"{path} isn't valid JSON: {error}") from None
+    if not isinstance(given, dict):
+        raise ValueError(f"{path} must hold a JSON object (key -> .npy path), not {type(given).__name__}")
+    folder = Path(path).absolute().parent
+    externals = {}
+    for key, value in given.items():
+        entry = value if isinstance(value, dict) else {"path": value}
+        if not isinstance(entry.get("path"), str):
+            raise ValueError(f'{path}: {key!r} must be a .npy path or {{"path": ..., "hash": ...}}: got {value!r}')
+        entry = {**entry, "path": str(folder / entry["path"])}  # an absolute path stays as it is
+        externals[key] = entry if isinstance(value, dict) else entry["path"]
+    return externals
 
 
 if __name__ == "__main__":

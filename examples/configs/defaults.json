@@ -1,5 +1,5 @@
 {
-  "run": {"return": [], "save": []},
+  "run": {"return": [], "save": [], "max_return_gb": "auto", "max_hours": 4.0},
   "simulator": {
     "seed": 0,
     "n1": 1000,
@@ -21,10 +21,14 @@
   "image": {
     "width": 128,
     "height": 128,
-    "primary_center": [48.0, 64.0],
-    "secondary_center": [80.0, 64.0],
+    "primary_center": [32.0, 64.0],
+    "secondary_center": [96.0, 64.0],
     "blur_sigma": 0.0,
     "blur_truncate": 4.0,
-    "brightness": "linear"
-  }
+    "brightness": "log"
+  },
+  "derived": [],
+  "sim_metrics": [],
+  "img_metrics": [],
+  "composite": null
 }
