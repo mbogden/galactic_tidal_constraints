@@ -195,6 +195,9 @@ How it works: [docs/modules/tng.md](docs/modules/tng.md).
   conversions are separate functions, so each can be tested on its own.
 - `h5py` is its only added dependency: the `tng` group, which `dev` includes so the tests always run.
 - Tests on the real files run only when `GTC_DATA_DIR` names the data folder.
+- What the stored values mean is pinned by tests against the TNG catalog (2026-11-24): a galaxy
+  measured from the archive's particles must give back the catalog's mass, velocity, spin and
+  half-mass radius. The measuring functions work in the units they are given.
 
 ## Repository
 - **Name:** `galactic_tidal_constraints` for the GitHub repo, the local folder and the Python

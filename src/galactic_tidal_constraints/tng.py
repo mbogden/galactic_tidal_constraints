@@ -1,4 +1,4 @@
-"""TNG targets: readers for the IllustrisTNG data this project already has.
+"""TNG targets: the IllustrisTNG data this project already has.
 
 Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
 
@@ -6,10 +6,13 @@ Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
                           pipeline's own values and its frame matrices
     a target archive      one target's particles at its target snapshot
 
-The readers return the values exactly as stored. Nothing is converted or corrected here: no unit
-changes, no change of frame. What the stored values mean is in each function's docstring.
+    read_table, read_archive                return the values exactly as stored
+    galaxy_properties, half_mass_radius     measure a galaxy from its particles
 
-Needs `h5py` (the `tng` dependency group).
+Nothing is converted or corrected here: no unit changes, no change of frame. What the stored values
+mean is in each function's docstring.
+
+The readers need `h5py` (the `tng` dependency group).
 """
 
 from pathlib import Path
@@ -52,6 +55,8 @@ def read_table(path) -> dict[str, np.ndarray]:
           the secondary. IDs and snapshot numbers are `int64`.
         - `p_` and `s_` catalog columns (`SubhaloPos`, `SubhaloVel`, `SubhaloMass`, ...) are raw TNG
           catalog values: lengths in ckpc/h, masses in 1e10 Msun/h, velocities in km/s.
+          `SubhaloSpin` is the angular momentum per unit mass, in (kpc/h)(km/s) with a physical
+          (not comoving) length.
         - `pa_`, `sa_`, `ps_`, `ss_`, `_orbital_frame` and `_transform` columns are the earlier
           pipeline's own values; their units aren't verified.
         - Each dataset in the file has a `units` attribute, and some a `note`.
@@ -88,7 +93,7 @@ def read_archive(path, particle_types=("stars",)) -> dict:
         A dict, with one row per returned particle in each array (the file's order is kept):
 
         positions           (n, 3) float32   ckpc/h
-        velocities          (n, 3) float32   km/s * sqrt(a): multiply by sqrt(a) for km/s
+        velocities          (n, 3) float32   km/s / sqrt(a): multiply by sqrt(a) for km/s
         masses              (n,)   float32   1e10 Msun/h
         particle_type       (n,)   int8      0 gas, 1 dark matter, 4 stars, 5 black hole
         subfind_galaxy      (n,)   int8      the galaxy SUBFIND gives the particle to: 0 primary, 1 secondary
@@ -151,3 +156,75 @@ def read_archive(path, particle_types=("stars",)) -> dict:
         "historical_galaxy": meta[:, 2],
         **ids,
     }
+
+
+def _particles(positions, velocities, masses):
+    """The three arrays as float64, checked: (n, 3), (n, 3) or None, (n,), with some mass."""
+    positions, masses = np.asarray(positions, dtype=np.float64), np.asarray(masses, dtype=np.float64)
+    if positions.ndim != 2 or positions.shape[1] != 3:
+        raise ValueError(f"positions has shape {positions.shape}, expected (n, 3)")
+    if masses.shape != (len(positions),):
+        raise ValueError(f"masses has shape {masses.shape}, expected ({len(positions)},)")
+    if velocities is not None:
+        velocities = np.asarray(velocities, dtype=np.float64)
+        if velocities.shape != positions.shape:
+            raise ValueError(f"velocities has shape {velocities.shape}, expected {positions.shape}")
+    if len(masses) == 0 or not masses.sum() > 0:
+        raise ValueError("No mass: a galaxy needs at least one particle with mass")
+    return positions, velocities, masses
+
+
+def galaxy_properties(positions, velocities, masses) -> dict:
+    """Measure one galaxy from its particles: mass, center of mass, velocity and spin.
+
+    Args:
+        positions: (n, 3), the particles' positions.
+        velocities: (n, 3), their velocities.
+        masses: (n,), their masses.
+
+    Returns:
+        A dict (sums are done in float64):
+
+        mass             float   the total mass
+        center_of_mass   (3,)    the mass-weighted mean position
+        velocity         (3,)    the mass-weighted mean velocity
+        spin             (3,)    the angular momentum per unit mass, about the center of mass in the
+                                 galaxy's rest frame: sum(m (r - center) x (v - velocity)) / mass
+
+    Nothing is converted: the results are in the units of the arrays given (a spin is a length times
+    a velocity). The spin doesn't depend on where the origin is or on any velocity added to every
+    particle, and it turns with the frame.
+
+    For a target archive's particles (ckpc/h, km/s / sqrt(a), 1e10 Msun/h), with a the snapshot's
+    scale factor, these match the TNG catalog's `SubhaloMass`, `SubhaloCM` (in the archive's frame),
+    `SubhaloVel` (= velocity * sqrt(a)) and `SubhaloSpin` (= spin * a**1.5).
+    """
+    positions, velocities, masses = _particles(positions, velocities, masses)
+    mass = masses.sum()
+    center = masses @ positions / mass
+    velocity = masses @ velocities / mass
+    spin = masses @ np.cross(positions - center, velocities - velocity) / mass
+    return {"mass": float(mass), "center_of_mass": center, "velocity": velocity, "spin": spin}
+
+
+def half_mass_radius(positions, masses, center) -> float:
+    """The radius around a center that holds half of the particles' mass.
+
+    Args:
+        positions: (n, 3), the particles' positions.
+        masses: (n,), their masses.
+        center: (3,), the point to measure from. The TNG catalog's `SubhaloHalfmassRad` is measured
+            from `SubhaloPos` (the most bound particle), not from the center of mass.
+
+    Returns:
+        The distance of the first particle, going outward, at which the mass inside reaches half the
+        total. In the units of `positions`.
+    """
+    positions, _, masses = _particles(positions, None, masses)
+    center = np.asarray(center, dtype=np.float64)
+    if center.shape != (3,):
+        raise ValueError(f"center has shape {center.shape}, expected (3,)")
+    radii = np.linalg.norm(positions - center, axis=1)
+    order = np.argsort(radii)
+    inside = np.cumsum(masses[order])
+    return float(radii[order][np.searchsorted(inside, inside[-1] / 2)])

@@ -1,8 +1,9 @@
 # TNG targets (`tng.py`)
 
-Readers for the IllustrisTNG (TNG50-1) data this project already has. Both files are HDF5 and live
-in the data folder, outside the repo. The readers return the values **exactly as stored**: no unit
-changes and no change of frame. Converting them comes later, in its own functions.
+The IllustrisTNG (TNG50-1) data this project already has: two readers, and two functions that
+measure a galaxy from its particles. Both files are HDF5 and live in the data folder, outside the
+repo. The readers return the values **exactly as stored**, and nothing here changes units or frame.
+Converting comes later, in its own functions.
 
 ```python
 from galactic_tidal_constraints import tng
@@ -10,9 +11,13 @@ from galactic_tidal_constraints import tng
 table = tng.read_table("../data/tng-data/moi-4-targets.h5")
 archive = tng.read_archive("../data/tng-data/target-archive-62000000190717.h5")           # stars
 archive = tng.read_archive("../data/tng-data/target-archive-62000000190717.h5", "all")    # every type
+
+primary = archive["subfind_galaxy"] == 0
+measured = tng.galaxy_properties(archive["positions"][primary], archive["velocities"][primary],
+                                 archive["masses"][primary])        # mass, center_of_mass, velocity, spin
 ```
 
-Only what exists today is described here. `tng.py` needs `h5py`, which is in the `tng` dependency
+Only what exists today is described here. The readers need `h5py`, which is in the `tng` dependency
 group (`uv sync --group tng`; a plain `uv sync` installs it too, for the tests). Decisions behind it
 are in [PLAN.md](../../PLAN.md). A worked tour is in
 [`examples/notebooks/tng_tour.ipynb`](../../examples/notebooks/tng_tour.ipynb).
@@ -37,7 +42,7 @@ What the stored values are:
 
 | Columns | Values |
 |---|---|
-| `p_`, `s_` + a catalog field (`SubhaloPos`, `SubhaloCM`, `SubhaloHalfmassRad`, `SubhaloVel`, `SubhaloMass`, `SubhaloSpin`) | Raw TNG catalog values: lengths in ckpc/h, velocities in km/s, masses in 10¹⁰ M☉/h, spin in (kpc/h)(km/s) |
+| `p_`, `s_` + a catalog field (`SubhaloPos`, `SubhaloCM`, `SubhaloHalfmassRad`, `SubhaloVel`, `SubhaloMass`, `SubhaloSpin`) | Raw TNG catalog values: lengths in ckpc/h, velocities in km/s, masses in 10¹⁰ M☉/h. `SubhaloSpin` is the angular momentum **per unit mass**, in (kpc/h)(km/s) with a physical (not comoving) length |
 | `redshift`, `scale_factor`, `time_gyr` | The snapshot's redshift, a = 1 / (1 + z), and the age of the universe in TNG's cosmology (Gyr) |
 | `pa_`, `sa_`, `ps_`, `ss_` columns; `_orbital_frame` columns; `_transform` matrices; `inclination`, `azimuthal` | The earlier pipeline's own values. Units not verified |
 
@@ -51,7 +56,7 @@ several), or `"all"`. Returns a dict with one row per returned particle, in the 
 | Key | Shape, type | Values |
 |---|---|---|
 | `positions` | (n, 3) `float32` | ckpc/h |
-| `velocities` | (n, 3) `float32` | km/s · √a: multiply by √a for km/s |
+| `velocities` | (n, 3) `float32` | km/s ÷ √a: multiply by √a for km/s |
 | `masses` | (n,) `float32` | 10¹⁰ M☉/h |
 | `particle_type` | (n,) `int8` | 0 gas, 1 dark matter, 4 stars, 5 black hole (`tng.PARTICLE_TYPES`) |
 | `subfind_galaxy` | (n,) `int8` | The galaxy SUBFIND gives the particle to: 0 primary, 1 secondary |
@@ -66,13 +71,59 @@ several), or `"all"`. Returns a dict with one row per returned particle, in the 
 - When only some types are asked for, the file is read a few million rows at a time, so a
   stars-only read doesn't load the whole file (the largest holds 28.8 million particles).
 
+## Measuring a galaxy
+Both functions take plain arrays and return results in the units of those arrays: nothing is
+converted. Sums are done in `float64`.
+
+**`galaxy_properties(positions, velocities, masses)`** returns a dict:
+
+| Key | Type | Value |
+|---|---|---|
+| `mass` | `float` | The total mass |
+| `center_of_mass` | (3,) | The mass-weighted mean position |
+| `velocity` | (3,) | The mass-weighted mean velocity |
+| `spin` | (3,) | The angular momentum per unit mass, about the center of mass in the galaxy's rest frame: Σ m (r − center) × (v − velocity) / Σ m |
+
+The spin doesn't depend on where the origin is or on a velocity added to every particle, and it
+turns with the frame. So a spin is moved to another frame by the rotation alone, never the shift.
+
+**`half_mass_radius(positions, masses, center)`** returns the distance from `center` of the first
+particle, going outward, at which the mass inside reaches half the total.
+
+## Checked against the TNG catalog
+The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same
+galaxies. The tests check this for both galaxies of `62000000190717`, `75000000121160` and
+`75000000317209`; a is the snapshot's scale factor.
+
+| From the particles | Catalog column | Largest difference seen |
+|---|---|---|
+| `mass` | `SubhaloMass` | 7 × 10⁻⁸ |
+| Distance between the two `center_of_mass` | The same from `SubhaloCM` | 4 × 10⁻⁵ |
+| Difference of the two `velocity`, × √a | The same from `SubhaloVel` | 2 × 10⁻⁷ |
+| Size of `spin`, × a^1.5 | `SubhaloSpin` | under 10⁻⁵ |
+| Direction of `spin` | `SubhaloSpin`, turned by the frame matrix's rotation | 0.0001° |
+| `center_of_mass` | `SubhaloCM`, moved by `orbital_frame_pos_transform` | 0.001 ckpc/h |
+| `velocity` | `SubhaloVel` ÷ √a, moved by `orbital_frame_vel_transform` | under 10⁻⁴ |
+| `half_mass_radius` around `SubhaloPos` (moved the same way) | `SubhaloHalfmassRad` | 6 × 10⁻⁵ |
+
+What this settles:
+- **The archives hold raw TNG snapshot units**: ckpc/h, km/s ÷ √a and 10¹⁰ M☉/h. Without √a the
+  galaxies' relative velocity is 16% (a = 0.74) to 27% (a = 0.62) too fast.
+- **`SubhaloSpin` is per unit mass, with a physical length and a physical velocity**:
+  Σ m (a r) × (√a v) / Σ m. Divide by h for kpc km/s.
+- **The frame matrices are a pure rotation plus a shift**, the same rotation for positions and
+  velocities. The velocity matrix works on particle velocities (km/s ÷ √a), not on catalog km/s.
+- Not settled here: what the old frame's origin and rest velocity are. Neither galaxy, nor the pair's
+  center of mass, sits at the origin or at rest in it.
+
 ## Known issues
 - `"stars"` includes wind particles: the archives have no formation time to tell them apart.
 - A black hole's mass is its `BH_Mass`, not its dynamical mass.
 
 ## Tests
-`tests/test_tng.py`. The tests on small made-up files always run. The tests on the real files run
-only when `GTC_DATA_DIR` names the data folder (the one holding `tng-data/`):
+`tests/test_tng.py`. The tests on small made-up files and particles always run. The tests on the
+real files, including the check against the catalog, run only when `GTC_DATA_DIR` names the data
+folder (the one holding `tng-data/`); they take about 15 seconds:
 
 ```bash
 GTC_DATA_DIR=../data uv run pytest tests/test_tng.py
