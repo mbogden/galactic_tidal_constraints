@@ -82,9 +82,14 @@ simulation's own particles and that simulator's `n1` and `n2`):
 back indexed like that stage's data, and one computed once for the run comes back as the array
 itself.
 
-`run.save` also takes two kinds of **once-per-run arrays**, saved by hash (see Saving):
-`ext.<key>`, an external some entry uses, and the `drv.<name>` of a derived entry made only from
-externals. Per-simulation and per-image derived entries can't be saved yet.
+`run.save` also takes `ext.<key>`, an external some entry uses, and any derived entry's `drv.<name>`
+(see Saving). Where each goes follows from what it's made from:
+
+| Name | Saved in |
+|---|---|
+| `ext.<key>` | `<output>/externals/<hash>.npy`: once for the output |
+| `drv.<name>`, made only from externals | `<output>/derived/<hash>.npy`: once for the output |
+| `drv.<name>`, made from a model's data (`sim.*`, `img.*`) | That model's folder, `model_<id>/derived/` |
 
 **Only what `return` and `save` name is computed.** Asking only for `sim.orbit` never runs
 particles. An image needs the `sim` items it's made from, so `simr` computes them (or loads them, if
@@ -276,6 +281,9 @@ code (see The command line) depends on the simulations only.
         images/
             sim_00_img_0000_model.npy        one file per saved image: <simulation>_<image>_<item>.npy
             sim_00_img_0000_unperturbed.npy
+        derived/                  derived arrays made from this model's data that `run.save` named
+            sim_00_drv_model_win.npy         one made per simulation: <simulation>_drv_<name>.npy
+            sim_00_img_0000_drv_tidal.npy    one made per image: <simulation>_<image>_drv_<name>.npy
 ```
 
 A simulation's name is `sim_<s>` for simulator entry s (`sim_00`, `sim_01`, …; `simr.simulation_name`),
@@ -297,6 +305,35 @@ are needn't be copied: the record keeps an external's path either way (`external
   `{"ext.tng_orbit": "externals/6cfc….npy"}`.
 - The external must be one a metric or derived entry uses (only those are loaded, checked and
   hashed); naming another is an error before anything is written.
+
+### A model's derived arrays: `model_<id>/derived/`
+A derived entry made from a model's data (any `sim.*` or `img.*` input, directly or through another
+entry) is saved in that model's folder when `run.save` names it, and listed in `model.json` under
+`derived`, by name:
+
+```json
+"derived": {
+  "tidal": {
+    "config": {"name": "tidal", "method": "difference_weights", "inputs": ["ext.tng_image", "img.unperturbed"],
+               "params": {"floor": 0.05, "threshold": null}, "level": "img"},
+    "made_from": {"ext.tng_image": {"shape": [128, 128], "hash": "7a3b…"}},
+    "files": {"sim_00": {"img_0000": "derived/sim_00_img_0000_drv_tidal.npy"}}
+  }
+}
+```
+
+- **`config`** is the filled-in entry. **`made_from`** is everything behind it besides the model's own
+  data: each external (shape and hash) and each derived entry it uses, directly or through others.
+- **`files`** are by simulation for an entry made per simulation (`"sim_00": "derived/…"`), and by
+  simulation then image for one made per image.
+- **A record, not reused.** Unlike simulations and images, a saved derived array is never loaded by a
+  later run: each run that names it writes its own, replacing the file. If the entry, or anything in
+  `made_from`, differs from what's listed, the listing starts again with this run's (a warning is
+  logged; the earlier files stay on disk, unlisted).
+- Its simulation (and image entry) is recorded too, so the file's configs are on record. Nothing is
+  added under a simulation or image entry that was saved with a different config.
+- A derived entry that fails for a model saves nothing for it.
+- `simr.load_derived(folder)` reads them back.
 
 ### `model.json`
 One per model folder: the model's 14 named parameters, each saved simulation by name, and each saved
@@ -442,6 +479,7 @@ and the composite are written to the run's record in the catalog; read them back
 | `simr.load_metrics(output, run=-1)` | A recorded run's metric values and composite, as the run returned them: `{"sim_metrics", "img_metrics", "composite"}`, arrays indexed like the result's, with NaN for failed scalar cells. `run` picks the run by position (-1: the last) |
 | `simr.load_model(folder)` | A model folder's `model.json` as a dict |
 | `simr.load_simulation(folder, "sim_00")` | That simulation's saved arrays, `{name: array}`, `float32`, exactly as `run` returns them |
+| `simr.load_derived(folder, name=None)` | A model folder's saved derived arrays: `{(name, simulation): array}` for entries made per simulation, `{(name, simulation, image): array}` for those made per image, sorted; `name` picks one entry |
 | `simr.load_images(folder, simulation=None, image=None, items=None)` | Saved images, `{(simulation, image, item): array}`, sorted, `float32`; each filter left `None` means all (below) |
 | `simr.code_versions()` | The current code versions, in the form `model.json` records |
 

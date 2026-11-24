@@ -71,6 +71,9 @@ In a folder, saving ("run": {"save": [...]}) writes one folder per model:
                 sim_00_orbit.npy
             images/
                 sim_00_img_0000_model.npy   one file per saved image: <simulation>_<image>_<item>.npy
+            derived/                  derived arrays made from this model's data that run.save named
+                sim_00_drv_<name>.npy            one made per simulation
+                sim_00_img_0000_drv_<name>.npy   one made per image
 
 A run's models are matched exactly against the catalog: a model already there uses its folder, and a new
 one gets the next id at the bottom, so folders stay the same however runs order or overlap their models.
@@ -304,7 +307,9 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
                 Independent of `return`. Also "ext.<key>" (an external some entry uses) and the
                 "drv.<name>" of a derived entry made only from externals: each is written once to the
                 output folder, named by its data's hash (`externals/<hash>.npy`, `derived/<hash>.npy`),
-                and the run's record lists it under "files".
+                and the run's record lists it under "files". The "drv.<name>" of an entry made per
+                simulation or per image goes in each model's folder (`derived/`), listed in its
+                model.json; those are a record, written by every run that names them, not reused.
             simulator (default one `SimulatorConfig()`): a dict or `SimulatorConfig`, or a list of them.
                 Each entry's seed is used for every model, so all models start from the same disk
                 pattern (see `SimulatorConfig.seed`).
@@ -442,6 +447,7 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
     seconds = {stage: np.zeros(shape) for stage, shape in shapes.items()}
     errors = {stage: np.full(shape, None, dtype=object) for stage, shape in shapes.items()}
 
+    made_from = _derived_made_from(derived_entries, external_records)
     # One task per model; rows holding the same model (one id) share a task, so no two tasks write one folder.
     groups: dict = {}
     for m in range(len(models)):
@@ -452,6 +458,7 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
                    image_configs=image_configs, returned=returned, saved=saved,
                    sim_metric_configs=sim_entries, img_metric_configs=img_entries,
                    derived_configs=derived_entries, externals=external_arrays,
+                   derived_made_from=made_from,
                    folder=root / f"model_{ids[r[0]]}" if root is not None else None, versions=versions)
         for r in rows
     ]
@@ -605,6 +612,7 @@ class _ModelTask:
     img_metric_configs: list[dict]
     derived_configs: list[dict]  # every derived entry, in order; those with level "sim" or "img" are computed here
     externals: dict  # the externals the metrics use, by key: the array, or (in a pool) the path to map it from
+    derived_made_from: dict  # per derived entry name: what it was made from (`_derived_made_from`), for model.json
     folder: Path | None  # the model's folder, when the output is a folder
     versions: dict | None
 
@@ -651,6 +659,9 @@ def _run_model(task: _ModelTask) -> dict:
         [item for item in task.returned + task.saved if _stage(item) == "img"] + metric_image_needs
     ))
     image_saved = [item for item in task.saved if _stage(item) == "img"]
+    # The derived entries computed here that run.save names
+    sim_derived_saved = [entry for entry in sim_derived if f"drv.{entry['name']}" in task.saved]
+    img_derived_saved = [entry for entry in img_derived if f"drv.{entry['name']}" in task.saved]
     folder = task.folder
     record = _open_record(folder, task.params) if folder is not None else None
     # Each image entry's saved record, or None when it was saved with a different config (not used or changed)
@@ -679,7 +690,7 @@ def _run_model(task: _ModelTask) -> dict:
                for need in IMAGE_DATA[item][0]]
         ))
         to_save = [] if stored is None else [item for item in sim_saved if item not in stored]
-        if new and (sim_saved or any(image_to_save)):
+        if new and (sim_saved or any(image_to_save) or sim_derived_saved or img_derived_saved):
             to_save.append("sim.timing")  # every saved simulation records its timing in model.json
         try:
             values, computed = _simulate(task.params, config, wanted, to_save, stored or {})
@@ -711,6 +722,11 @@ def _run_model(task: _ModelTask) -> dict:
         for item in task.returned:
             if levels.get(item) == "sim":
                 outcome["data"][item][s] = sim_made.get(item)
+        if stored is not None:  # like its images, nothing is added under a simulation saved with another config
+            for entry in sim_derived_saved:
+                if f"drv.{entry['name']}" in sim_made:  # a failed entry saves nothing
+                    _save_derived(folder, record, entry, task.derived_made_from[entry["name"]], name, None,
+                                  sim_made[f"drv.{entry['name']}"])
         for k, entry in enumerate(task.sim_metric_configs):
             _run_metric(task, entry, (externals, sim_made, values), sim_failed,
                         outcome, "sim_metrics", (s, k), f"simulator {s}, sim_metrics[{k}]")
@@ -750,6 +766,13 @@ def _run_model(task: _ModelTask) -> dict:
             for item in task.returned:
                 if levels.get(item) == "img":
                     outcome["data"][item][s, i] = img_made.get(item)
+            if stored is not None and image_entries[i] is not None:
+                for entry in img_derived_saved:
+                    if f"drv.{entry['name']}" in img_made:
+                        if image_name(i) not in record["images"]:  # so model.json says which image entry it is
+                            _save_images(folder, record, image_name(i), image_config, name, {})
+                        _save_derived(folder, record, entry, task.derived_made_from[entry["name"]], name,
+                                      image_name(i), img_made[f"drv.{entry['name']}"])
             for k, entry in enumerate(task.img_metric_configs):
                 _run_metric(task, entry, sources, img_failed, outcome, "img_metrics", (s, i, k),
                             f"simulator {s}, image {i}, img_metrics[{k}]")
@@ -866,6 +889,37 @@ def load_catalog(output: str | Path) -> dict:
     named parameters) and "runs"."""
     with open(output_paths(output)[0], encoding="utf-8") as f:
         return json.load(f)
+
+
+def load_derived(folder: str | Path, name: str | None = None) -> dict[tuple, np.ndarray]:
+    """A model folder's saved derived arrays, as model.json lists them.
+
+    Args:
+        folder: the model's folder (e.g. `runs/model_000000`).
+        name: one derived entry's name (without "drv."); None for all of them.
+
+    Returns:
+        {(name, simulation): array} for entries made per simulation and {(name, simulation, image):
+        array} for those made per image (e.g. ("tidal", "sim_00", "img_0000")), sorted. Empty when
+        nothing is saved. The entry's config and what it was made from are in
+        `load_model(folder)["derived"][name]`.
+
+    Raises:
+        KeyError: `name` isn't a derived entry model.json lists.
+    """
+    folder = Path(folder)
+    listed = load_model(folder).get("derived", {})
+    if name is not None and name not in listed:
+        raise KeyError(f"{folder} has no saved derived entry {name!r}; it has {sorted(listed)}")
+    arrays = {}
+    for entry_name in sorted(listed) if name is None else [name]:
+        for simulation, files in sorted(listed[entry_name]["files"].items()):
+            if isinstance(files, str):
+                arrays[(entry_name, simulation)] = np.load(folder / files)
+            else:
+                for image, file in sorted(files.items()):
+                    arrays[(entry_name, simulation, image)] = np.load(folder / file)
+    return arrays
 
 
 def load_metrics(output: str | Path, run: int = -1) -> dict:
@@ -1174,6 +1228,58 @@ def _save_images(folder, record, name, config, simulation, arrays) -> None:
     _write_record(folder, record)
 
 
+def _derived_made_from(entries: list[dict], external_records: dict) -> dict[str, dict]:
+    """For each derived entry, by name: everything it was made from besides the model's own data, for
+    model.json: each external it uses (its shape and hash) and each derived entry it uses (the filled-in
+    entry), directly or through other entries. So a saved derived array's record changes whenever
+    anything behind it does."""
+    made_from: dict[str, dict] = {}
+    for entry in entries:
+        uses = {}
+        for name in entry["inputs"]:
+            if name.startswith(EXTERNAL_PREFIX):
+                record = external_records[name[len(EXTERNAL_PREFIX):]]
+                uses[name] = {"shape": record["shape"], "hash": record["hash"]}
+            elif name.startswith("drv."):
+                [other] = [e for e in entries if f"drv.{e['name']}" == name]
+                uses[name] = other
+                uses.update(made_from[other["name"]])
+        made_from[entry["name"]] = uses
+    return made_from
+
+
+def derived_file(simulation: str, image: str | None, name: str) -> str:
+    """Where a saved derived array goes in a model folder: "derived/sim_00_drv_<name>.npy" for one made
+    per simulation, "derived/sim_00_img_0000_drv_<name>.npy" for one made per image."""
+    return f"derived/{simulation}_{'' if image is None else image + '_'}drv_{name}.npy"
+
+
+def _save_derived(folder, record, entry, made_from, simulation, image, array) -> None:
+    """Write one derived array (one simulation's, or one image's when `image` is given), then list it in
+    model.json (all atomically), under "derived" by the entry's name: its filled-in config, what it was
+    made from, and its files by simulation (and image).
+
+    Saved derived arrays are a record, not reused: each run writes its own. If the entry, or anything it
+    was made from, differs from what model.json lists under this name, the listing starts again with
+    this run's (the earlier files aren't listed any more)."""
+    listed = record.setdefault("derived", {}).get(entry["name"])
+    config = json.loads(json.dumps({"entry": entry, "made_from": made_from}))
+    if listed is None or listed["config"] != config["entry"] or listed["made_from"] != config["made_from"]:
+        if listed is not None:
+            logger.warning("%s: derived %r was saved with a different config; its record starts again",
+                           folder.name, entry["name"])
+        listed = {"config": config["entry"], "made_from": config["made_from"], "files": {}}
+    file = derived_file(simulation, image, entry["name"])
+    (folder / file).parent.mkdir(parents=True, exist_ok=True)
+    _write_atomically(folder / file, lambda f: np.save(f, array))
+    if image is None:
+        listed["files"][simulation] = file
+    else:
+        listed["files"].setdefault(simulation, {})[image] = file
+    record["derived"][entry["name"]] = listed
+    _write_record(folder, record)
+
+
 def _write_record(folder: Path, record: dict) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     text = json.dumps(record, indent=2).encode("utf-8")
@@ -1391,8 +1497,8 @@ def _run_arrays_to_save(saved: list[str], arrays: dict, records: dict, hashes: d
     metric or derived entry uses: only those are loaded, checked and hashed."""
     to_save = {}
     for name in saved:
-        if _stage(name) not in RUN_ARRAY_FOLDERS:
-            continue
+        if _stage(name) not in RUN_ARRAY_FOLDERS or (name.startswith("drv.") and name not in hashes):
+            continue  # a sim.* or img.* item, or a derived entry made per simulation or image: saved per model
         if name not in arrays:  # an external (a derived name was checked with the request)
             used = sorted(key for key in arrays if key.startswith(EXTERNAL_PREFIX))
             raise ValueError(
@@ -1791,9 +1897,8 @@ def _open_externals(externals: dict) -> dict[str, np.ndarray]:
 
 def _names(run_section: dict, key: str, made: dict[str, dict]) -> list[str]:
     """run.return's or run.save's names, checked. `made` is the derived entries by "drv.<name>": both
-    lists may name them, though run.save only those computed once for the run (saving the per-simulation
-    and per-image ones is a later step). run.save may also name externals ("ext.<key>"); `run` checks
-    those against the externals the entries use."""
+    lists may name them. run.save may also name externals ("ext.<key>"); `run` checks those against the
+    externals the entries use."""
     names = run_section.get(key, [])
     if isinstance(names, str):
         raise ValueError(f'run.{key} must be a list of names, e.g. ["{names}"]')
@@ -1802,13 +1907,6 @@ def _names(run_section: dict, key: str, made: dict[str, dict]) -> list[str]:
     if unknown:
         also = ", or an external a metric or derived entry uses (ext.<key>)" if key == "save" else ""
         raise ValueError(f"unknown names in run.{key}: {unknown}. Known: {known}{also}")
-    if key == "save":
-        later = [name for name in names if name in made and made[name]["level"] != "run"]
-        if later:
-            raise ValueError(
-                f"run.save: {later} are computed per simulation or per image, and saving those is a later "
-                f"step; a derived entry made only from externals can be saved, and run.return hands back any"
-            )
     return list(dict.fromkeys(names))  # drop repeats, keep order
 
 

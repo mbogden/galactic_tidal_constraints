@@ -46,10 +46,11 @@ needs), so asking only for `sim.orbit` never runs particles.
 
 Shapes and details: [modules/simr.md](modules/simr.md#data-names).
 
-`run.return` also takes derived entries (`drv.<name>`). `run.save` also takes `ext.<key>` (an external
-some entry uses) and the `drv.<name>` of an entry made only from externals: each is copied into the
-output folder once, named by its hash
-([modules/simr.md](modules/simr.md#once-per-run-arrays-externals-and-derived)).
+`run.return` also takes derived entries (`drv.<name>`). `run.save` takes them too, and `ext.<key>` (an
+external some entry uses). An external, or an entry made only from externals, is copied into the output
+folder once, named by its hash
+([modules/simr.md](modules/simr.md#once-per-run-arrays-externals-and-derived)); an entry made from a
+model's data goes in that model's folder.
 
 On the command line `run.return` is ignored, as nothing comes back in memory there, so one config works
 in a notebook and on the command line. A non-empty `run.return` gets a warning; an empty one doesn't.
@@ -167,9 +168,11 @@ as data or as weights:
   computed once, its array's shape and hash, so the config says how the weights were made. A config
   may carry those recorded keys (`level`, `shape`, `hash`), e.g. one saved from `result.config`; they're
   ignored and worked out again.
-- **Saving:** `run.save` takes the `drv.<name>` of an entry computed once for the run (made only from
-  externals); it's stored by hash in the output's `derived/` folder. Per-simulation and per-image
-  entries can't be saved yet.
+- **Saving:** `run.save` takes any entry's `drv.<name>`. One computed once for the run (made only from
+  externals) is stored by hash in the output's `derived/` folder; one made per simulation or per image
+  goes in each model's own `derived/` folder, listed in its `model.json`
+  ([modules/simr.md](modules/simr.md#a-models-derived-arrays-model_idderived)). Saved derived arrays
+  are a record: later runs don't reuse them.
 
 ### Externals
 An input named `ext.<key>` is an **external**: an array from outside the run, such as a target's orbit,
