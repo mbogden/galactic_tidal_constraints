@@ -55,9 +55,10 @@ rewrites the `/src` path. To work on the repo in place, run notebooks or save da
 Without the image: Python 3.12 or newer, git, `gfortran` and a C compiler (Linux, macOS or WSL).
 With [uv](https://docs.astral.sh/uv/), from the repo's root:
 ```bash
-uv sync                       # the package, jspam (compiled on install) and pytest
+uv sync                       # the package, jspam (compiled on install), pytest and h5py
 uv sync --group notebook      # also JupyterLab and matplotlib, for the notebooks
 uv sync --group mpi           # also mpi4py, for --mode mpi (needs an MPI library)
+uv sync --group tng           # h5py, for the TNG readers (already in a plain uv sync, for the tests)
 ```
 
 ## Quick start

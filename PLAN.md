@@ -187,6 +187,15 @@ One Docker image, run with Apptainer on the cluster.
 - **Build:** `meson-python`, with `f2py` generating the Python interface. The package is named
   `jspam`. Work happens on `simr-branch`; the fork's `master` stays as the original code.
 
+## TNG targets
+How it works: [docs/modules/tng.md](docs/modules/tng.md).
+- The TNG code starts from the data already in hand (decided 2026-11-24): the target table and the
+  target archives, both HDF5, in the data folder. It doesn't download from the TNG server.
+- One module, `tng.py`, grown a function at a time. Readers return values as stored; unit and frame
+  conversions are separate functions, so each can be tested on its own.
+- `h5py` is its only added dependency: the `tng` group, which `dev` includes so the tests always run.
+- Tests on the real files run only when `GTC_DATA_DIR` names the data folder.
+
 ## Repository
 - **Name:** `galactic_tidal_constraints` for the GitHub repo, the local folder and the Python
   package (`import galactic_tidal_constraints as gtc`).
@@ -227,6 +236,7 @@ how-to guides.
 | `docs/modules/image_creator.md` | The Image Creator's config, pixel frame and steps | Exists |
 | `docs/modules/metrics.md` | The Metrics stage: the method registry, input kinds, each method | Exists |
 | `docs/modules/derived.md` | The Derived stage: derived or metric, the registry, each method | Exists (the methods; not yet in `simr`) |
+| `docs/modules/tng.md` | The TNG readers: the target table and a target archive, and what their stored values are | Exists |
 | `docs/modules/<module>.md` | The same for each later module | With the module or after it |
 | `docs/guides/running_spam.md` | Compile and run SPAM itself, from Python or as the Fortran program | Exists |
 | `docs/guides/running_on_babbage.md` | A how-to for setting up an experiment and launching runs on Babbage | Exists (CPU only) |
