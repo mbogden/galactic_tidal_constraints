@@ -57,7 +57,7 @@ unclear.
 - Files are flexible per experiment: none (GA fine-tuning), permanent (GZ Merger models) or scratch
   (high-resolution particles to re-visualize later). An application can also take returned data and
   save it its own way.
-- A failure is recorded, not raised: its cells hold `None`, its status is `"failed"` and the error is
+- A failure is recorded, not raised: its cells hold `None` (NaN for a scalar metric), its status is `"failed"` and the error is
   logged, so one bad model doesn't stop the run ([modules/simr.md](modules/simr.md#failures-and-status)).
 - SIMR's own pool is simple and optional. Higher-level code can run its own and call lower-level
   code directly.
