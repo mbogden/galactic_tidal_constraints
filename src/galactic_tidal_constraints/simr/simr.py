@@ -59,6 +59,8 @@ In a folder, saving ("run": {"save": [...]}) writes one folder per model:
     <output>/
         catalog.json                  "models": id -> 14 parameters, every model a run here has used;
                                       "runs": one record per run here (see `run`)
+        externals/<hash>.npy          an external run.save named ("ext.<key>"), stored once by its hash
+        derived/<hash>.npy            a once-per-run derived array run.save named ("drv.<name>")
         model_000000/                 one folder per model id
             model.json                the model's record: its 14 parameters, each saved simulation by
                                       name ("sim_00" for simulator entry 0) with its config, timing, files,
@@ -299,7 +301,10 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
         request: a dict with optional sections "run", "simulator" and "image" (see the module docstring).
             run.return (default []): names from `SIM_DATA` and `IMAGE_DATA` to hand back.
             run.save (default []): names from `SIM_DATA` and `IMAGE_DATA` to write to `output`.
-                Independent of `return`.
+                Independent of `return`. Also "ext.<key>" (an external some entry uses) and the
+                "drv.<name>" of a derived entry made only from externals: each is written once to the
+                output folder, named by its data's hash (`externals/<hash>.npy`, `derived/<hash>.npy`),
+                and the run's record lists it under "files".
             simulator (default one `SimulatorConfig()`): a dict or `SimulatorConfig`, or a list of them.
                 Each entry's seed is used for every model, so all models start from the same disk
                 pattern (see `SimulatorConfig.seed`).
@@ -351,6 +356,7 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     "started", "finished" (None if the run never got there), "code", "run" (its return and save lists),
     "simulator" and "image" (the full configs), "sim_metrics" and "img_metrics" (the filled-in entries),
     "composite" (the filled-in weights, or None), "externals" (each used external's source, shape and hash, as in the result),
+    "files" (each once-per-run array run.save named -> its file, relative to the output folder),
     "model_ids" (row m's model id), and at the end "status", "seconds" and "errors" (as in the result, as
     lists) and "values": the metric values, {"sim_metrics", "img_metrics"} as nested lists indexed like
     the result's arrays, and "composite" (one per model, or None). JSON has no NaN, so a failed or
@@ -367,23 +373,24 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     hashes = _derive_for_the_run(derived_entries, arrays, files, metric_sections, image_configs=parts[3])
     _check_external_weights(metric_sections, arrays)
     for_the_run = {key: arrays[key] for key in hashes}  # the arrays themselves, for run.return
+    to_save = _run_arrays_to_save(parts[1], arrays, records, hashes)
     shared_folder = None
     if arrays and map is not builtins.map:  # a pool: its workers share one copy of each external
         named = {EXTERNAL_PREFIX + key: record for key, record in records.items()}
         arrays, shared_folder = _share_externals(arrays, files, {**named, **hashes})
     try:
-        return _run(models, parts, arrays, records, for_the_run, output, map)
+        return _run(models, parts, arrays, records, for_the_run, to_save, output, map)
     finally:
         if shared_folder is not None:
             shutil.rmtree(shared_folder, ignore_errors=True)
 
 
 def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_records: dict, for_the_run: dict,
-         output, map) -> SimrResult:
+         to_save: dict, output, map) -> SimrResult:
     """`run`, once the models, the request and the externals are checked. `external_arrays` holds each
     external a metric uses: the array itself, or (for a pool) the path its workers map it from;
     `external_records` its `{"source", "shape", "hash"}`; `for_the_run` the derived arrays computed once
-    for the run, by "drv.<name>".""" 
+    for the run, by "drv.<name>"; `to_save` the once-per-run arrays run.save names (`_run_arrays_to_save`)."""
     returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries, composite_weights = parts
     catalog_file, root = output_paths(output) if output is not None else (None, None)
     if saved and root is None:
@@ -410,6 +417,7 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
             "code": versions,
             **full_config,
             "externals": external_records,
+            "files": _save_run_arrays(root, to_save),
             "model_ids": ids,
         }
         catalog["runs"].append(run_record)
@@ -1216,7 +1224,7 @@ def _read_request(
     image_configs = _stage_configs(request, "image", ImageConfig)
     derived_entries = _derived_entries(request)
     made = {f"drv.{entry['name']}": entry for entry in derived_entries}
-    returned, saved = _names(run_section, "return", list(made)), _names(run_section, "save", [])
+    returned, saved = _names(run_section, "return", made), _names(run_section, "save", made)
     sim_entries = _metric_entries(request, "sim_metrics", made)
     img_entries = _metric_entries(request, "img_metrics", made)
     composite_weights = _composite_weights(request, sim_entries, img_entries, len(configs), len(image_configs))
@@ -1370,6 +1378,44 @@ def _derived_entries(request: dict) -> list[dict]:
                                "params": {**method.settings, **params}, "level": DERIVED_LEVELS[level]}
         filled.append(made[f"drv.{name}"])
     return filled
+
+
+# Where an output folder keeps the once-per-run arrays run.save names, by the prefix of their name. Each
+# is one file named by its data's hash, so the same data is stored once, whatever key or run it came from.
+RUN_ARRAY_FOLDERS = {"ext": "externals", "drv": "derived"}
+
+
+def _run_arrays_to_save(saved: list[str], arrays: dict, records: dict, hashes: dict) -> dict[str, tuple]:
+    """The once-per-run arrays run.save names: "ext.<key>" (an external) and "drv.<name>" (a derived entry
+    made only from externals), each -> (the array, its hash). Raises ValueError for an external that no
+    metric or derived entry uses: only those are loaded, checked and hashed."""
+    to_save = {}
+    for name in saved:
+        if _stage(name) not in RUN_ARRAY_FOLDERS:
+            continue
+        if name not in arrays:  # an external (a derived name was checked with the request)
+            used = sorted(key for key in arrays if key.startswith(EXTERNAL_PREFIX))
+            raise ValueError(
+                f"run.save: {name} isn't an external a metric or derived entry uses, so there's nothing to "
+                f"save. Used: {used}"
+            )
+        digest = hashes[name]["hash"] if name in hashes else records[name[len(EXTERNAL_PREFIX):]]["hash"]
+        to_save[name] = (arrays[name], digest)
+    return to_save
+
+
+def _save_run_arrays(root: Path | None, to_save: dict[str, tuple]) -> dict[str, str]:
+    """Write each once-per-run array run.save names to the output folder, as `externals/<hash>.npy` or
+    `derived/<hash>.npy`, unless a file of that hash is already there. Returns name -> that path, relative
+    to the output folder, for the run's record."""
+    files = {}
+    for name, (array, digest) in to_save.items():
+        file = f"{RUN_ARRAY_FOLDERS[_stage(name)]}/{digest}.npy"
+        if not (root / file).exists():
+            (root / file).parent.mkdir(parents=True, exist_ok=True)
+            _write_atomically(root / file, lambda f, array=array: np.save(f, array))
+        files[name] = file
+    return files
 
 
 def _derive_for_the_run(entries: list[dict], arrays: dict, files: dict, metric_sections: dict,
@@ -1743,18 +1789,26 @@ def _open_externals(externals: dict) -> dict[str, np.ndarray]:
     return opened
 
 
-def _names(run_section: dict, key: str, derived_names: list[str]) -> list[str]:
-    """run.return's or run.save's names, checked. `derived_names` are the "drv.<name>" it may also hold
-    (the derived entries for run.return; none for run.save: derived arrays aren't saved yet)."""
+def _names(run_section: dict, key: str, made: dict[str, dict]) -> list[str]:
+    """run.return's or run.save's names, checked. `made` is the derived entries by "drv.<name>": both
+    lists may name them, though run.save only those computed once for the run (saving the per-simulation
+    and per-image ones is a later step). run.save may also name externals ("ext.<key>"); `run` checks
+    those against the externals the entries use."""
     names = run_section.get(key, [])
     if isinstance(names, str):
         raise ValueError(f'run.{key} must be a list of names, e.g. ["{names}"]')
-    if key == "save" and any(isinstance(name, str) and name.startswith("drv.") for name in names):
-        raise ValueError("run.save: derived arrays can't be saved yet (a later step); run.return hands them back")
-    known = [*SIM_DATA, *IMAGE_DATA, *derived_names]
-    unknown = [name for name in names if name not in known]
+    known = [*SIM_DATA, *IMAGE_DATA, *made]
+    unknown = [name for name in names if name not in known and not (key == "save" and _names_an_external(name))]
     if unknown:
-        raise ValueError(f"unknown names in run.{key}: {unknown}. Known: {known}")
+        also = ", or an external a metric or derived entry uses (ext.<key>)" if key == "save" else ""
+        raise ValueError(f"unknown names in run.{key}: {unknown}. Known: {known}{also}")
+    if key == "save":
+        later = [name for name in names if name in made and made[name]["level"] != "run"]
+        if later:
+            raise ValueError(
+                f"run.save: {later} are computed per simulation or per image, and saving those is a later "
+                f"step; a derived entry made only from externals can be saved, and run.return hands back any"
+            )
     return list(dict.fromkeys(names))  # drop repeats, keep order
 
 

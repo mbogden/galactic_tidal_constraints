@@ -46,6 +46,11 @@ needs), so asking only for `sim.orbit` never runs particles.
 
 Shapes and details: [modules/simr.md](modules/simr.md#data-names).
 
+`run.return` also takes derived entries (`drv.<name>`). `run.save` also takes `ext.<key>` (an external
+some entry uses) and the `drv.<name>` of an entry made only from externals: each is copied into the
+output folder once, named by its hash
+([modules/simr.md](modules/simr.md#once-per-run-arrays-externals-and-derived)).
+
 On the command line `run.return` is ignored, as nothing comes back in memory there, so one config works
 in a notebook and on the command line. A non-empty `run.return` gets a warning; an empty one doesn't.
 
@@ -162,7 +167,9 @@ as data or as weights:
   computed once, its array's shape and hash, so the config says how the weights were made. A config
   may carry those recorded keys (`level`, `shape`, `hash`), e.g. one saved from `result.config`; they're
   ignored and worked out again.
-- **Not saved yet:** `run.save` doesn't take `drv.*` names.
+- **Saving:** `run.save` takes the `drv.<name>` of an entry computed once for the run (made only from
+  externals); it's stored by hash in the output's `derived/` folder. Per-simulation and per-image
+  entries can't be saved yet.
 
 ### Externals
 An input named `ext.<key>` is an **external**: an array from outside the run, such as a target's orbit,
@@ -191,6 +198,10 @@ Every input name has a prefix that says where it comes from, so a name without o
   machine. Each one's source (the path, or `"memory"`), shape and hash are logged, returned in
   `result.externals`, and written to the run's record in the catalog (`"externals"`). The catalog
   records which data a run used, not the data itself.
+- **A copy is kept only when asked:** name it in `run.save` (`"save": ["ext.tng_particles"]`) and the
+  data is written once to the output folder as `externals/<hash>.npy`, with the file listed in the
+  run's record. A path given for an external is recorded either way, so a large file can stay in
+  place.
 - **An expected hash** can be given with a path: `{"path": "/data/tng_123/image.npy", "hash": "a3f9..."}`.
   If the file's data has another hash, the run stops before anything is simulated.
 - **Its kind** (orbit, particles or image) is the kind of the input place it's used in. One external

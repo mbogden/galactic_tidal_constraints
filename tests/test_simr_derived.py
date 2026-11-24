@@ -285,12 +285,15 @@ def test_a_metric_made_only_from_per_model_derived_entries_is_allowed():
     assert 0 < result.img_metrics[0, 0, 0, 0] <= 1
 
 
-def test_derived_names_in_run_return_and_run_save_are_checked():
+def test_derived_names_in_run_return_and_run_save_are_checked(tmp_path):
     with pytest.raises(ValueError, match=r"unknown names in run.return: \['drv.nope'\]"):
         simr.run(PARAMS, returning(request([WINDOW_ENTRY]), "drv.nope"), externals={"test_orbit": TARGET})
-    with pytest.raises(ValueError, match="run.save: derived arrays can't be saved yet"):
-        simr.run(PARAMS, {**request([WINDOW_ENTRY]), "run": {"save": ["drv.target_win"]}},
-                 externals={"test_orbit": TARGET})
+    with pytest.raises(ValueError, match=r"unknown names in run.save: \['drv.nope'\]"):
+        simr.run(PARAMS, {**request([WINDOW_ENTRY]), "run": {"save": ["drv.nope"]}},
+                 externals={"test_orbit": TARGET}, output=tmp_path)
+    per_simulation = {"name": "model_win", "method": "recent_approach_cosine_window", "inputs": ["sim.search_orbit"]}
+    with pytest.raises(ValueError, match=r"run.save: \['drv.model_win'\] are computed per simulation or per image"):
+        simr.run(PARAMS, {**request([per_simulation]), "run": {"save": ["drv.model_win"]}}, output=tmp_path)
 
 
 def test_an_externals_key_is_letters_digits_and_underscores():

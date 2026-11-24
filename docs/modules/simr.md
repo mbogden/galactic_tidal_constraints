@@ -80,7 +80,11 @@ simulation's own particles and that simulator's `n1` and `n2`):
 `run.return` also takes derived entries, as `drv.<name>`
 ([configuration.md](../configuration.md#derived-entries)): one made per simulation or per image comes
 back indexed like that stage's data, and one computed once for the run comes back as the array
-itself. `run.save` doesn't take them yet.
+itself.
+
+`run.save` also takes two kinds of **once-per-run arrays**, saved by hash (see Saving):
+`ext.<key>`, an external some entry uses, and the `drv.<name>` of a derived entry made only from
+externals. Per-simulation and per-image derived entries can't be saved yet.
 
 **Only what `return` and `save` name is computed.** Asking only for `sim.orbit` never runs
 particles. An image needs the `sim` items it's made from, so `simr` computes them (or loads them, if
@@ -260,6 +264,10 @@ code (see The command line) depends on the simulations only.
 ```
 <output>/
     catalog.json                  "models": id -> 14 parameters; "runs": one record per run here
+    externals/
+        <hash>.npy                an external `run.save` named (`ext.<key>`), stored once by its hash
+    derived/
+        <hash>.npy                a once-per-run derived array `run.save` named (`drv.<name>`)
     model_000000/                 one folder per model id
         model.json                the model's record
         simulations/
@@ -274,6 +282,21 @@ A simulation's name is `sim_<s>` for simulator entry s (`sim_00`, `sim_01`, …;
 and an image entry's is `img_<i>` with four digits (`img_0000`, …; `simr.image_name`). Arrays are
 `.npy` files, one per array, `float32`, uncompressed, so one array can be added or deleted without
 touching the others.
+
+### Once-per-run arrays: `externals/` and `derived/`
+An external is copied into the output **only when `run.save` names it** (`"save": ["ext.tng_orbit"]`),
+and so is a derived array made only from externals (`drv.<name>`). Large files that stay where they
+are needn't be copied: the record keeps an external's path either way (`externals` → `source`).
+
+- **Named by hash:** the file is `<hash>.npy`, the hash being `simr.array_hash` of its data (the one
+  the record already holds). The same data is stored once, whatever key or run it came under, and two
+  different arrays can never collide.
+- **Written before anything is simulated**, as `float32`, atomically. A file of that hash already
+  there is left alone.
+- **The run's record lists them** under `files`: name → path relative to the output folder, e.g.
+  `{"ext.tng_orbit": "externals/6cfc….npy"}`.
+- The external must be one a metric or derived entry uses (only those are loaded, checked and
+  hashed); naming another is an error before anything is written.
 
 ### `model.json`
 One per model folder: the model's 14 named parameters, each saved simulation by name, and each saved
@@ -360,7 +383,8 @@ The catalog (a folder's `catalog.json`, or a `.json` output) is the output's tab
   | `derived` | The filled-in derived entries, as in the result's `derived_configs` |
   | `sim_metrics`, `img_metrics` | The filled-in metric entries (their values are under `values`) |
   | `composite` | The filled-in composite weights, or `null` without the section |
-  | `externals` | Each used external's source, shape and hash, as in the result (the data itself isn't saved) |
+  | `externals` | Each used external's source (its path, or `"memory"`), shape and hash, as in the result |
+  | `files` | Each once-per-run array `run.save` named (`ext.<key>`, `drv.<name>`) → its file, relative to the output folder. `{}` when none was |
   | `model_ids` | Row m's model id |
   | `status`, `seconds`, `errors` | As in the result, as lists; added when the run ends |
   | `values` | The metric values: `sim_metrics` and `img_metrics` as nested lists indexed like the result's arrays (`values["sim_metrics"][m][s][k]`), and `composite` (one per model, or `null`). A descriptive entry's cell is its dict, arrays as lists. JSON has no NaN, so **a failed or skipped scalar cell is `null`**; `simr.load_metrics` gives the arrays back with NaN |
