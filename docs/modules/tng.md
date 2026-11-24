@@ -20,7 +20,8 @@ measured = tng.galaxy_properties(archive["positions"][primary], archive["velocit
 
 Only what exists today is described here. The readers need `h5py`, which is in the `tng` dependency
 group (`uv sync --group tng`; a plain `uv sync` installs it too, for the tests). Decisions behind it
-are in [PLAN.md](../../PLAN.md). A worked tour is in
+are in [PLAN.md](../../PLAN.md); what the TNG values mean, and how that was checked, is in
+[tng_physics.md](../tng_physics.md). A worked tour is in
 [`examples/notebooks/tng_tour.ipynb`](../../examples/notebooks/tng_tour.ipynb).
 
 ## The target table: `read_table(path)`
@@ -92,10 +93,9 @@ turns with the frame. So a spin is moved to another frame by the rotation alone,
 particle, going outward, at which the mass inside reaches half the total.
 
 ## The box edge
-TNG50-1 simulates a cube 35,000 ckpc/h on a side (`tng.BOX`), and the cube wraps around: what leaves
-through one face comes back in through the opposite one. Stored coordinates run from 0 to 35,000, so
-two points close together can sit on either side of a face with coordinates almost a whole box apart.
-Longitude works the same way: 179° East and 179° West are 2° apart, not 358°.
+TNG50-1's box is 35,000 ckpc/h on a side (`tng.BOX`) and wraps around, so two points close together
+can have coordinates almost a whole box apart
+([why](../tng_physics.md#the-box)).
 
 **`nearest_image(positions, reference, box=BOX)`** shifts each position by whole box lengths until
 every coordinate is within half a box of `reference`, and returns them as `float64`:
@@ -149,28 +149,13 @@ G = 4.30091 × 10⁻⁶ kpc (km/s)² / M☉ (`tng.G`). They agree with the const
 
 ## Checked against the TNG catalog
 The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same
-galaxies. The tests check this for both galaxies of `62000000190717`, `75000000121160` and
-`75000000317209`; a is the snapshot's scale factor.
+galaxies: mass, separation, relative velocity (with √a), spin (× a^1.5) and half-mass radius. The
+comparison, its numbers and what it settles are in
+[tng_physics.md](../tng_physics.md#checked-against-particles). Two results concern the archives' frame:
 
-| From the particles | Catalog column | Largest difference seen |
-|---|---|---|
-| `mass` | `SubhaloMass` | 7 × 10⁻⁸ |
-| Distance between the two `center_of_mass` | The same from `SubhaloCM` | 4 × 10⁻⁵ |
-| Difference of the two `velocity`, × √a | The same from `SubhaloVel` | 2 × 10⁻⁷ |
-| Size of `spin`, × a^1.5 | `SubhaloSpin` | under 10⁻⁵ |
-| Direction of `spin` | `SubhaloSpin`, turned by the frame matrix's rotation | 0.0001° |
-| `center_of_mass` | `SubhaloCM`, moved by `orbital_frame_pos_transform` | 0.001 ckpc/h |
-| `velocity` | `SubhaloVel` ÷ √a, moved by `orbital_frame_vel_transform` | under 10⁻⁴ |
-| `half_mass_radius` around `SubhaloPos` (moved the same way) | `SubhaloHalfmassRad` | 6 × 10⁻⁵ |
-
-What this settles:
-- **The archives hold raw TNG snapshot units**: ckpc/h, km/s ÷ √a and 10¹⁰ M☉/h. Without √a the
-  galaxies' relative velocity is 16% (a = 0.74) to 27% (a = 0.62) too fast.
-- **`SubhaloSpin` is per unit mass, with a physical length and a physical velocity**:
-  Σ m (a r) × (√a v) / Σ m. Divide by h for kpc km/s.
 - **The frame matrices are a pure rotation plus a shift**, the same rotation for positions and
   velocities. The velocity matrix works on particle velocities (km/s ÷ √a), not on catalog km/s.
-- Not settled here: what the old frame's origin and rest velocity are. Neither galaxy, nor the pair's
+- Not settled: what the old frame's origin and rest velocity are. Neither galaxy, nor the pair's
   center of mass, sits at the origin or at rest in it.
 
 ## Known issues

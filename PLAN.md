@@ -188,12 +188,15 @@ One Docker image, run with Apptainer on the cluster.
   `jspam`. Work happens on `simr-branch`; the fork's `master` stays as the original code.
 
 ## TNG targets
-How it works: [docs/modules/tng.md](docs/modules/tng.md).
+How it works: [docs/modules/tng.md](docs/modules/tng.md). What the TNG values mean, with sources:
+[docs/tng_physics.md](docs/tng_physics.md).
 - The TNG code starts from the data already in hand (decided 2026-11-24): the target table and the
   target archives, both HDF5, in the data folder. It doesn't download from the TNG server.
 - One module, `tng.py`, grown a function at a time. Readers return values as stored; unit and frame
   conversions are separate functions, so each can be tested on its own.
 - `h5py` is its only added dependency: the `tng` group, which `dev` includes so the tests always run.
+- IllustrisTNG is acknowledged, with the citations its project asks for, in the README and
+  `docs/tng_physics.md` (2026-11-24). No TNG data goes in the repo.
 - Tests on the real files run only when `GTC_DATA_DIR` names the data folder.
 - What the stored values mean is pinned by tests against the TNG catalog (2026-11-24): a galaxy
   measured from the archive's particles must give back the catalog's mass, velocity, spin and
