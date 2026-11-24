@@ -28,10 +28,35 @@ def _never(*args, **kwargs):
     raise AssertionError("simulated, though the run should have stopped first")
 
 
-def test_the_default_is_one_gb_and_ordinary_runs_are_far_below_it():
+def test_the_default_is_half_the_available_memory(monkeypatch):
     result = simr.run(PARAMS, request())
-    assert simr.DEFAULT_MAX_RETURN_GB == 1.0 and result.config["run"]["max_return_gb"] == 1.0
+    assert simr.DEFAULT_MAX_RETURN_GB == "auto" and result.config["run"]["max_return_gb"] == "auto"  # as given
     assert result.data["sim.particles"][0, 0].nbytes == PARTICLE_BYTES
+    monkeypatch.setattr(simr, "available_memory", lambda: 32 * 2**30)
+    planned = simr.plan(PARAMS, request())
+    assert planned["max_return_gb"] == 16.0 and planned["available_memory_gb"] == 32.0
+    assert "(run.max_return_gb allows 16 GB, half of the 32 GB this process may use)" in simr.format_plan(planned)
+
+
+def test_auto_follows_the_machine_and_stops_a_run_that_wouldnt_fit(monkeypatch):
+    monkeypatch.setitem(simr.SIM_DATA, "sim.particles", _never)
+    monkeypatch.setattr(simr, "available_memory", lambda: 2 * PARTICLE_BYTES)  # so the cap is one array
+    assert simr.plan(PARAMS, request())["return"]["over_cap"] is False
+    with pytest.raises(ValueError, match="more than run.max_return_gb allows .*half of the .* this process may use"):
+        simr.run(np.stack([PARAMS, PARAMS * 1.01]), request())
+
+
+def test_where_memory_cant_be_read_auto_falls_back_to_one_gb(monkeypatch):
+    monkeypatch.setattr(simr, "available_memory", lambda: None)
+    planned = simr.plan(PARAMS, request())
+    assert planned["max_return_gb"] == simr.FALLBACK_MAX_RETURN_GB == 1.0 and planned["available_memory_gb"] is None
+
+
+def test_available_memory_is_this_process_total_or_its_limit(monkeypatch):
+    memory = simr.available_memory()
+    assert isinstance(memory, int) and 2**28 < memory < 2**45  # between 256 MB and 32 TB
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "512")  # a job given 512 MB
+    assert simr.available_memory() == 512 * 2**20
 
 
 def test_a_run_over_the_cap_stops_before_anything_is_computed(monkeypatch, tmp_path):
@@ -75,15 +100,15 @@ def test_a_plan_reports_the_cap_without_raising():
     over = simr.plan(PARAMS, request(cap=0.5 * PARTICLE_BYTES / 2**30))
     assert over["return"]["over_cap"] is True and over["max_return_gb"] == 0.5 * PARTICLE_BYTES / 2**30
     assert "OVER THE CAP, so the run would not start" in simr.format_plan(over)
-    under = simr.plan(PARAMS, request())
-    assert under["return"]["over_cap"] is False and under["max_return_gb"] == 1.0
+    under = simr.plan(PARAMS, request(cap=1))
+    assert under["return"]["over_cap"] is False and under["max_return_gb"] == 1
     assert "returned in memory: 744 bytes (run.max_return_gb allows 1 GB)" in simr.format_plan(under)
     assert simr.plan(PARAMS, request(cap=None))["return"]["over_cap"] is False
 
 
-@pytest.mark.parametrize("cap", [0, -1, "1", True, float("inf"), float("nan")])
+@pytest.mark.parametrize("cap", [0, -1, "1", "half", True, float("inf"), float("nan")])
 def test_a_bad_cap_is_a_config_error(cap):
-    with pytest.raises(ValueError, match="run.max_return_gb must be a number above 0, or null for no cap"):
+    with pytest.raises(ValueError, match='run.max_return_gb must be "auto" .*, a number above 0, or null'):
         simr.run(PARAMS, request(cap=cap))
 
 

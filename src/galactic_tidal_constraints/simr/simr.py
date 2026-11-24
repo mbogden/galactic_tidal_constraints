@@ -204,11 +204,18 @@ EXTERNAL_PREFIX = "ext."
 # digits and _, not starting with a digit). So a name never looks like a number, and has no dots. Written
 # out, not `str.isidentifier`, which also accepts accented and non-Latin letters.
 PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-RUN_KEYS = ("return", "save", "max_return_gb")
-# The most data run.return may hold, in GB (2**30 bytes), unless the request says otherwise. Returned data
-# all lands in the memory of the one process that called `run`: on Babbage's CPU nodes that's about 1.9 GB
-# per core. A run that would return more is stopped before anything is computed.
-DEFAULT_MAX_RETURN_GB = 1.0
+RUN_KEYS = ("return", "save", "max_return_gb", "max_hours")
+# The most data run.return may hold, unless the request says otherwise: "auto" is half the memory this
+# process may use (`available_memory`), so 16 GB on a 32 GB node. Returned data all lands in the memory of
+# the one process that called `run`, beside whatever its workers on the same node use. A run that would
+# return more is stopped before anything is computed.
+DEFAULT_MAX_RETURN_GB = "auto"
+RETURN_SHARE_OF_MEMORY = 0.5
+FALLBACK_MAX_RETURN_GB = 1.0  # for "auto" where the machine's memory can't be read
+# The longest a run's simulations may take, in hours of wall time, unless the request says otherwise:
+# counted at the worst case (every run from t = -30) and spread over all the run's workers. A run that
+# could take longer is stopped before anything is computed.
+DEFAULT_MAX_HOURS = 4.0
 METRIC_ENTRY_KEYS = ("method", "inputs", "select", "params")
 
 # The input kind (metrics.INPUT_KINDS) each simulator item satisfies as a metric input; img.* items are
@@ -307,9 +314,14 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
         models: the models, shape (N, 14) (one model of shape (14,) also works), in `sim.PARAM_NAMES` order.
         request: a dict with optional sections "run", "simulator" and "image" (see the module docstring).
             run.return (default []): names from `SIM_DATA` and `IMAGE_DATA` to hand back.
-            run.max_return_gb (default 1.0; null for no cap): the most data run.return may hold, in GB.
-                It all lands in this process's memory, so a run that would return more is a
+            run.max_return_gb (default "auto"; null for no cap): the most data run.return may hold, in
+                GB. "auto" is half the memory this process may use (`available_memory`): 16 GB on a
+                32 GB node. It all lands in this process's memory, so a run that would return more is a
                 ValueError before anything is computed (orbits are counted at their longest; see `plan`).
+            run.max_hours (default 4.0; null for no cap): the longest the run's simulations may take,
+                in hours of wall time, counted at the worst case (every run from t = -30) and spread
+                over all the run's workers (1 for built-in `map`, a pool's own count). A run that
+                could take longer is a ValueError before anything is computed.
             run.save (default []): names from `SIM_DATA` and `IMAGE_DATA` to write to `output`.
                 Independent of `return`. Also "ext.<key>" (an external some entry uses) and the
                 "drv.<name>" of a derived entry made only from externals: each is written once to the
@@ -375,7 +387,9 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     skipped scalar cell is written as null; `load_metrics` gives the arrays back with NaN.
     """
     models, parts, arrays, files, records, hashes, to_save = _prepare(models, request, externals)
-    _check_return_cap(_plan(models, parts, arrays, records, hashes))
+    planned = _plan(models, parts, arrays, records, hashes)
+    _check_return_cap(planned)
+    _check_time_cap(models, parts[2], planned, map)
     for_the_run = {key: arrays[key] for key in hashes}  # the arrays themselves, for run.return
     shared_folder = None
     if arrays and map is not builtins.map:  # a pool: its workers share one copy of each external
@@ -420,12 +434,21 @@ def _check_return_cap(planned: dict) -> None:
     largest = sorted(returned["items"].items(), key=lambda item: -item[1]["bytes"])
     raise ValueError(
         f"run.return would hold {_bytes_text(returned['bytes'], returned['upper_bound'])} in this process's memory, "
-        f"more than run.max_return_gb = {planned['max_return_gb']:g} GB allows: "
+        f"more than run.max_return_gb allows ({_cap_text(planned)}): "
         + ", ".join(f"{name} {_bytes_text(item['bytes'], item['upper_bound'])} ({item['arrays']:,} arrays)"
                     for name, item in largest)
-        + ". Save it instead (run.save, with an output folder), return less, or raise run.max_return_gb (null "
-          "for no cap). simr.plan(models, request) shows the sizes without running"
+        + ". Save it instead (run.save, with an output folder), return less, or set run.max_return_gb to a "
+          "number of GB (null for no cap). simr.plan(models, request) shows the sizes without running"
     )
+
+
+def _cap_text(planned: dict) -> str:
+    """The cap on returned data, as text: "7.74 GB, half of the 15.48 GB this process may use"."""
+    cap = f"{planned['max_return_gb']:.3g} GB"
+    memory = planned["available_memory_gb"]
+    if memory is not None and abs(planned["max_return_gb"] - RETURN_SHARE_OF_MEMORY * memory) < 1e-9:
+        return f"{cap}, half of the {memory:.3g} GB this process may use"
+    return cap
 
 
 def _save_needs_a_folder(saved: list[str], output) -> None:
@@ -476,7 +499,8 @@ def plan(models: np.ndarray, request: dict, externals: dict | None = None,
             "upper_bound"}}}: how much data run.return would hold in the calling process's memory,
             and run.save would write (as float32; each .npy adds about 130 bytes). "return" also has
             "over_cap": True when it's more than run.max_return_gb allows, so `run` would refuse to
-            start ("max_return_gb" is the cap, None for none). Exact for particles
+            start. "max_return_gb" is the cap in GB as it works out here (None for none): with "auto",
+            half of "available_memory_gb". Exact for particles
             and images. "upper_bound" is True where an orbit is counted, at the longest an orbit can
             be (`ORBIT_ROWS_AT_MOST` rows, about 840 KB): its real length depends on each model's
             start. "sim.timing" and the metric values are a few numbers each and count as 0.
@@ -484,6 +508,9 @@ def plan(models: np.ndarray, request: dict, externals: dict | None = None,
             "wall_seconds" (over `workers`), "steps" ("worst" or "exact"), "particle_steps", "speed"
             and "no_start" (with "exact": simulations whose start couldn't be found; they'd fail).
             It covers the simulations only, not images or metrics, and assumes nothing is reused.
+            Also "worst_wall_seconds", the worst case over `workers` whichever way the steps were
+            counted, and "over_cap": True when that is more than run.max_hours ("max_hours" in the
+            plan; None for no cap), so `run` would refuse to start with that many workers.
     """
     models, parts, arrays, _, records, hashes, _ = _prepare(models, request, externals)
     if output is not None:
@@ -492,6 +519,35 @@ def plan(models: np.ndarray, request: dict, externals: dict | None = None,
     if time is not None:
         planned["time"] = _time_estimate(models, parts[2], planned, time, workers, speed)
     return planned
+
+
+_SPEED: dict | None = None  # this process's measured speed, kept so a run measures it at most once
+
+
+def _check_time_cap(models: np.ndarray, configs: list, planned: dict, map) -> None:
+    """Stop a run, before anything is computed, whose simulations could take longer than run.max_hours:
+    the worst case (every run counted at its longest), spread over all the run's workers."""
+    global _SPEED
+    if planned["max_hours"] is None or not planned["simulations"]:
+        return
+    workers, limit = _workers(map), planned["max_hours"] * 3600
+    particle_steps, _ = _particle_steps(models, configs, planned, "worst")
+    if _SPEED is None:
+        # No machine is this slow (a microsecond per particle-step, a second per orbit), so a run under the
+        # cap even then needn't be timed: most runs are let through here, without measuring anything
+        if (particle_steps * 1e-6 + planned["simulations"] * 1.0) / workers <= limit:
+            return
+        _SPEED = measure_speed()  # once per process
+    worst = _time_estimate(models, configs, planned, "worst", workers, _SPEED)
+    if worst["wall_seconds"] > limit:
+        raise ValueError(
+            f"the run's {planned['simulations']:,} simulations could take about "
+            f"{_seconds_text(worst['wall_seconds'])} on {workers} worker{'s' if workers != 1 else ''} "
+            f"({_seconds_text(worst['core_seconds'])} of one core, every run counted at its longest), more than "
+            f"run.max_hours = {planned['max_hours']:g} allows. Use more workers, fewer models or particles, or "
+            f'raise run.max_hours (null for no cap). simr.plan(models, request, time="exact", workers=...) '
+            f"gives a closer estimate from each model's real start, without running"
+        )
 
 
 # The model `measure_speed` times: SDSS 587722984435351614, an ordinary bound pair.
@@ -538,27 +594,37 @@ def _time_estimate(models: np.ndarray, configs: list, planned: dict, steps: str,
     if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
         raise ValueError(f"workers must be a whole number, 1 or more: {workers!r}")
     speed = measure_speed() if speed is None else speed
-    runs_particles = "sim.particles" in planned["sim_items"]  # sim.unperturbed takes no steps
+
+    def seconds(particle_steps: int) -> float:
+        return particle_steps * speed["seconds_per_particle_step"] + planned["simulations"] * speed["seconds_per_orbit"]
+
+    particle_steps, no_start = _particle_steps(models, configs, planned, steps)
+    worst_steps = particle_steps if steps == "worst" else _particle_steps(models, configs, planned, "worst")[0]
+    core_seconds, worst_wall = seconds(particle_steps), seconds(worst_steps) / workers
+    return {"core_seconds": core_seconds, "wall_seconds": core_seconds / workers, "workers": workers,
+            "steps": steps, "particle_steps": particle_steps, "no_start": no_start, "speed": dict(speed),
+            "worst_wall_seconds": worst_wall,
+            "over_cap": planned["max_hours"] is not None and worst_wall > planned["max_hours"] * 3600}
+
+
+def _particle_steps(models: np.ndarray, configs: list, planned: dict, steps: str) -> tuple[int, int]:
+    """The run's total of particles x steps over every simulation that runs particles, counting each
+    run's steps at the worst case ("worst") or from its real start ("exact"); and, with "exact", how
+    many simulations have no start to find (they'd fail, and cost nothing)."""
     particle_steps, no_start = 0, 0
-    if planned["simulations"] and runs_particles:
+    if planned["simulations"] and "sim.particles" in planned["sim_items"]:  # sim.unperturbed takes no steps
         for config in configs:
             particles = config.n1 + config.n2 + 1
+            if steps == "worst":  # the same for every model
+                count = STEPS_AT_MOST if isinstance(config.start, str) else round(-config.start / TIME_STEP)
+                particle_steps += particles * count * len(models)
+                continue
             for params in models:
-                if steps == "exact":
-                    try:
-                        count = sim.get_timing(params, config)["n_steps"]
-                    except Exception:  # no start to be found: the simulation would fail, and cost nothing
-                        no_start += 1
-                        continue
-                elif isinstance(config.start, str):
-                    count = STEPS_AT_MOST
-                else:  # a fixed start: known without looking
-                    count = round(-config.start / TIME_STEP)
-                particle_steps += particles * count
-    core_seconds = (particle_steps * speed["seconds_per_particle_step"]
-                    + planned["simulations"] * speed["seconds_per_orbit"])
-    return {"core_seconds": core_seconds, "wall_seconds": core_seconds / workers, "workers": workers,
-            "steps": steps, "particle_steps": particle_steps, "no_start": no_start, "speed": dict(speed)}
+                try:
+                    particle_steps += particles * sim.get_timing(params, config)["n_steps"]
+                except Exception:  # no start to be found
+                    no_start += 1
+    return particle_steps, no_start
 
 
 def _seconds_text(seconds: float) -> str:
@@ -573,7 +639,7 @@ def _plan(models: np.ndarray, parts: tuple, arrays: dict, records: dict, hashes:
     """`plan`, once `_prepare` has checked everything: the counts and sizes. `run` uses it too, for the cap
     on returned data."""
     (returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries, composite_weights,
-     max_return_gb) = parts
+     max_return_gb, max_hours) = parts
     made = {f"drv.{entry['name']}": entry for entry in derived_entries}
     by_level = {level: [entry for entry in derived_entries if entry["level"] == level] for level in DERIVED_LEVELS}
     # What a model's task computes, as `_run_model` works it out
@@ -632,6 +698,9 @@ def _plan(models: np.ndarray, parts: tuple, arrays: dict, records: dict, hashes:
                 "upper_bound": any(item["upper_bound"] for item in items.values()), "items": items}
 
     in_memory = total(returned)
+    memory = available_memory()
+    if max_return_gb == "auto":  # half of what this process may use
+        max_return_gb = FALLBACK_MAX_RETURN_GB if memory is None else RETURN_SHARE_OF_MEMORY * memory / 2**30
     in_memory["over_cap"] = max_return_gb is not None and in_memory["bytes"] > max_return_gb * 2**30
 
     return {
@@ -650,6 +719,8 @@ def _plan(models: np.ndarray, parts: tuple, arrays: dict, records: dict, hashes:
         "return": in_memory,
         "save": total(saved),
         "max_return_gb": max_return_gb,
+        "available_memory_gb": None if memory is None else memory / 2**30,
+        "max_hours": max_hours,
         "time": None,
     }
 
@@ -686,7 +757,7 @@ def format_plan(plan: dict) -> str:
         part = plan[section]
         cap = ""
         if section == "return" and part["items"] and plan["max_return_gb"] is not None:
-            cap = f" (run.max_return_gb allows {plan['max_return_gb']:g} GB" \
+            cap = f" (run.max_return_gb allows {_cap_text(plan)}" \
                   + (": OVER THE CAP, so the run would not start)" if part["over_cap"] else ")")
         lines.append(f"  {what}: {_bytes_text(part['bytes'], part['upper_bound'])}"
                      + ("" if part["items"] else " (nothing)") + cap)
@@ -701,6 +772,11 @@ def format_plan(plan: dict) -> str:
         lines.append(f"  time: about {_seconds_text(estimate['core_seconds'])} of one core ({how}); "
                      f"about {_seconds_text(estimate['wall_seconds'])} on {estimate['workers']} worker"
                      f"{'s' if estimate['workers'] != 1 else ''}. Simulations only; nothing taken as already saved")
+        if plan["max_hours"] is not None:
+            lines.append(f"  worst case on {estimate['workers']} worker{'s' if estimate['workers'] != 1 else ''}: "
+                         f"about {_seconds_text(estimate['worst_wall_seconds'])} (run.max_hours allows "
+                         f"{plan['max_hours']:g} hours" + (": OVER THE CAP, so the run would not start)"
+                                                    if estimate["over_cap"] else ")"))
     return "\n".join(lines)
 
 
@@ -711,7 +787,7 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
     `external_records` its `{"source", "shape", "hash"}`; `for_the_run` the derived arrays computed once
     for the run, by "drv.<name>"; `to_save` the once-per-run arrays run.save names (`_run_arrays_to_save`)."""
     (returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries, composite_weights,
-     max_return_gb) = parts
+     max_return_gb, max_hours) = parts
     catalog_file, root = output_paths(output) if output is not None else (None, None)
     _save_needs_a_folder(saved, output)
     catalog = _open_catalog(catalog_file) if catalog_file is not None else None
@@ -720,7 +796,7 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
     # The whole request, every default filled in: the result's `config` and the catalog's run record hold
     # the same thing.
     full_config = {
-        "run": {"return": returned, "save": saved, "max_return_gb": max_return_gb},
+        "run": {"return": returned, "save": saved, "max_return_gb": max_return_gb, "max_hours": max_hours},
         "simulator": [_json_ready(asdict(config)) for config in configs],
         "image": [_json_ready(asdict(config)) for config in image_configs],
         "derived": derived_entries,
@@ -863,6 +939,54 @@ def available_cpus() -> int:
         return len(os.sched_getaffinity(0))
     except AttributeError:  # not Linux
         return os.cpu_count() or 1
+
+
+def available_memory() -> int | None:
+    """The memory this process may use, in bytes: the machine's RAM, or its container's or job's limit when
+    that's lower (a Docker or Slurm memory limit, read from the cgroup; Slurm's SLURM_MEM_PER_NODE). The
+    total, not what's free at the moment. None where it can't be read (not Linux)."""
+    try:
+        memory = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, ValueError, OSError):
+        return None
+    limits = []
+    try:  # this process's cgroup, and every one above it: the lowest limit applies
+        for line in Path("/proc/self/cgroup").read_text().splitlines():
+            _, controllers, path = line.split(":", 2)
+            if controllers == "":  # cgroup v2
+                folder, name = Path("/sys/fs/cgroup") / path.lstrip("/"), "memory.max"
+            elif "memory" in controllers.split(","):  # cgroup v1
+                folder, name = Path("/sys/fs/cgroup/memory") / path.lstrip("/"), "memory.limit_in_bytes"
+            else:
+                continue
+            while True:
+                try:
+                    limits.append(int((folder / name).read_text().strip()))
+                except (OSError, ValueError):  # no file here, or "max": no limit at this level
+                    pass
+                if folder in (Path("/sys/fs/cgroup"), Path("/sys/fs/cgroup/memory")) or folder == folder.parent:
+                    break
+                folder = folder.parent
+    except (OSError, ValueError):
+        pass
+    if os.environ.get("SLURM_MEM_PER_NODE", "").isdigit():  # megabytes
+        limits.append(int(os.environ["SLURM_MEM_PER_NODE"]) * 2**20)
+    return min([memory, *[limit for limit in limits if limit > 0]])
+
+
+def _workers(map) -> int:
+    """How many processes a `map` spreads a run over: 1 for built-in `map`; a pool's own count when it
+    says (`ProcessPoolExecutor`, `MPIPoolExecutor`); else the MPI launcher's ranks less the one that runs
+    the command, or the CPUs this process may use."""
+    if map is builtins.map:
+        return 1
+    count = getattr(getattr(map, "__self__", None), "_max_workers", None)
+    if isinstance(count, int) and count >= 1:
+        return count
+    for _, size_name in MPI_NODE_VARIABLES:
+        if os.environ.get(size_name, "").isdigit():
+            return max(1, int(os.environ[size_name]) - 1)
+    return available_cpus()
 
 
 class SimrRunError(RuntimeError):
@@ -1715,14 +1839,24 @@ def _read_request(
     made = {f"drv.{entry['name']}": entry for entry in derived_entries}
     returned, saved = _names(run_section, "return", made), _names(run_section, "save", made)
     max_return_gb = run_section.get("max_return_gb", DEFAULT_MAX_RETURN_GB)
-    if max_return_gb is not None and (isinstance(max_return_gb, bool) or not isinstance(max_return_gb, (int, float))
-                                      or not 0 < max_return_gb < float("inf")):
-        raise ValueError(f"run.max_return_gb must be a number above 0, or null for no cap: {max_return_gb!r}")
+    if max_return_gb is not None and max_return_gb != "auto" and not _positive_number(max_return_gb):
+        raise ValueError(
+            f'run.max_return_gb must be "auto" (half the available memory), a number above 0, or null for no '
+            f"cap: {max_return_gb!r}"
+        )
+    max_hours = run_section.get("max_hours", DEFAULT_MAX_HOURS)
+    if max_hours is not None and not _positive_number(max_hours):
+        raise ValueError(f"run.max_hours must be a number above 0, or null for no cap: {max_hours!r}")
     sim_entries = _metric_entries(request, "sim_metrics", made)
     img_entries = _metric_entries(request, "img_metrics", made)
     composite_weights = _composite_weights(request, sim_entries, img_entries, len(configs), len(image_configs))
     return (returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries, composite_weights,
-            max_return_gb)
+            max_return_gb, max_hours)
+
+
+def _positive_number(value) -> bool:
+    """A finite number above 0 (never true or false)."""
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and 0 < value < float("inf")
 
 
 def _composite_weights(request: dict, sim_entries: list[dict], img_entries: list[dict], simulators: int,

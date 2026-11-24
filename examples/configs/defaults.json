@@ -1,5 +1,5 @@
 {
-  "run": {"return": [], "save": [], "max_return_gb": 1.0},
+  "run": {"return": [], "save": [], "max_return_gb": "auto", "max_hours": 4.0},
   "simulator": {
     "seed": 0,
     "n1": 1000,

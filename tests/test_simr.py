@@ -307,7 +307,7 @@ def test_a_run_without_save_writes_only_the_catalog(tmp_path):
     simr.run(MODELS, request(["sim.orbit"]), output=tmp_path)
     assert [p.name for p in tmp_path.iterdir()] == ["catalog.json"]
     [record] = simr.load_catalog(tmp_path)["runs"]
-    assert record["run"] == {"return": ["sim.orbit"], "save": [], "max_return_gb": 1.0}
+    assert record["run"] == {"return": ["sim.orbit"], "save": [], "max_return_gb": "auto", "max_hours": 4.0}
     assert record["status"] == {"sim": [["ran"], ["ran"]], "img": [[["empty"]], [["empty"]]],  # no images asked for
                                 "sim_metrics": [[[]], [[]]], "img_metrics": [[[[]]], [[[]]]]}  # no metric entries
 
@@ -336,7 +336,7 @@ def test_catalog_lists_the_models_and_the_run(tmp_path):
     assert catalog["models"] == {"000000": simr.model_parameters(PARAMS), "000001": simr.model_parameters(HEAVIER)}
     [record] = catalog["runs"]
     assert record["started"] <= record["finished"]
-    assert record["run"] == {"return": [], "save": ["sim.orbit"], "max_return_gb": 1.0}
+    assert record["run"] == {"return": [], "save": ["sim.orbit"], "max_return_gb": "auto", "max_hours": 4.0}
     assert record["simulator"] == [asdict(SimulatorConfig(**SMALL)), asdict(SimulatorConfig(**SMALL, lnl=0.01))]
     assert record["image"] == [json.loads(json.dumps(asdict(ImageConfig())))]  # the default entry
     assert record["sim_metrics"] == [] and record["img_metrics"] == []

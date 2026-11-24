@@ -40,7 +40,8 @@ request = {
 |---|---|---|
 | `run.return` | `[]` | Names of the data to hand back |
 | `run.save` | `[]` | Names of the data to save. Independent of `return`: a run can do both |
-| `run.max_return_gb` | `1.0` | The most data `run.return` may hold, in GB; `null` for no cap. A run that would return more stops before anything is computed (see Planning a run) |
+| `run.max_return_gb` | `"auto"` | The most data `run.return` may hold, in GB. `"auto"`: half the memory this process may use; `null`: no cap. A run that would return more stops before anything is computed (see Planning a run) |
+| `run.max_hours` | `4.0` | The longest the run's simulations may take, in hours of wall time, at the worst case and over all its workers; `null`: no cap. A run that could take longer stops before anything is computed (see Planning a run) |
 | `simulator` | one `SimulatorConfig()` | A dict (keys are `SimulatorConfig` fields) or a `SimulatorConfig`, or a list of them |
 | `image` | one `ImageConfig()` | A dict (keys are `ImageConfig` fields) or an `ImageConfig`, or a list of them. Centers are lists in JSON (`[column, row]`). See [image_creator.md](image_creator.md) |
 | `derived` | none | Named entries, in order: arrays made from other arrays, which metrics name as `drv.<name>`. See [derived.md](derived.md) and [configuration.md](../configuration.md#derived-entries) |
@@ -222,25 +223,64 @@ one number for the machine** (measured: 59 to 67 ns per particle-step from 100 t
 - Measure the speed on the machine the run will use: a plan made on a laptop for a cluster job uses the
   laptop's speed unless `speed=` says otherwise.
 
-### The cap on returned data: `run.max_return_gb`
-Returned data all lands in the memory of the process that called `run` (on Babbage's CPU nodes, about
-1.9 GB per core), so `run` works out the same plan first and **stops, before anything is computed or
-written, if `run.return` would hold more than `run.max_return_gb`**: 1 GB unless the config says
-otherwise, `null` for no cap.
+### The two caps: `run.max_return_gb` and `run.max_hours`
+`run` works out the same plan first and **stops, before anything is computed or written**, if the run
+is over either cap. Both are settings in the config's `run` section, so each run can set its own:
+
+```json
+"run": {"return": ["sim.particles"], "max_return_gb": 24, "max_hours": 12}
+```
+
+| Setting | Default | Counts | `null` |
+|---|---|---|---|
+| `max_return_gb` | `"auto"`: half the memory this process may use | Everything `run.return` would hand back, for the whole run | No cap |
+| `max_hours` | `4.0` | The simulations' wall time at the worst case, over all the run's workers | No cap |
+
+**Returned data.** It all lands in the memory of the one process that called `run`, whatever the number
+of workers, beside what its workers on the same node are using. So the default cap is half of
+`simr.available_memory()`: the machine's RAM, or its container's or Slurm job's memory limit when
+that's lower. On a 32 GB node, 16 GB.
 
 ```
-ValueError: run.return would hold 1.79 GB in this process's memory, more than run.max_return_gb = 1 GB
-allows: sim.particles 1.79 GB (40,000 arrays). Save it instead (run.save, with an output folder), return
-less, or raise run.max_return_gb (null for no cap). simr.plan(models, request) shows the sizes without running
+ValueError: run.return would hold 20.5 GB in this process's memory, more than run.max_return_gb allows
+(16 GB, half of the 32 GB this process may use): sim.particles 20.5 GB (458,000 arrays). Save it instead
+(run.save, with an output folder), return less, or set run.max_return_gb to a number of GB (null for no
+cap). simr.plan(models, request) shows the sizes without running
 ```
 
 - Only `run.return` counts. Saved data goes to disk, and metric values are a few numbers per model.
 - Orbits count at their longest (about 840 KB each), so a run returning many orbits can be stopped
-  though its real orbits would have fit; raise the cap for those.
-- `simr.plan` doesn't raise: it reports `plan["return"]["over_cap"]` and the cap (`plan["max_return_gb"]`),
-  and `format_plan` says "OVER THE CAP". It's the one case where a plan comes back for a run that
-  wouldn't start.
-- On the command line `run.return` is ignored, so the cap never applies there.
+  though its real orbits would have fit; set the cap for those.
+- Where the memory can't be read (not Linux), `"auto"` is 1 GB.
+- On the command line `run.return` is ignored, so this cap never applies there.
+
+**Time.** The simulations' time is counted at the **worst case** (every run from t = −30, or its
+simulator entry's fixed start), as particles × steps × this machine's speed, and **divided by the run's
+workers**: 1 for built-in `map`, a pool's own count (`ProcessPoolExecutor`, `MPIPoolExecutor`), else the
+MPI launcher's ranks less one, or the CPUs this process may use. If that's more than `run.max_hours`,
+the run doesn't start:
+
+```
+ValueError: the run's 20,000 simulations could take about 21.0 hours on 1 worker (21.0 hours of one core,
+every run counted at its longest), more than run.max_hours = 4 allows. Use more workers, fewer models or
+particles, or raise run.max_hours (null for no cap). simr.plan(models, request, time="exact", workers=...)
+gives a closer estimate from each model's real start, without running
+```
+
+- **It's the worst case, so it's cautious**: real starts are usually later than t = −30, so a run
+  typically finishes in a third to a half of it. A run stopped here that `time="exact"` shows to be
+  fine needs a higher `max_hours`.
+- It applies on the command line too, and `--dry-run` exits 1 for a run that's over it.
+- It doesn't know what's already saved: a rerun into a folder that holds most of the run is still
+  counted in full, so resuming a big run can need a higher cap.
+- The machine's speed is measured once per process, and only when a run isn't plainly under the cap:
+  ordinary runs are let through without timing anything.
+- Images, metrics and a pool's startup aren't counted.
+
+`simr.plan` raises for neither cap: it reports `plan["return"]["over_cap"]` and
+`plan["time"]["over_cap"]`, with the caps as they work out here (`plan["max_return_gb"]`,
+`plan["available_memory_gb"]`, `plan["max_hours"]`), and `format_plan` says "OVER THE CAP". Those are
+the cases where a plan comes back for a run that wouldn't start.
 
 ## Spreading the work: `map`
 `simr.run(..., map=...)` takes a `map` function, built-in `map` by default. Each call handles **one
@@ -539,7 +579,7 @@ mpirun -n N python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode m
 | `--mode` | `solo` (the default): one process. `local`: a pool of processes on this machine. `mpi`: MPI ranks, launched as above: rank 0 runs the command, the other N-1 are workers. Without `mpi4py`, with one rank, or without `-m mpi4py.futures` it stops with exit code 1 |
 | `--workers` | With `--mode local`: how many processes (default: the CPUs this job may use) |
 | `--log-level` | `DEBUG`, `INFO` (the default), `WARNING` or `ERROR` |
-| `--dry-run [worst\|exact]` | Check the inputs as a run checks them and log the plan (`simr.plan`: counts, sizes and about how long; see Planning a run), without simulating or writing anything. The time counts every run at its longest (`worst`, the default) or uses each model's real start (`exact`), over the workers `--mode` and `--workers` would give. Exit code 0 if the run would start, 1 if something would stop it. Worth running before submitting a job |
+| `--dry-run [worst\|exact]` | Check the inputs as a run checks them and log the plan (`simr.plan`: counts, sizes and about how long; see Planning a run), without simulating or writing anything. The time counts every run at its longest (`worst`, the default) or uses each model's real start (`exact`), over the workers `--mode` and `--workers` would give. Exit code 0 if the run would start, 1 if something would stop it, including a worst case over `run.max_hours`. Worth running before submitting a job |
 
 **The models file:** one model per line; the first 14 comma-separated values on the line are the
 model. Longer lines (SPAM's 22-value strings, JSPAM's `archive/data.txt`) are fine, and one log
@@ -565,6 +605,7 @@ and the composite are written to the run's record in the catalog; read them back
 | `simr.read_models(path)` | A models file's models, `(N, 14)` |
 | `simr.plan(models, request, externals=None, output=None, time=None, workers=1, speed=None)` | What a run would do, without simulating or writing: counts, the externals used, the bytes `return` would hold and `save` would write, and with `time=` about how long (see Planning a run). `simr.format_plan(plan)` gives it as text |
 | `simr.measure_speed()` | This machine's simulation speed, from one small run: `{"seconds_per_particle_step", "seconds_per_orbit"}` |
+| `simr.available_memory()` | The memory this process may use, in bytes: the machine's RAM, or its container's or Slurm job's limit when lower. `None` where it can't be read |
 | `simr.load_catalog(output)` | The catalog (of a folder or a `.json` file) as a dict |
 | `simr.load_metrics(output, run=-1)` | A recorded run's metric values and composite, as the run returned them: `{"sim_metrics", "img_metrics", "composite"}`, arrays indexed like the result's, with NaN for failed scalar cells. `run` picks the run by position (-1: the last) |
 | `simr.load_run(output, run=-1, externals=None)` | A recorded run's inputs, ready to run again: `{"models", "request", "externals"}` (below) |

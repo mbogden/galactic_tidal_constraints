@@ -31,8 +31,10 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
 - **A run's size is known before it starts** (MDRN-4 step 10): `simr.plan` and `--dry-run` give the
   counts, the sizes of what would be returned and saved, and about how long the simulations would
   take (particles × steps × the machine's measured speed), after every check a run makes, without
-  simulating. Returned data all lands in one process's memory, so a run that would return more than
-  `run.max_return_gb` (1 GB by default) stops before anything is computed.
+  simulating. Two caps stop a run before anything is computed, each settable per run: returned data
+  all lands in one process's memory, so `run.max_return_gb` defaults to half the memory the process may
+  use; and `run.max_hours` (4 by default) limits the simulations' worst-case time over all the run's
+  workers (decided 2026-11-23).
   [docs/modules/simr.md](docs/modules/simr.md#planning-a-run-simrplan).
 - **What a run leaves on record** (MDRN-4 step 7): its metric values and composite, in its catalog
   record. Externals and derived arrays are saved only when `run.save` names them: once per output,

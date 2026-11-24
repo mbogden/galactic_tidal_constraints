@@ -49,6 +49,9 @@ def main(argv: list[str] | None = None) -> int:
             plan = simr.plan(models, request, externals=externals, output=args.output, time=args.dry_run,
                              workers=_planned_workers(args))
             logger.info("dry run: nothing is simulated or written. The run would be:\n%s", simr.format_plan(plan))
+            if plan["time"]["over_cap"]:
+                logger.error("the run would not start: its worst case is over run.max_hours (see the plan above)")
+                return COULD_NOT_RUN
             return RAN
         if args.mode == "local":
             result = _run_local(models, request, externals, args)

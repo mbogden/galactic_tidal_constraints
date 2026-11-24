@@ -93,6 +93,32 @@ Both modes give byte-identical results (tested on Babbage, 2026-11-16). MPI can 
 nodes (`--nodes=2` for 64 ranks), which hasn't been tested with `simr` yet. Which mode is faster,
 and how best to write results to the shared `/home`, is still being measured.
 
+**Check a run before submitting it.** Add `--dry-run` to the same command, as a short job. Nothing is
+simulated or written; the log gets the plan: how many simulations, how much would be saved, and about
+how long it would take on that node's workers, measured at that node's speed
+([modules/simr.md](../modules/simr.md#planning-a-run-simrplan)):
+```bash
+sbatch -J my-exp-plan -t 5 $REPO/examples/slurm/run_node.slurm \
+  $REPO/.venv/bin/python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi \
+  --models models.txt --config config.json --output runs --dry-run
+```
+```
+  saved to disk: 91.60 MB
+  time: about 2.0 hours of one core (every run counted at its longest); about 3.9 minutes on 31 workers.
+  worst case on 31 workers: about 3.9 minutes (run.max_hours allows 4 hours)
+=== exit 0 after 3 s
+```
+It exits 1 if anything would stop the real run. `--dry-run exact` uses each model's real start
+instead of the worst case; it's closer, and takes about 0.03 s per simulation to work out.
+
+**The 4-hour cap.** A run doesn't start if its simulations could take more than `run.max_hours` (4 by
+default) at the worst case, spread over the job's workers; the log says so and the job exits 1 in
+seconds. For a bigger run, set the cap in the config, and give `sbatch -t` at least as long:
+```json
+{"run": {"save": ["sim.particles"], "max_hours": 12}, "simulator": {"n1": 2000, "n2": 2000}}
+```
+`null` turns the cap off. The worst case is cautious: real runs usually take a third to a half of it.
+
 **Many runs at once** (for example one per target): put one command per line in a file and submit it
 as a job array, each line on its own whole node:
 ```bash
@@ -120,6 +146,8 @@ run or finish) and 2 (every simulation failed).
 
 ## If a job stops early
 Submit the same command again. Every simulation already saved is reused and only the rest run.
+The 4-hour cap doesn't know what's saved, though: it counts the whole run again, so resuming a run that
+needed a raised `run.max_hours` needs it raised again (the config already has it).
 Each file is written in full before `model.json` lists it, so a killed job leaves no half-written
 results. Tested on Babbage (2026-11-16): a run of 1,024 models cancelled after 95 s left 396 saved;
 the rerun reported `628 ran, 396 reused, 0 failed`.

@@ -81,6 +81,19 @@ def test_a_dry_run_can_use_each_models_real_start_and_count_the_workers(tmp_path
     assert not (tmp_path / "runs").exists()
 
 
+def test_the_time_cap_applies_on_the_command_line(tmp_path, files, caplog, monkeypatch):
+    monkeypatch.setattr(simr, "_SPEED", {"seconds_per_particle_step": 1e-4, "seconds_per_orbit": 0.0})
+    monkeypatch.setattr(simr, "measure_speed", lambda: {"seconds_per_particle_step": 1e-4, "seconds_per_orbit": 0.0})
+    config = {"run": {"save": ["sim.particles"], "max_hours": 0.001}, "simulator": SMALL}  # 3.6 s allowed
+    assert main(files(config=config)) == 1  # one worst-case run there is 93 s
+    assert "more than run.max_hours = 0.001 allows" in caplog.text and not (tmp_path / "runs").exists()
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        assert main(files(config=config) + ["--dry-run"]) == 1  # a dry run says so too
+    assert "OVER THE CAP" in caplog.text and "the run would not start" in caplog.text
+    assert main(files(config={**config, "run": {"save": ["sim.particles"], "max_hours": None}})) == 0
+
+
 def test_a_dry_run_finds_what_would_stop_the_run(tmp_path, files):
     assert main(files(config={"simulater": SMALL}) + ["--dry-run"]) == 1  # a bad config
     saving = {"run": {"save": ["sim.orbit"]}, "simulator": SMALL}
@@ -115,7 +128,7 @@ def test_run_return_is_ignored_with_a_warning(tmp_path, files, caplog):
     config = {"run": {"return": ["sim.orbit"], "save": ["sim.timing"]}, "simulator": SMALL}
     assert main(files(config=config)) == 0
     assert "run.return is ignored on the command line" in caplog.text
-    assert simr.load_catalog(tmp_path / "runs")["runs"][0]["run"] == {"return": [], "save": ["sim.timing"], "max_return_gb": 1.0}
+    assert simr.load_catalog(tmp_path / "runs")["runs"][0]["run"] == {"return": [], "save": ["sim.timing"], "max_return_gb": "auto", "max_hours": 4.0}
 
 
 def test_an_empty_run_return_gives_no_warning(tmp_path, files, caplog):
@@ -123,7 +136,7 @@ def test_an_empty_run_return_gives_no_warning(tmp_path, files, caplog):
     config = {"run": {"return": [], "save": ["sim.timing"]}, "simulator": SMALL}
     assert main(files(config=config)) == 0
     assert "run.return" not in caplog.text
-    assert simr.load_catalog(tmp_path / "runs")["runs"][0]["run"] == {"return": [], "save": ["sim.timing"], "max_return_gb": 1.0}
+    assert simr.load_catalog(tmp_path / "runs")["runs"][0]["run"] == {"return": [], "save": ["sim.timing"], "max_return_gb": "auto", "max_hours": 4.0}
 
 
 def test_metrics_run_and_their_values_are_recorded(tmp_path, files, caplog):

@@ -41,9 +41,10 @@ def test_defaults_lists_every_field():
 
 def test_defaults_equal_the_code():
     """Read the way simr reads a request, the file gives exactly the default configs."""
-    returned, saved, simulators, images, sim_metrics, img_metrics, derived, composite, max_return_gb = \
+    returned, saved, simulators, images, sim_metrics, img_metrics, derived, composite, max_return_gb, max_hours = \
         simr._read_request(load("defaults.json"))
-    assert returned == saved == [] and max_return_gb == simr.DEFAULT_MAX_RETURN_GB
+    assert returned == saved == []
+    assert max_return_gb == simr.DEFAULT_MAX_RETURN_GB and max_hours == simr.DEFAULT_MAX_HOURS
     assert simulators == [SimulatorConfig()]
     assert images == [ImageConfig()]
     assert sim_metrics == [] and img_metrics == [] and derived == [] and composite is None
