@@ -68,6 +68,16 @@ def test_a_dry_run_logs_the_plan_and_writes_nothing(tmp_path, files, caplog, mon
     assert "2 models x 2 simulator entries x 1 image entries" in caplog.text
     assert "simulations: 4 (each computes sim.particles, sim.orbit)" in caplog.text
     assert "sim.particles: 4 arrays, 2.91 KB" in caplog.text
+    assert "time: about " in caplog.text and "(every run counted at its longest)" in caplog.text
+    assert "on 1 worker." in caplog.text
+    assert not (tmp_path / "runs").exists()
+
+
+def test_a_dry_run_can_use_each_models_real_start_and_count_the_workers(tmp_path, files, caplog):
+    config = {"run": {"save": ["sim.particles"]}, "simulator": SMALL}
+    with caplog.at_level("INFO"):
+        assert main(files(config=config) + ["--dry-run", "exact", "--mode", "local", "--workers", "3"]) == 0
+    assert "(each model's real start)" in caplog.text and "on 3 workers." in caplog.text
     assert not (tmp_path / "runs").exists()
 
 

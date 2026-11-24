@@ -443,7 +443,8 @@ FLOAT32_BYTES = 4
 
 
 def plan(models: np.ndarray, request: dict, externals: dict | None = None,
-         output: str | Path | None = None) -> dict:
+         output: str | Path | None = None, time: str | None = None, workers: int = 1,
+         speed: dict | None = None) -> dict:
     """What `run` would do with these inputs, without simulating anything or writing anything.
 
     Every check `run` makes before it simulates is made here too (the models, the request, the
@@ -455,6 +456,12 @@ def plan(models: np.ndarray, request: dict, externals: dict | None = None,
         models, request, externals: as for `run`.
         output: where the run would record itself. Only its name is checked (run.save needs a folder);
             nothing in it is read or written, so what's already saved there isn't counted.
+        time: None (the default: no time estimate, so a plan is instant), or how to count each
+            simulation's steps for one: "worst" (every run at its longest, a start at t = -30, unless
+            its simulator entry fixes the start) or "exact" (each model's real start, from
+            `sim.get_timing`: about 0.03 s per simulation, with no particles run).
+        workers: how many processes the run would be spread over, for the wall time.
+        speed: this machine's speed, from `measure_speed`; measured now (under a second) when None.
 
     Returns:
         A plain dict (JSON-ready; `format_plan` prints it):
@@ -473,11 +480,93 @@ def plan(models: np.ndarray, request: dict, externals: dict | None = None,
             and images. "upper_bound" is True where an orbit is counted, at the longest an orbit can
             be (`ORBIT_ROWS_AT_MOST` rows, about 840 KB): its real length depends on each model's
             start. "sim.timing" and the metric values are a few numbers each and count as 0.
+        "time": None, or with `time` given, the estimate (see `_time_estimate`): "core_seconds",
+            "wall_seconds" (over `workers`), "steps" ("worst" or "exact"), "particle_steps", "speed"
+            and "no_start" (with "exact": simulations whose start couldn't be found; they'd fail).
+            It covers the simulations only, not images or metrics, and assumes nothing is reused.
     """
     models, parts, arrays, _, records, hashes, _ = _prepare(models, request, externals)
     if output is not None:
         _save_needs_a_folder(parts[1], output)
-    return _plan(models, parts, arrays, records, hashes)
+    planned = _plan(models, parts, arrays, records, hashes)
+    if time is not None:
+        planned["time"] = _time_estimate(models, parts[2], planned, time, workers, speed)
+    return planned
+
+
+# The model `measure_speed` times: SDSS 587722984435351614, an ordinary bound pair.
+SPEED_MODEL = (-9.93853, -4.5805, 15.43348, -1.54025, -2.97899, 4.69234, 34.41671, 29.49607, 2.97913, 4.2501,
+               301.0, 35.5, 310.80745, 321.98757)
+STEPS_AT_MOST = ORBIT_ROWS_AT_MOST - 1  # a run from t = -30
+TIME_STEP = 0.001  # SPAM's step, in its time units
+
+
+def measure_speed() -> dict:
+    """This machine's simulation speed, measured with one small run (well under a second).
+
+    SPAM's particles don't pull on each other, so a simulation's time is close to (particles x steps)
+    times one number that depends on the machine. Measured on one core, as a pool's workers each use.
+
+    Returns:
+        {"seconds_per_particle_step": for `sim.simulate_particles`, about 6e-8 on a 2023 desktop;
+        "seconds_per_orbit": for the orbit alone (the start search and the secondary's path), which
+        every simulation costs whatever its particle count}.
+    """
+    params = np.array(SPEED_MODEL)
+    config = SimulatorConfig(n1=250, n2=250, start=-5.0)
+    steps = sim.get_timing(params, config)["n_steps"]
+    seconds = []
+    for _ in range(2):  # the best of two: the first also pays for loading the Fortran
+        start = time.perf_counter()
+        sim.simulate_particles(params, config)
+        seconds.append(time.perf_counter() - start)
+    start = time.perf_counter()
+    sim.search_orbit(params, config)
+    orbit = time.perf_counter() - start
+    return {"seconds_per_particle_step": min(seconds) / ((config.n1 + config.n2 + 1) * steps),
+            "seconds_per_orbit": orbit}
+
+
+def _time_estimate(models: np.ndarray, configs: list, planned: dict, steps: str, workers: int,
+                   speed: dict | None) -> dict:
+    """How long a planned run's simulations would take: for each one that runs particles,
+    (particles x steps) x the machine's seconds per particle-step, plus the orbit's time for every
+    simulation. Images and metrics aren't counted (small beside a particle run), and nothing is taken
+    as already saved."""
+    if steps not in ("worst", "exact"):
+        raise ValueError(f'time must be None, "worst" or "exact": {steps!r}')
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise ValueError(f"workers must be a whole number, 1 or more: {workers!r}")
+    speed = measure_speed() if speed is None else speed
+    runs_particles = "sim.particles" in planned["sim_items"]  # sim.unperturbed takes no steps
+    particle_steps, no_start = 0, 0
+    if planned["simulations"] and runs_particles:
+        for config in configs:
+            particles = config.n1 + config.n2 + 1
+            for params in models:
+                if steps == "exact":
+                    try:
+                        count = sim.get_timing(params, config)["n_steps"]
+                    except Exception:  # no start to be found: the simulation would fail, and cost nothing
+                        no_start += 1
+                        continue
+                elif isinstance(config.start, str):
+                    count = STEPS_AT_MOST
+                else:  # a fixed start: known without looking
+                    count = round(-config.start / TIME_STEP)
+                particle_steps += particles * count
+    core_seconds = (particle_steps * speed["seconds_per_particle_step"]
+                    + planned["simulations"] * speed["seconds_per_orbit"])
+    return {"core_seconds": core_seconds, "wall_seconds": core_seconds / workers, "workers": workers,
+            "steps": steps, "particle_steps": particle_steps, "no_start": no_start, "speed": dict(speed)}
+
+
+def _seconds_text(seconds: float) -> str:
+    """A duration for people: "45 seconds", "12.5 minutes", "3.2 hours", "2.1 days"."""
+    for unit, scale in (("days", 86400), ("hours", 3600), ("minutes", 60)):
+        if seconds >= 1.5 * scale:
+            return f"{seconds / scale:.1f} {unit}"
+    return f"{seconds:.0f} seconds" if seconds >= 10 else f"{seconds:.1f} seconds"
 
 
 def _plan(models: np.ndarray, parts: tuple, arrays: dict, records: dict, hashes: dict) -> dict:
@@ -561,6 +650,7 @@ def _plan(models: np.ndarray, parts: tuple, arrays: dict, records: dict, hashes:
         "return": in_memory,
         "save": total(saved),
         "max_return_gb": max_return_gb,
+        "time": None,
     }
 
 
@@ -601,7 +691,16 @@ def format_plan(plan: dict) -> str:
         lines.append(f"  {what}: {_bytes_text(part['bytes'], part['upper_bound'])}"
                      + ("" if part["items"] else " (nothing)") + cap)
         for name, item in part["items"].items():
-            lines.append(f"    {name}: {item['arrays']:,} arrays, {_bytes_text(item['bytes'], item['upper_bound'])}")
+            lines.append(f"    {name}: {item['arrays']:,} array{'s' if item['arrays'] != 1 else ''}, "
+                         f"{_bytes_text(item['bytes'], item['upper_bound'])}")
+    estimate = plan["time"]
+    if estimate is not None:
+        how = ("every run counted at its longest" if estimate["steps"] == "worst"
+               else "each model's real start" + (f"; {estimate['no_start']:,} have no start and would fail"
+                                                 if estimate["no_start"] else ""))
+        lines.append(f"  time: about {_seconds_text(estimate['core_seconds'])} of one core ({how}); "
+                     f"about {_seconds_text(estimate['wall_seconds'])} on {estimate['workers']} worker"
+                     f"{'s' if estimate['workers'] != 1 else ''}. Simulations only; nothing taken as already saved")
     return "\n".join(lines)
 
 

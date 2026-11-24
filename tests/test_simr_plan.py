@@ -149,3 +149,88 @@ def test_format_plan_reads_as_a_few_lines(no_simulating):
     assert "external target: shape (601, 7)" in text and "from memory" in text
     assert "saved to disk: up to " in text and "    sim.orbit: 4 arrays, up to 3.20 MB" in text
     assert "returned in memory: 0 bytes (nothing)" in simr.format_plan(simr.plan(MODELS, {"simulator": SMALL}))
+
+
+# --- MDRN-4 step 10d: the time estimate -----------------------------------------------------------------
+
+SPEED = {"seconds_per_particle_step": 1e-6, "seconds_per_orbit": 0.5}  # round numbers, to check the sums
+PARTICLES = {"run": {"save": ["sim.particles"]}, "simulator": [SMALL, {**SMALL, "n1": 50}]}
+
+
+def test_no_time_is_estimated_unless_asked(no_simulating):
+    assert simr.plan(MODELS, PARTICLES)["time"] is None
+    assert "time:" not in simr.format_plan(simr.plan(MODELS, PARTICLES))
+
+
+def test_the_worst_case_counts_every_run_from_minus_thirty(no_simulating):
+    estimate = simr.plan(MODELS, PARTICLES, time="worst", speed=SPEED)["time"]
+    particle_steps = 2 * (31 + 61) * simr.STEPS_AT_MOST  # 2 models x the two entries' particles x 30,002 steps
+    assert estimate["particle_steps"] == particle_steps and estimate["steps"] == "worst"
+    assert estimate["core_seconds"] == pytest.approx(particle_steps * 1e-6 + 4 * 0.5)
+    assert estimate["wall_seconds"] == estimate["core_seconds"] and estimate["workers"] == 1
+    assert estimate["speed"] == SPEED and estimate["no_start"] == 0
+
+
+def test_workers_divide_the_wall_time(no_simulating):
+    estimate = simr.plan(MODELS, PARTICLES, time="worst", speed=SPEED, workers=8)["time"]
+    assert estimate["wall_seconds"] == pytest.approx(estimate["core_seconds"] / 8) and estimate["workers"] == 8
+
+
+def test_a_fixed_start_is_known_without_looking(no_simulating):
+    fixed = {"run": {"save": ["sim.particles"]}, "simulator": {**SMALL, "start": -2.5}}
+    estimate = simr.plan(PARAMS, fixed, time="worst", speed=SPEED)["time"]
+    assert estimate["particle_steps"] == 31 * 2500
+
+
+def test_exact_uses_each_models_real_start():
+    exact = simr.plan(MODELS, PARTICLES, time="exact", speed=SPEED)["time"]
+    steps = [sim.get_timing(params, SimulatorConfig(**SMALL))["n_steps"] for params in MODELS]
+    assert exact["particle_steps"] == (31 + 61) * sum(steps)
+    assert exact["particle_steps"] < simr.plan(MODELS, PARTICLES, time="worst", speed=SPEED)["time"]["particle_steps"]
+    # A model with no start to find would fail, and costs nothing
+    approaching = PARAMS.copy()
+    approaching[3:6] *= -3
+    failing = {"run": {"save": ["sim.particles"]}, "simulator": {**SMALL, "no_pass": "error"}}
+    estimate = simr.plan(np.stack([approaching, PARAMS]), failing, time="exact", speed=SPEED)["time"]
+    assert estimate["no_start"] == 1 and estimate["particle_steps"] == 31 * steps[0]
+
+
+def test_orbit_only_runs_cost_only_the_orbits(no_simulating):
+    orbit_only = {"simulator": SMALL, "sim_metrics": [FULL["sim_metrics"][1]]}
+    estimate = simr.plan(MODELS, orbit_only, time="worst", speed=SPEED)["time"]
+    assert estimate["particle_steps"] == 0 and estimate["core_seconds"] == pytest.approx(2 * 0.5)
+    assert simr.plan(MODELS, {"simulator": SMALL}, time="worst", speed=SPEED)["time"]["core_seconds"] == 0
+
+
+def test_measure_speed_gives_sane_numbers_and_a_plan_uses_it():
+    speed = simr.measure_speed()
+    assert 1e-9 < speed["seconds_per_particle_step"] < 1e-5  # about 6e-8 on a 2023 desktop
+    assert 0 < speed["seconds_per_orbit"] < 5
+    measured = simr.plan(PARAMS, PARTICLES, time="worst")["time"]  # no speed given: measured now
+    assert measured["core_seconds"] > 0 and set(measured["speed"]) == set(speed)
+
+
+def test_the_estimate_is_near_a_real_runs_time():
+    request = {"run": {"return": ["sim.particles"]}, "simulator": {"n1": 400, "n2": 400}}
+    estimate = simr.plan(MODELS, request, time="exact")["time"]
+    result = simr.run(MODELS, request)
+    actual = result.seconds["sim"].sum()
+    assert 0.4 * actual < estimate["core_seconds"] < 2.5 * actual  # loose: a shared test machine is noisy
+
+
+def test_format_plan_gives_the_time_in_plain_units(no_simulating):
+    slow = {"seconds_per_particle_step": 1e-4, "seconds_per_orbit": 0.0}
+    text = simr.format_plan(simr.plan(MODELS, PARTICLES, time="worst", speed=slow, workers=4))
+    line = [line for line in text.splitlines() if line.startswith("  time:")][0]
+    assert "about 9.2 minutes of one core (every run counted at its longest); about 2.3 minutes on 4 workers" in line
+    assert "Simulations only; nothing taken as already saved" in line
+    assert simr._seconds_text(3) == "3.0 seconds" and simr._seconds_text(45) == "45 seconds"
+    assert simr._seconds_text(3 * 3600) == "3.0 hours" and simr._seconds_text(3 * 86400) == "3.0 days"
+
+
+@pytest.mark.parametrize("kwargs, match", [({"time": "fast"}, 'time must be None, "worst" or "exact"'),
+                                           ({"time": "worst", "workers": 0}, "workers must be a whole number"),
+                                           ({"time": "worst", "workers": 2.5}, "workers must be a whole number")])
+def test_bad_time_arguments_are_errors(no_simulating, kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        simr.plan(MODELS, PARTICLES, speed=SPEED, **kwargs)

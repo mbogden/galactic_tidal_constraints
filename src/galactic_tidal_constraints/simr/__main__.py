@@ -1,10 +1,12 @@
 """The command line for SIMR.
 
     python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--config config.json]
-        [--externals externals.json] [--mode solo|local|mpi] [--workers N] [--log-level INFO] [--dry-run]
+        [--externals externals.json] [--mode solo|local|mpi] [--workers N] [--log-level INFO] [--dry-run [worst|exact]]
 
 With --dry-run nothing is simulated or written: the inputs are checked as a run checks them, and the plan
-(`simr.plan`: the counts, and the sizes run.save would write) is logged.
+(`simr.plan`: the counts, the sizes run.save would write, and about how long the simulations would take) is
+logged. The time counts every run at its longest ("worst", the default) or looks up each model's real
+start ("exact": about 0.03 s per simulation).
 
 With MPI (`uv sync --group mpi`), rank 0 runs the command and every other rank is a worker:
 
@@ -20,6 +22,7 @@ import argparse
 import json
 import logging
 import multiprocessing
+import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -43,7 +46,8 @@ def main(argv: list[str] | None = None) -> int:
         request = _read_config(args.config)
         externals = _read_externals(args.externals)
         if args.dry_run:
-            plan = simr.plan(models, request, externals=externals, output=args.output)
+            plan = simr.plan(models, request, externals=externals, output=args.output, time=args.dry_run,
+                             workers=_planned_workers(args))
             logger.info("dry run: nothing is simulated or written. The run would be:\n%s", simr.format_plan(plan))
             return RAN
         if args.mode == "local":
@@ -62,6 +66,19 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("every simulation failed; see the errors above or in the catalog")
         return ALL_FAILED
     return RAN
+
+
+def _planned_workers(args) -> int:
+    """How many processes the run would use, for a dry run's wall time: 1 for solo; --workers or the CPUs
+    this job may use for local; for mpi, the ranks the launcher started less the one that runs the command
+    (1 when not under a launcher)."""
+    if args.mode == "local":
+        return args.workers or simr.available_cpus()
+    if args.mode == "mpi":
+        for _, size_name in simr.MPI_NODE_VARIABLES:
+            if size_name in os.environ:
+                return max(1, int(os.environ[size_name]) - 1)
+    return 1
 
 
 def _run_local(models, request, externals, args) -> simr.SimrResult:
@@ -113,9 +130,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int,
                         help="with --mode local: how many processes (default: the CPUs this job may use)")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
-    parser.add_argument("--dry-run", action="store_true",
-                        help="check the inputs and log what the run would do (counts and sizes), without "
-                             "simulating or writing anything")
+    parser.add_argument("--dry-run", nargs="?", const="worst", choices=["worst", "exact"],
+                        help="check the inputs and log what the run would do (counts, sizes and about how "
+                             "long), without simulating or writing anything. The time counts every run at its "
+                             "longest (worst, the default) or looks up each model's real start (exact)")
     return parser
 
 

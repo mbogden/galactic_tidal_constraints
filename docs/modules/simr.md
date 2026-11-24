@@ -163,7 +163,7 @@ everything `run.return` names comes back into the memory of the one process that
 `simr.plan` says what a run would do before it's started:
 
 ```python
-plan = simr.plan(models, request, externals=None, output=None)
+plan = simr.plan(models, request, externals=None, output=None, time=None, workers=1, speed=None)
 print(simr.format_plan(plan))
 ```
 ```
@@ -194,6 +194,33 @@ print(simr.format_plan(plan))
   and count as 0.
 - **`output`** is only checked by name (`run.save` needs a folder). What's already saved there isn't
   read, so a plan counts every simulation, though a run into that folder would reuse some.
+
+### How long it would take: `time=`
+With `time="worst"` or `time="exact"`, the plan adds an estimate of the simulations' time:
+
+```
+  time: about 2.1 hours of one core (every run counted at its longest); about 4.1 minutes on 31 workers.
+  Simulations only; nothing taken as already saved
+```
+
+SPAM's particles don't pull on each other, so a simulation's time is close to **particles × steps ×
+one number for the machine** (measured: 59 to 67 ns per particle-step from 100 to 10,000 particles on a
+2023 desktop, a straight line). Every simulation also costs its orbit, about 0.03 s.
+
+| | |
+|---|---|
+| `time="worst"` | Every run counted at its longest: a start at t = −30, so 30,002 steps. Free to work out, and a ceiling. A simulator entry with a fixed `start` is counted at that start |
+| `time="exact"` | Each model's real start, from `sim.get_timing` (no particles run): about 0.03 s per simulation, so 30 s for 1,000. A model whose start can't be found would fail; it's counted in `no_start` and costs nothing |
+| `workers` | How many processes the run would be spread over; the wall time is the core time divided by it |
+| `speed` | The machine's speed, from `simr.measure_speed()`. Left out, it's measured on the spot with one small simulation (well under a second), so there's no table of machines to keep |
+
+- `plan["time"]` holds `core_seconds`, `wall_seconds`, `workers`, `steps`, `particle_steps`,
+  `no_start` and the `speed` used; it's `None` without `time=`, so a plain plan stays instant.
+- **It's an estimate of the simulations only.** Images and metrics aren't counted (small beside a
+  particle run, though `orbit_position_error` on a long target can add up), nothing is taken as already
+  saved, and a pool's startup and uneven workers aren't modeled. Expect it within a few tens of percent.
+- Measure the speed on the machine the run will use: a plan made on a laptop for a cluster job uses the
+  laptop's speed unless `speed=` says otherwise.
 
 ### The cap on returned data: `run.max_return_gb`
 Returned data all lands in the memory of the process that called `run` (on Babbage's CPU nodes, about
@@ -498,7 +525,8 @@ A run without `save` writes only the catalog: its models and its record, no mode
 ## The command line
 ```bash
 python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--config config.json] \
-    [--externals externals.json] [--mode solo|local|mpi] [--workers N] [--log-level INFO] [--dry-run]
+    [--externals externals.json] [--mode solo|local|mpi] [--workers N] [--log-level INFO] \
+    [--dry-run [worst|exact]]
 mpirun -n N python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi ...
 ```
 
@@ -511,7 +539,7 @@ mpirun -n N python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode m
 | `--mode` | `solo` (the default): one process. `local`: a pool of processes on this machine. `mpi`: MPI ranks, launched as above: rank 0 runs the command, the other N-1 are workers. Without `mpi4py`, with one rank, or without `-m mpi4py.futures` it stops with exit code 1 |
 | `--workers` | With `--mode local`: how many processes (default: the CPUs this job may use) |
 | `--log-level` | `DEBUG`, `INFO` (the default), `WARNING` or `ERROR` |
-| `--dry-run` | Check the inputs as a run checks them and log the plan (`simr.plan`: counts and sizes; see Planning a run), without simulating or writing anything. Exit code 0 if the run would start, 1 if something would stop it. Worth running before submitting a job |
+| `--dry-run [worst\|exact]` | Check the inputs as a run checks them and log the plan (`simr.plan`: counts, sizes and about how long; see Planning a run), without simulating or writing anything. The time counts every run at its longest (`worst`, the default) or uses each model's real start (`exact`), over the workers `--mode` and `--workers` would give. Exit code 0 if the run would start, 1 if something would stop it. Worth running before submitting a job |
 
 **The models file:** one model per line; the first 14 comma-separated values on the line are the
 model. Longer lines (SPAM's 22-value strings, JSPAM's `archive/data.txt`) are fine, and one log
@@ -535,7 +563,8 @@ and the composite are written to the run's record in the catalog; read them back
 | Function | Returns |
 |---|---|
 | `simr.read_models(path)` | A models file's models, `(N, 14)` |
-| `simr.plan(models, request, externals=None, output=None)` | What a run would do, without simulating or writing: counts, the externals used, and the bytes `return` would hold and `save` would write (see Planning a run). `simr.format_plan(plan)` gives it as text |
+| `simr.plan(models, request, externals=None, output=None, time=None, workers=1, speed=None)` | What a run would do, without simulating or writing: counts, the externals used, the bytes `return` would hold and `save` would write, and with `time=` about how long (see Planning a run). `simr.format_plan(plan)` gives it as text |
+| `simr.measure_speed()` | This machine's simulation speed, from one small run: `{"seconds_per_particle_step", "seconds_per_orbit"}` |
 | `simr.load_catalog(output)` | The catalog (of a folder or a `.json` file) as a dict |
 | `simr.load_metrics(output, run=-1)` | A recorded run's metric values and composite, as the run returned them: `{"sim_metrics", "img_metrics", "composite"}`, arrays indexed like the result's, with NaN for failed scalar cells. `run` picks the run by position (-1: the last) |
 | `simr.load_run(output, run=-1, externals=None)` | A recorded run's inputs, ready to run again: `{"models", "request", "externals"}` (below) |
