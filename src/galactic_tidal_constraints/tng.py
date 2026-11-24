@@ -7,10 +7,11 @@ Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
     a target archive      one target's particles at its target snapshot
 
     read_table, read_archive                return the values exactly as stored
-    galaxy_properties, half_mass_radius     measure a galaxy from its particles
+    galaxy_properties, half_mass_radius     measure a galaxy from its particles, in the units given
+    physical, spam_units                    stored values -> kpc, km/s, Msun -> SPAM's units
 
-Nothing is converted or corrected here: no unit changes, no change of frame. What the stored values
-mean is in each function's docstring.
+The readers and the measuring functions convert nothing; units change only where `physical` or
+`spam_units` is called. What the stored values mean is in each function's docstring.
 
 The readers need `h5py` (the `tng` dependency group).
 """
@@ -27,6 +28,30 @@ TABLE_COLUMNS = ("moi_2", "snap", "p_SubhaloIDRaw", "s_SubhaloIDRaw")
 
 # Rows read at a time when only some particle types are wanted (bounds the memory used).
 _CHUNK_ROWS = 4_000_000
+
+# TNG's Hubble parameter h (Planck 2015): its lengths and masses are stored "per h".
+H = 0.6774
+
+# The gravitational constant, in kpc (km/s)^2 / Msun.
+G = 4.30091e-6
+
+# SPAM's units. It works with G = 1, so a length and a mass fix the velocity and the time.
+SPAM_LENGTH = 15.0                                  # kpc
+SPAM_MASS = 1.0e11                                  # Msun
+SPAM_VELOCITY = (G * SPAM_MASS / SPAM_LENGTH) ** 0.5  # km/s, about 169.3
+SPAM_TIME = SPAM_LENGTH / SPAM_VELOCITY * 0.9777922  # Gyr, about 0.0866 (1 kpc / (km/s) = 0.9777922 Gyr)
+
+# What a stored TNG value is multiplied by to become physical: (constant, power of the scale factor).
+_TO_PHYSICAL = {
+    "length": (1 / H, 1.0),             # ckpc/h          -> kpc
+    "velocity": (1.0, 0.0),             # km/s            -> km/s   (catalog velocities)
+    "particle_velocity": (1.0, 0.5),    # km/s / sqrt(a)  -> km/s   (snapshot particles)
+    "mass": (1e10 / H, 0.0),            # 1e10 Msun/h     -> Msun
+    "spin": (1 / H, 0.0),               # (kpc/h)(km/s)   -> kpc km/s   (catalog SubhaloSpin)
+}
+
+# What a physical value is divided by to be in SPAM's units.
+_SPAM_UNIT = {"length": SPAM_LENGTH, "velocity": SPAM_VELOCITY, "mass": SPAM_MASS, "time": SPAM_TIME}
 
 
 def _open(path, what: str):
@@ -228,3 +253,69 @@ def half_mass_radius(positions, masses, center) -> float:
     order = np.argsort(radii)
     inside = np.cumsum(masses[order])
     return float(radii[order][np.searchsorted(inside, inside[-1] / 2)])
+
+
+def physical(values, quantity: str, scale_factor=None) -> np.ndarray:
+    """Convert stored TNG values to physical units: kpc, km/s, Msun, kpc km/s.
+
+    Args:
+        values: a number or an array of stored values (a table column, or an archive's positions,
+            velocities or masses).
+        quantity: what the values are:
+
+            "length"              ckpc/h           x a / h       -> kpc
+            "velocity"            km/s             unchanged     -> km/s      catalog velocities
+            "particle_velocity"   km/s / sqrt(a)   x sqrt(a)     -> km/s      snapshot particles
+            "mass"                1e10 Msun/h      x 1e10 / h    -> Msun
+            "spin"                (kpc/h)(km/s)    / h           -> kpc km/s  catalog `SubhaloSpin`
+
+        scale_factor: the snapshot's scale factor a = 1 / (1 + z). Needed for "length" and
+            "particle_velocity". One number, or one per row of `values` (a table column each).
+
+    Returns:
+        The converted values, as float64, in the shape of `values`.
+
+    h is TNG's 0.6774. A spin measured from particles has no row here: convert the positions and
+    velocities first, and `galaxy_properties` then gives the spin in kpc km/s.
+    """
+    if quantity not in _TO_PHYSICAL:
+        raise ValueError(f"Unknown quantity {quantity!r}. Known: {list(_TO_PHYSICAL)}")
+    constant, power = _TO_PHYSICAL[quantity]
+    values = np.asarray(values, dtype=np.float64)
+    if power == 0:
+        return values * constant
+    if scale_factor is None:
+        raise ValueError(f"A {quantity!r} needs the snapshot's scale factor")
+    scale_factor = np.asarray(scale_factor, dtype=np.float64)
+    if np.any(scale_factor <= 0) or np.any(scale_factor > 1):
+        raise ValueError("scale_factor must be above 0 and at most 1")
+    if scale_factor.ndim == 1:  # one per row: line it up with the rows of `values`
+        if values.ndim == 0 or len(scale_factor) != len(values):
+            raise ValueError(f"{len(scale_factor)} scale factors for values of shape {values.shape}")
+        scale_factor = scale_factor.reshape(-1, *[1] * (values.ndim - 1))
+    elif scale_factor.ndim > 1:
+        raise ValueError("scale_factor must be one number, or one per row")
+    return values * (constant * scale_factor ** power)
+
+
+def spam_units(values, quantity: str) -> np.ndarray:
+    """Convert physical values to SPAM's units.
+
+    Args:
+        values: a number or an array, in physical units.
+        quantity: what the values are:
+
+            "length"     kpc    / 15           (`SPAM_LENGTH`)
+            "velocity"   km/s   / about 169.3  (`SPAM_VELOCITY`)
+            "mass"       Msun   / 1e11         (`SPAM_MASS`)
+            "time"       Gyr    / about 0.0866 (`SPAM_TIME`)
+
+    Returns:
+        The values in SPAM's units, as float64.
+
+    SPAM works with G = 1: its length and mass units are Wallin's, and the velocity and time units
+    follow from them, velocity = sqrt(G mass / length) and time = length / velocity.
+    """
+    if quantity not in _SPAM_UNIT:
+        raise ValueError(f"Unknown quantity {quantity!r}. Known: {list(_SPAM_UNIT)}")
+    return np.asarray(values, dtype=np.float64) / _SPAM_UNIT[quantity]

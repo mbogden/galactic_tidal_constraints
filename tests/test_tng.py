@@ -1,4 +1,4 @@
-"""Tests for tng.py: reading the target table and a target archive, and measuring a galaxy.
+"""Tests for tng.py: reading the target table and a target archive, measuring a galaxy, and units.
 
 The first sections use small made-up files and particles and always run. The last section reads the real files and
 runs only when the environment variable GTC_DATA_DIR names the workspace's data folder (the one
@@ -267,6 +267,77 @@ def test_half_mass_radius_errors():
         tng.half_mass_radius(np.zeros((4, 3)), np.ones(4), [0, 0])
 
 
+# --- Units -----------------------------------------------------------------------------------------------
+
+
+def test_known_tng_values_in_physical_units():
+    # TNG50-1's dark matter particle is 4.5e5 Msun, and its box is 35 Mpc/h = 51.7 Mpc across today.
+    assert tng.physical(3.0737e-5, "mass") == pytest.approx(4.5375e5, rel=1e-4)
+    assert tng.physical(35000.0, "length", 1.0) == pytest.approx(51668.0, rel=1e-5)
+
+
+@pytest.mark.parametrize("quantity, stored, expected", [
+    ("length", 6.774, 2.5),                # x a / h
+    ("velocity", 100.0, 100.0),            # the catalog's km/s, unchanged
+    ("particle_velocity", 100.0, 50.0),    # x sqrt(a)
+    ("mass", 6.774, 1.0e11),               # x 1e10 / h
+    ("spin", 677.4, 1000.0),               # / h, and no a
+])
+def test_each_quantitys_factor_at_a_quarter(quantity, stored, expected):
+    assert tng.physical(stored, quantity, 0.25) == pytest.approx(expected)
+
+
+def test_arrays_keep_their_shape_and_come_back_float64():
+    positions = np.arange(12, dtype=np.float32).reshape(4, 3)
+    converted = tng.physical(positions, "length", 0.5)
+    assert converted.shape == (4, 3) and converted.dtype == np.float64
+    assert converted == pytest.approx(positions * 0.5 / 0.6774)
+
+
+def test_one_scale_factor_per_row_converts_a_table_column():
+    positions = np.ones((3, 3))
+    converted = tng.physical(positions, "length", [0.25, 0.5, 1.0])
+    assert converted[:, 0] == pytest.approx(np.array([0.25, 0.5, 1.0]) / 0.6774)
+    assert tng.physical([4.0, 4.0, 4.0], "particle_velocity", [0.25, 0.25, 1.0]) == pytest.approx([2.0, 2.0, 4.0])
+
+
+@pytest.mark.parametrize("values, quantity, scale_factor, message", [
+    (1.0, "distance", 0.5, "Unknown quantity 'distance'"),
+    (1.0, "length", None, "needs the snapshot's scale factor"),
+    (1.0, "particle_velocity", None, "needs the snapshot's scale factor"),
+    (1.0, "length", 0.0, "above 0 and at most 1"),
+    (1.0, "length", 1.5, "above 0 and at most 1"),
+    (np.ones((3, 3)), "length", [0.5, 0.5], "2 scale factors"),
+    (np.ones((3, 3)), "length", np.full((3, 3), 0.5), "one number, or one per row"),
+])
+def test_physical_errors(values, quantity, scale_factor, message):
+    with pytest.raises(ValueError, match=message):
+        tng.physical(values, quantity, scale_factor)
+
+
+def test_mass_velocity_and_spin_need_no_scale_factor():
+    assert tng.physical(1.0, "mass") == tng.physical(1.0, "mass", 0.3)
+    assert tng.physical(1.0, "velocity") == 1.0
+    assert tng.physical(1.0, "spin") == pytest.approx(1 / 0.6774)
+
+
+def test_spams_units_are_15_kpc_and_1e11_msun_with_g_equal_to_one():
+    assert tng.spam_units(30.0, "length") == 2.0
+    assert tng.spam_units(5.0e10, "mass") == 0.5
+    # Velocity and time follow from G = 1; SPAM's own constants (parameters_module.f90) are
+    # 4.6285203749999994e22 cm / 2.733342473337471e15 s = 169.3355 km/s, and that time is 86.614 Myr.
+    assert tng.SPAM_VELOCITY == pytest.approx(169.3355, rel=1e-4)
+    assert tng.SPAM_TIME == pytest.approx(2.733342473337471e15 / 3.15576e16, rel=1e-4)
+    assert tng.G * tng.SPAM_MASS / (tng.SPAM_LENGTH * tng.SPAM_VELOCITY ** 2) == pytest.approx(1.0)
+    assert tng.spam_units([169.3355, 338.671], "velocity") == pytest.approx([1.0, 2.0], rel=1e-4)
+    assert tng.spam_units(0.866, "time") == pytest.approx(10.0, rel=1e-3)
+
+
+def test_an_unknown_spam_quantity_is_an_error():
+    with pytest.raises(ValueError, match="Unknown quantity 'spin'"):
+        tng.spam_units(1.0, "spin")
+
+
 # --- The real files (only when GTC_DATA_DIR is set) ------------------------------------------------------
 
 DATA = Path(os.environ["GTC_DATA_DIR"]) / "tng-data" if os.environ.get("GTC_DATA_DIR") else None
@@ -337,6 +408,10 @@ def measured(request):
         kept = archive["subfind_galaxy"] == galaxy
         positions, masses = archive["positions"][kept], archive["masses"][kept]
         galaxies[side] = tng.galaxy_properties(positions, archive["velocities"][kept], masses)
+        a = row["scale_factor"]
+        galaxies[side]["physical"] = tng.galaxy_properties(
+            tng.physical(positions, "length", a), tng.physical(archive["velocities"][kept], "particle_velocity", a),
+            tng.physical(masses, "mass"))
         most_bound = in_frame(row["orbital_frame_pos_transform"], row[f"{side}_SubhaloPos"])
         galaxies[side]["half_mass_radius"] = tng.half_mass_radius(positions, masses, most_bound)
     return row, galaxies
@@ -390,3 +465,20 @@ def test_the_archive_is_the_box_moved_by_the_tables_matrices(measured, side):
 def test_the_half_mass_radius_around_the_most_bound_particle_matches_the_catalog(measured, side):
     row, galaxies = measured
     assert galaxies[side]["half_mass_radius"] == pytest.approx(row[f"{side}_SubhaloHalfmassRad"], rel=3e-4)
+
+
+@pytest.mark.parametrize("side", ["p", "s"])
+def test_particles_converted_first_give_the_catalogs_values_in_physical_units(measured, side):
+    """Converting the particles and then measuring agrees with converting the catalog's own values."""
+    row, galaxies = measured
+    galaxy = galaxies[side]["physical"]
+    assert galaxy["mass"] == pytest.approx(tng.physical(row[f"{side}_SubhaloMass"], "mass"), rel=5e-7)
+    catalog_spin = tng.physical(row[f"{side}_SubhaloSpin"], "spin")
+    assert np.linalg.norm(galaxy["spin"]) == pytest.approx(np.linalg.norm(catalog_spin), rel=5e-5)
+
+
+def test_the_pairs_relative_velocity_in_km_per_s_matches_the_catalog(measured):
+    row, galaxies = measured
+    relative = np.linalg.norm(galaxies["p"]["physical"]["velocity"] - galaxies["s"]["physical"]["velocity"])
+    catalog = tng.physical(row["p_SubhaloVel"] - row["s_SubhaloVel"], "velocity")
+    assert relative == pytest.approx(np.linalg.norm(catalog), rel=2e-6)

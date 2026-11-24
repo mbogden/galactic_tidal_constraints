@@ -198,6 +198,8 @@ How it works: [docs/modules/tng.md](docs/modules/tng.md).
 - What the stored values mean is pinned by tests against the TNG catalog (2026-11-24): a galaxy
   measured from the archive's particles must give back the catalog's mass, velocity, spin and
   half-mass radius. The measuring functions work in the units they are given.
+- Units change in two explicit steps (2026-11-24): stored TNG values to physical (kpc, km/s, M☉),
+  then physical to SPAM's units. Each step is one function with its factors in one table.
 
 ## Repository
 - **Name:** `galactic_tidal_constraints` for the GitHub repo, the local folder and the Python

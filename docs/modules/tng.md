@@ -1,9 +1,10 @@
 # TNG targets (`tng.py`)
 
-The IllustrisTNG (TNG50-1) data this project already has: two readers, and two functions that
-measure a galaxy from its particles. Both files are HDF5 and live in the data folder, outside the
-repo. The readers return the values **exactly as stored**, and nothing here changes units or frame.
-Converting comes later, in its own functions.
+The IllustrisTNG (TNG50-1) data this project already has: two readers, two functions that measure a
+galaxy from its particles, and two that convert units. Both files are HDF5 and live in the data
+folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
+functions work in whatever units they are given; units change only where `physical` or `spam_units`
+is called. Nothing here changes the frame yet.
 
 ```python
 from galactic_tidal_constraints import tng
@@ -89,6 +90,39 @@ turns with the frame. So a spin is moved to another frame by the rotation alone,
 
 **`half_mass_radius(positions, masses, center)`** returns the distance from `center` of the first
 particle, going outward, at which the mass inside reaches half the total.
+
+## Units
+Two steps, each one function with the factors in one table.
+
+**`physical(values, quantity, scale_factor=None)`** converts stored TNG values to kpc, km/s and M☉.
+h is TNG's 0.6774 (`tng.H`) and a is the snapshot's scale factor (the table's `scale_factor`):
+
+| `quantity` | Stored as | Factor | Result |
+|---|---|---|---|
+| `"length"` | ckpc/h | × a ÷ h | kpc |
+| `"velocity"` (catalog velocities) | km/s | none | km/s |
+| `"particle_velocity"` (snapshot particles) | km/s ÷ √a | × √a | km/s |
+| `"mass"` | 10¹⁰ M☉/h | × 10¹⁰ ÷ h | M☉ |
+| `"spin"` (catalog `SubhaloSpin`) | (kpc/h)(km/s) | ÷ h | kpc km/s |
+
+- `scale_factor` is needed for `"length"` and `"particle_velocity"`: one number, or one per row to
+  convert a table column in one call (`tng.physical(table["p_SubhaloPos"], "length", table["scale_factor"])`).
+- A spin measured from particles has no row: convert the positions and velocities first, and
+  `galaxy_properties` then gives the spin in kpc km/s.
+
+**`spam_units(values, quantity)`** converts physical values to SPAM's units:
+
+| `quantity` | From | SPAM's unit | Constant |
+|---|---|---|---|
+| `"length"` | kpc | 15 kpc | `tng.SPAM_LENGTH` |
+| `"mass"` | M☉ | 10¹¹ M☉ | `tng.SPAM_MASS` |
+| `"velocity"` | km/s | 169.33 km/s | `tng.SPAM_VELOCITY` |
+| `"time"` | Gyr | 0.08662 Gyr | `tng.SPAM_TIME` |
+
+SPAM works with G = 1. Its length and mass units are Wallin's (`parameters_module.f90` in the JSPAM
+fork); the velocity and time units follow from them, √(G × mass ÷ length) and length ÷ velocity, with
+G = 4.30091 × 10⁻⁶ kpc (km/s)² / M☉ (`tng.G`). They agree with the constants in SPAM's source to
+3 × 10⁻⁵.
 
 ## Checked against the TNG catalog
 The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same
