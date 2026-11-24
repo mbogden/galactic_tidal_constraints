@@ -83,8 +83,9 @@ request, the output folder and catalog, failures, modes) is in
 
 The notebooks in [`examples/notebooks/`](examples/notebooks/) are the guided way in:
 `simulator_tour.ipynb` for the Simulator stage, `simr_tour.ipynb` for the workflow,
-`image_tour.ipynb` for the Image Creator (on its own, through `simr`, and saving and loading images)
-and `metrics_tour.ipynb` for metrics, externals, derived arrays, the composite and what a run records.
+`image_tour.ipynb` for the Image Creator (on its own, through `simr`, and saving and loading images),
+`metrics_tour.ipynb` for metrics, externals, derived arrays, the composite and what a run records,
+and `tng_tour.ipynb` for reading the TNG target table and target archives (it needs the data folder).
 
 ## Docs
 | Doc | What it covers |

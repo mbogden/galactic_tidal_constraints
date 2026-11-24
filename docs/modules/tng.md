@@ -14,7 +14,8 @@ archive = tng.read_archive("../data/tng-data/target-archive-62000000190717.h5", 
 
 Only what exists today is described here. `tng.py` needs `h5py`, which is in the `tng` dependency
 group (`uv sync --group tng`; a plain `uv sync` installs it too, for the tests). Decisions behind it
-are in [PLAN.md](../../PLAN.md).
+are in [PLAN.md](../../PLAN.md). A worked tour is in
+[`examples/notebooks/tng_tour.ipynb`](../../examples/notebooks/tng_tour.ipynb).
 
 ## The target table: `read_table(path)`
 One row per encounter per snapshot (1268 rows, 59 encounters). Returns a dict of column name to
