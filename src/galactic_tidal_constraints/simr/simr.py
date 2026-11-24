@@ -204,7 +204,11 @@ EXTERNAL_PREFIX = "ext."
 # digits and _, not starting with a digit). So a name never looks like a number, and has no dots. Written
 # out, not `str.isidentifier`, which also accepts accented and non-Latin letters.
 PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-RUN_KEYS = ("return", "save")
+RUN_KEYS = ("return", "save", "max_return_gb")
+# The most data run.return may hold, in GB (2**30 bytes), unless the request says otherwise. Returned data
+# all lands in the memory of the one process that called `run`: on Babbage's CPU nodes that's about 1.9 GB
+# per core. A run that would return more is stopped before anything is computed.
+DEFAULT_MAX_RETURN_GB = 1.0
 METRIC_ENTRY_KEYS = ("method", "inputs", "select", "params")
 
 # The input kind (metrics.INPUT_KINDS) each simulator item satisfies as a metric input; img.* items are
@@ -303,6 +307,9 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
         models: the models, shape (N, 14) (one model of shape (14,) also works), in `sim.PARAM_NAMES` order.
         request: a dict with optional sections "run", "simulator" and "image" (see the module docstring).
             run.return (default []): names from `SIM_DATA` and `IMAGE_DATA` to hand back.
+            run.max_return_gb (default 1.0; null for no cap): the most data run.return may hold, in GB.
+                It all lands in this process's memory, so a run that would return more is a
+                ValueError before anything is computed (orbits are counted at their longest; see `plan`).
             run.save (default []): names from `SIM_DATA` and `IMAGE_DATA` to write to `output`.
                 Independent of `return`. Also "ext.<key>" (an external some entry uses) and the
                 "drv.<name>" of a derived entry made only from externals: each is written once to the
@@ -368,6 +375,7 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     skipped scalar cell is written as null; `load_metrics` gives the arrays back with NaN.
     """
     models, parts, arrays, files, records, hashes, to_save = _prepare(models, request, externals)
+    _check_return_cap(_plan(models, parts, arrays, records, hashes))
     for_the_run = {key: arrays[key] for key in hashes}  # the arrays themselves, for run.return
     shared_folder = None
     if arrays and map is not builtins.map:  # a pool: its workers share one copy of each external
@@ -401,6 +409,23 @@ def _prepare(models, request: dict, externals: dict | None) -> tuple:
     _check_external_weights(metric_sections, arrays)
     to_save = _run_arrays_to_save(parts[1], arrays, records, hashes)
     return models, parts, arrays, files, records, hashes, to_save
+
+
+def _check_return_cap(planned: dict) -> None:
+    """Stop a run, before anything is computed, whose run.return data would be more than run.max_return_gb:
+    it would all be held in this one process's memory."""
+    returned = planned["return"]
+    if not returned["over_cap"]:
+        return
+    largest = sorted(returned["items"].items(), key=lambda item: -item[1]["bytes"])
+    raise ValueError(
+        f"run.return would hold {_bytes_text(returned['bytes'], returned['upper_bound'])} in this process's memory, "
+        f"more than run.max_return_gb = {planned['max_return_gb']:g} GB allows: "
+        + ", ".join(f"{name} {_bytes_text(item['bytes'], item['upper_bound'])} ({item['arrays']:,} arrays)"
+                    for name, item in largest)
+        + ". Save it instead (run.save, with an output folder), return less, or raise run.max_return_gb (null "
+          "for no cap). simr.plan(models, request) shows the sizes without running"
+    )
 
 
 def _save_needs_a_folder(saved: list[str], output) -> None:
@@ -442,15 +467,24 @@ def plan(models: np.ndarray, request: dict, externals: dict | None = None,
         "externals": each one used, by key: its source, shape, hash and bytes (as float32).
         "return" and "save": {"bytes", "upper_bound", "items": {name: {"arrays", "bytes",
             "upper_bound"}}}: how much data run.return would hold in the calling process's memory,
-            and run.save would write (as float32; each .npy adds about 130 bytes). Exact for particles
+            and run.save would write (as float32; each .npy adds about 130 bytes). "return" also has
+            "over_cap": True when it's more than run.max_return_gb allows, so `run` would refuse to
+            start ("max_return_gb" is the cap, None for none). Exact for particles
             and images. "upper_bound" is True where an orbit is counted, at the longest an orbit can
             be (`ORBIT_ROWS_AT_MOST` rows, about 840 KB): its real length depends on each model's
             start. "sim.timing" and the metric values are a few numbers each and count as 0.
     """
-    models, parts, arrays, _, records, hashes, to_save = _prepare(models, request, externals)
-    returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries, composite_weights = parts
+    models, parts, arrays, _, records, hashes, _ = _prepare(models, request, externals)
     if output is not None:
-        _save_needs_a_folder(saved, output)
+        _save_needs_a_folder(parts[1], output)
+    return _plan(models, parts, arrays, records, hashes)
+
+
+def _plan(models: np.ndarray, parts: tuple, arrays: dict, records: dict, hashes: dict) -> dict:
+    """`plan`, once `_prepare` has checked everything: the counts and sizes. `run` uses it too, for the cap
+    on returned data."""
+    (returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries, composite_weights,
+     max_return_gb) = parts
     made = {f"drv.{entry['name']}": entry for entry in derived_entries}
     by_level = {level: [entry for entry in derived_entries if entry["level"] == level] for level in DERIVED_LEVELS}
     # What a model's task computes, as `_run_model` works it out
@@ -508,6 +542,9 @@ def plan(models: np.ndarray, request: dict, externals: dict | None = None,
         return {"bytes": sum(item["bytes"] for item in items.values()),
                 "upper_bound": any(item["upper_bound"] for item in items.values()), "items": items}
 
+    in_memory = total(returned)
+    in_memory["over_cap"] = max_return_gb is not None and in_memory["bytes"] > max_return_gb * 2**30
+
     return {
         "models": n,
         "simulators": s,
@@ -521,8 +558,9 @@ def plan(models: np.ndarray, request: dict, externals: dict | None = None,
         "metric_cells": {"sim_metrics": n * s * len(sim_entries), "img_metrics": n * s * i * len(img_entries)},
         "composite": composite_weights is not None,
         "externals": {key: {**record, "bytes": arrays[EXTERNAL_PREFIX + key].nbytes} for key, record in records.items()},
-        "return": total(returned),
+        "return": in_memory,
         "save": total(saved),
+        "max_return_gb": max_return_gb,
     }
 
 
@@ -556,8 +594,12 @@ def format_plan(plan: dict) -> str:
                      f"from {external['source']}")
     for section, what in (("return", "returned in memory"), ("save", "saved to disk")):
         part = plan[section]
+        cap = ""
+        if section == "return" and part["items"] and plan["max_return_gb"] is not None:
+            cap = f" (run.max_return_gb allows {plan['max_return_gb']:g} GB" \
+                  + (": OVER THE CAP, so the run would not start)" if part["over_cap"] else ")")
         lines.append(f"  {what}: {_bytes_text(part['bytes'], part['upper_bound'])}"
-                     + ("" if part["items"] else " (nothing)"))
+                     + ("" if part["items"] else " (nothing)") + cap)
         for name, item in part["items"].items():
             lines.append(f"    {name}: {item['arrays']:,} arrays, {_bytes_text(item['bytes'], item['upper_bound'])}")
     return "\n".join(lines)
@@ -569,7 +611,8 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
     external a metric uses: the array itself, or (for a pool) the path its workers map it from;
     `external_records` its `{"source", "shape", "hash"}`; `for_the_run` the derived arrays computed once
     for the run, by "drv.<name>"; `to_save` the once-per-run arrays run.save names (`_run_arrays_to_save`)."""
-    returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries, composite_weights = parts
+    (returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries, composite_weights,
+     max_return_gb) = parts
     catalog_file, root = output_paths(output) if output is not None else (None, None)
     _save_needs_a_folder(saved, output)
     catalog = _open_catalog(catalog_file) if catalog_file is not None else None
@@ -578,7 +621,7 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
     # The whole request, every default filled in: the result's `config` and the catalog's run record hold
     # the same thing.
     full_config = {
-        "run": {"return": returned, "save": saved},
+        "run": {"return": returned, "save": saved, "max_return_gb": max_return_gb},
         "simulator": [_json_ready(asdict(config)) for config in configs],
         "image": [_json_ready(asdict(config)) for config in image_configs],
         "derived": derived_entries,
@@ -1572,10 +1615,15 @@ def _read_request(
     derived_entries = _derived_entries(request)
     made = {f"drv.{entry['name']}": entry for entry in derived_entries}
     returned, saved = _names(run_section, "return", made), _names(run_section, "save", made)
+    max_return_gb = run_section.get("max_return_gb", DEFAULT_MAX_RETURN_GB)
+    if max_return_gb is not None and (isinstance(max_return_gb, bool) or not isinstance(max_return_gb, (int, float))
+                                      or not 0 < max_return_gb < float("inf")):
+        raise ValueError(f"run.max_return_gb must be a number above 0, or null for no cap: {max_return_gb!r}")
     sim_entries = _metric_entries(request, "sim_metrics", made)
     img_entries = _metric_entries(request, "img_metrics", made)
     composite_weights = _composite_weights(request, sim_entries, img_entries, len(configs), len(image_configs))
-    return returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries, composite_weights
+    return (returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries, composite_weights,
+            max_return_gb)
 
 
 def _composite_weights(request: dict, sim_entries: list[dict], img_entries: list[dict], simulators: int,

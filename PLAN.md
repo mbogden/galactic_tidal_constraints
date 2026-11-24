@@ -28,6 +28,11 @@ How these fit together is described in [docs/architecture.md](docs/architecture.
   model, and a `catalog.json` per output recording every run. A file counts as saved only once
   `model.json` lists it, and saved data is reused only when its config matches exactly. Layout, write
   order, the catalog and reuse: [docs/modules/simr.md](docs/modules/simr.md#saving).
+- **A run's size is known before it starts** (MDRN-4 step 10): `simr.plan` and `--dry-run` give the
+  counts and the sizes of what would be returned and saved, after every check a run makes, without
+  simulating. Returned data all lands in one process's memory, so a run that would return more than
+  `run.max_return_gb` (1 GB by default) stops before anything is computed.
+  [docs/modules/simr.md](docs/modules/simr.md#planning-a-run-simrplan).
 - **What a run leaves on record** (MDRN-4 step 7): its metric values and composite, in its catalog
   record. Externals and derived arrays are saved only when `run.save` names them: once per output,
   named by hash, or in the model's folder when made from that model's data. Saved metric values and

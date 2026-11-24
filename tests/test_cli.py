@@ -105,7 +105,7 @@ def test_run_return_is_ignored_with_a_warning(tmp_path, files, caplog):
     config = {"run": {"return": ["sim.orbit"], "save": ["sim.timing"]}, "simulator": SMALL}
     assert main(files(config=config)) == 0
     assert "run.return is ignored on the command line" in caplog.text
-    assert simr.load_catalog(tmp_path / "runs")["runs"][0]["run"] == {"return": [], "save": ["sim.timing"]}
+    assert simr.load_catalog(tmp_path / "runs")["runs"][0]["run"] == {"return": [], "save": ["sim.timing"], "max_return_gb": 1.0}
 
 
 def test_an_empty_run_return_gives_no_warning(tmp_path, files, caplog):
@@ -113,7 +113,7 @@ def test_an_empty_run_return_gives_no_warning(tmp_path, files, caplog):
     config = {"run": {"return": [], "save": ["sim.timing"]}, "simulator": SMALL}
     assert main(files(config=config)) == 0
     assert "run.return" not in caplog.text
-    assert simr.load_catalog(tmp_path / "runs")["runs"][0]["run"] == {"return": [], "save": ["sim.timing"]}
+    assert simr.load_catalog(tmp_path / "runs")["runs"][0]["run"] == {"return": [], "save": ["sim.timing"], "max_return_gb": 1.0}
 
 
 def test_metrics_run_and_their_values_are_recorded(tmp_path, files, caplog):

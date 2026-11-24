@@ -19,7 +19,7 @@ it: `--models`, `--output`, `--externals`, `--mode`, `--workers` and `--log-leve
 ## The sections
 | Section | Holds | Missing means | Fields |
 |---|---|---|---|
-| `run` | `return`: data to hand back in memory (Python only). `save`: data to write to the output folder. Both are lists of names (below) | Nothing returned or saved | [modules/simr.md](modules/simr.md#data-names) |
+| `run` | `return`: data to hand back in memory (Python only). `save`: data to write to the output folder. Both are lists of names (below). `max_return_gb`: the most `return` may hold | Nothing returned or saved; a 1 GB cap on returned data | [modules/simr.md](modules/simr.md#data-names) |
 | `simulator` | One `SimulatorConfig` entry, or a list of them | One default entry | [modules/simulation.md](modules/simulation.md#simulatorconfig) |
 | `image` | One `ImageConfig` entry, or a list of them | One default entry | [modules/image_creator.md](modules/image_creator.md#imageconfig) |
 | `derived` | Named entries (below), in order: arrays made from other arrays, for metrics to use as data or weights | None | [modules/derived.md](modules/derived.md) |
@@ -51,6 +51,11 @@ external some entry uses). An external, or an entry made only from externals, is
 folder once, named by its hash
 ([modules/simr.md](modules/simr.md#once-per-run-arrays-externals-and-derived)); an entry made from a
 model's data goes in that model's folder.
+
+`run.max_return_gb` (default 1.0; `null` for no cap) stops a run whose `run.return` data would be
+bigger than that, before anything is computed: returned data all sits in one process's memory
+([modules/simr.md](modules/simr.md#the-cap-on-returned-data-runmax_return_gb)). `simr.plan` and the
+command line's `--dry-run` show a run's counts and sizes without running it.
 
 On the command line `run.return` is ignored, as nothing comes back in memory there, so one config works
 in a notebook and on the command line. A non-empty `run.return` gets a warning; an empty one doesn't.
@@ -284,6 +289,7 @@ Everything is checked before anything runs, and an error says where the problem 
 | An unknown method | `sim_metrics[0].method: unknown method 'closest'. Known: […]` |
 | A wrong metric input | `sim_metrics[0].inputs[0]: closest_approach takes a orbit here, but sim.particles is a particles` |
 | An `img.*` input at the wrong level | `sim_metrics[0].inputs[0]: an img.* input belongs in img_metrics, not sim_metrics` |
+| Too much data to return | `run.return would hold 1.79 GB in this process's memory, more than run.max_return_gb = 1 GB allows: …` |
 | A `select` that isn't one float | `sim_metrics[1].select: 'position' isn't a single-float output of closest_approach. Choices: ['t', 'distance']` |
 | Composite weights of the wrong shape | `composite.sim_weights must have one weight per cell of a model, shape (simulator, sim_metrics entry) = (1, 3): got shape (3,)` |
 | A weight on a descriptive entry | `composite.sim_weights: sim_metrics[2] (closest_approach) gives a dict, not one float, so its weight must be 0` |
@@ -341,7 +347,7 @@ is the same as running with no config at all; it's here to show what can be set.
 take the names [above](#data-names):
 ```json
 {
-  "run": {"return": [], "save": []},
+  "run": {"return": [], "save": [], "max_return_gb": 1.0},
   "simulator": {
     "seed": 0, "n1": 1000, "n2": 1000, "heat1": 0.0, "heat2": 0.0, "heat_mode": "centered",
     "lnl": 0.1, "r_scale": 10.0, "m_halo": 5.8, "m_bulge": 0.3333, "h_bulge": 0.2, "h_disk": 1.0,

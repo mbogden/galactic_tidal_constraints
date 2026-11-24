@@ -111,7 +111,7 @@ def test_only_what_is_asked_for_is_planned(no_simulating):
     orbit_only = simr.plan(MODELS, {"simulator": SMALL, "sim_metrics": [FULL["sim_metrics"][1]]})
     assert orbit_only["simulations"] == 2 and orbit_only["sim_items"] == ["sim.search_orbit"]
     assert orbit_only["images"] == 0 and orbit_only["image_items"] == []
-    assert orbit_only["return"] == {"bytes": 0, "upper_bound": False, "items": {}}
+    assert orbit_only["return"] == {"bytes": 0, "upper_bound": False, "items": {}, "over_cap": False}
     nothing = simr.plan(MODELS, {"simulator": SMALL})
     assert nothing["simulations"] == 0 and nothing["externals"] == {}
 

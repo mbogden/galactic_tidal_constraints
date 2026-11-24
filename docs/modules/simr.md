@@ -40,6 +40,7 @@ request = {
 |---|---|---|
 | `run.return` | `[]` | Names of the data to hand back |
 | `run.save` | `[]` | Names of the data to save. Independent of `return`: a run can do both |
+| `run.max_return_gb` | `1.0` | The most data `run.return` may hold, in GB; `null` for no cap. A run that would return more stops before anything is computed (see Planning a run) |
 | `simulator` | one `SimulatorConfig()` | A dict (keys are `SimulatorConfig` fields) or a `SimulatorConfig`, or a list of them |
 | `image` | one `ImageConfig()` | A dict (keys are `ImageConfig` fields) or an `ImageConfig`, or a list of them. Centers are lists in JSON (`[column, row]`). See [image_creator.md](image_creator.md) |
 | `derived` | none | Named entries, in order: arrays made from other arrays, which metrics name as `drv.<name>`. See [derived.md](derived.md) and [configuration.md](../configuration.md#derived-entries) |
@@ -193,6 +194,26 @@ print(simr.format_plan(plan))
   and count as 0.
 - **`output`** is only checked by name (`run.save` needs a folder). What's already saved there isn't
   read, so a plan counts every simulation, though a run into that folder would reuse some.
+
+### The cap on returned data: `run.max_return_gb`
+Returned data all lands in the memory of the process that called `run` (on Babbage's CPU nodes, about
+1.9 GB per core), so `run` works out the same plan first and **stops, before anything is computed or
+written, if `run.return` would hold more than `run.max_return_gb`**: 1 GB unless the config says
+otherwise, `null` for no cap.
+
+```
+ValueError: run.return would hold 1.79 GB in this process's memory, more than run.max_return_gb = 1 GB
+allows: sim.particles 1.79 GB (40,000 arrays). Save it instead (run.save, with an output folder), return
+less, or raise run.max_return_gb (null for no cap). simr.plan(models, request) shows the sizes without running
+```
+
+- Only `run.return` counts. Saved data goes to disk, and metric values are a few numbers per model.
+- Orbits count at their longest (about 840 KB each), so a run returning many orbits can be stopped
+  though its real orbits would have fit; raise the cap for those.
+- `simr.plan` doesn't raise: it reports `plan["return"]["over_cap"]` and the cap (`plan["max_return_gb"]`),
+  and `format_plan` says "OVER THE CAP". It's the one case where a plan comes back for a run that
+  wouldn't start.
+- On the command line `run.return` is ignored, so the cap never applies there.
 
 ## Spreading the work: `map`
 `simr.run(..., map=...)` takes a `map` function, built-in `map` by default. Each call handles **one
