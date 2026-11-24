@@ -367,18 +367,8 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
     the result's arrays, and "composite" (one per model, or None). JSON has no NaN, so a failed or
     skipped scalar cell is written as null; `load_metrics` gives the arrays back with NaN.
     """
-    models = _check_models(models)
-    parts = _read_request(request)
-    metric_sections, derived_entries = {"sim_metrics": parts[4], "img_metrics": parts[5]}, parts[6]
-    arrays, files, records = _read_externals(
-        externals, _external_uses(metric_sections, derived_entries), image_configs=parts[3]
-    )
-    # Derived entries made only from externals are computed here, once, and from then on travel with the
-    # externals (as "drv.<name>"): checked, hashed, and shared with a pool's workers the same way.
-    hashes = _derive_for_the_run(derived_entries, arrays, files, metric_sections, image_configs=parts[3])
-    _check_external_weights(metric_sections, arrays)
+    models, parts, arrays, files, records, hashes, to_save = _prepare(models, request, externals)
     for_the_run = {key: arrays[key] for key in hashes}  # the arrays themselves, for run.return
-    to_save = _run_arrays_to_save(parts[1], arrays, records, hashes)
     shared_folder = None
     if arrays and map is not builtins.map:  # a pool: its workers share one copy of each external
         named = {EXTERNAL_PREFIX + key: record for key, record in records.items()}
@@ -390,6 +380,189 @@ def run(models: np.ndarray, request: dict, output: str | Path | None = None, map
             shutil.rmtree(shared_folder, ignore_errors=True)
 
 
+def _prepare(models, request: dict, externals: dict | None) -> tuple:
+    """Everything `run` does before it simulates, shared with `plan`: check the models and the request,
+    load, check and hash the externals the entries use, compute the derived entries made only from
+    externals, and check what run.save names. Nothing is written.
+
+    Returns (models, parts, arrays, files, records, hashes, to_save): the checked models; `_read_request`'s
+    parts; the externals and once-per-run derived arrays by the name a request uses; the file each can be
+    mapped from (or None); each external's record by key; each once-per-run derived array's hash; and the
+    once-per-run arrays run.save names (`_run_arrays_to_save`)."""
+    models = _check_models(models)
+    parts = _read_request(request)
+    metric_sections, derived_entries = {"sim_metrics": parts[4], "img_metrics": parts[5]}, parts[6]
+    arrays, files, records = _read_externals(
+        externals, _external_uses(metric_sections, derived_entries), image_configs=parts[3]
+    )
+    # Derived entries made only from externals are computed here, once, and from then on travel with the
+    # externals (as "drv.<name>"): checked, hashed, and shared with a pool's workers the same way.
+    hashes = _derive_for_the_run(derived_entries, arrays, files, metric_sections, image_configs=parts[3])
+    _check_external_weights(metric_sections, arrays)
+    to_save = _run_arrays_to_save(parts[1], arrays, records, hashes)
+    return models, parts, arrays, files, records, hashes, to_save
+
+
+def _save_needs_a_folder(saved: list[str], output) -> None:
+    """run.save writes data, which needs an output folder: no output, or a catalog file, is an error."""
+    if saved and (output is None or output_paths(output)[1] is None):
+        where = "no output was given" if output is None else f"{output} is a catalog file, not a folder"
+        raise ValueError(f"run.save names data to save, which needs an output folder, but {where}")
+
+
+# The most rows an orbit can have: SPAM steps 0.001 in time and looks back to t = -30. A run's own orbit
+# (sim.orbit) is as long as its start is far back, which isn't known until the model runs, so a plan
+# counts every orbit at this length: an upper bound.
+ORBIT_ROWS_AT_MOST = 30_003
+FLOAT32_BYTES = 4
+
+
+def plan(models: np.ndarray, request: dict, externals: dict | None = None,
+         output: str | Path | None = None) -> dict:
+    """What `run` would do with these inputs, without simulating anything or writing anything.
+
+    Every check `run` makes before it simulates is made here too (the models, the request, the
+    externals, the derived entries made from them), so a plan that comes back is a run that would start.
+    The externals an entry uses are loaded and hashed, and the derived entries made only from them are
+    computed, as `run` does first.
+
+    Args:
+        models, request, externals: as for `run`.
+        output: where the run would record itself. Only its name is checked (run.save needs a folder);
+            nothing in it is read or written, so what's already saved there isn't counted.
+
+    Returns:
+        A plain dict (JSON-ready; `format_plan` prints it):
+        "models", "simulators", "image_entries": how many of each.
+        "simulations": simulations that would run, models x simulator entries (0 when nothing needs
+            one); "sim_items": the items each computes. "images" and "image_items": likewise, per
+            simulation and image entry.
+        "derived": {"run", "sim", "img"}: arrays computed once for the run, per simulation, per image.
+        "metric_cells": {"sim_metrics", "img_metrics"}; "composite": whether one is made per model.
+        "externals": each one used, by key: its source, shape, hash and bytes (as float32).
+        "return" and "save": {"bytes", "upper_bound", "items": {name: {"arrays", "bytes",
+            "upper_bound"}}}: how much data run.return would hold in the calling process's memory,
+            and run.save would write (as float32; each .npy adds about 130 bytes). Exact for particles
+            and images. "upper_bound" is True where an orbit is counted, at the longest an orbit can
+            be (`ORBIT_ROWS_AT_MOST` rows, about 840 KB): its real length depends on each model's
+            start. "sim.timing" and the metric values are a few numbers each and count as 0.
+    """
+    models, parts, arrays, _, records, hashes, to_save = _prepare(models, request, externals)
+    returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries, composite_weights = parts
+    if output is not None:
+        _save_needs_a_folder(saved, output)
+    made = {f"drv.{entry['name']}": entry for entry in derived_entries}
+    by_level = {level: [entry for entry in derived_entries if entry["level"] == level] for level in DERIVED_LEVELS}
+    # What a model's task computes, as `_run_model` works it out
+    used = sim_entries + img_entries + by_level["sim"] + by_level["img"]
+    image_items = list(dict.fromkeys(
+        [item for item in returned + saved if _stage(item) == "img"]
+        + [name for entry in img_entries + by_level["img"] for name in entry["inputs"] if name in IMAGE_DATA]
+    ))
+    sim_items = list(dict.fromkeys(
+        [item for item in returned + saved if _stage(item) == "sim"]
+        + [name for entry in used for name in entry["inputs"] if name in SIM_DATA]
+        + [need for item in image_items for need in IMAGE_DATA[item][0]]
+    ))
+    n, s, i = len(models), len(configs), len(image_configs)
+
+    def size(name: str, config, image_config) -> tuple[int, bool]:
+        """One array's bytes as float32, and whether that's an upper bound."""
+        if name in hashes or name.startswith(EXTERNAL_PREFIX):
+            return arrays[name].nbytes, False
+        particles = config.n1 + config.n2 + 1
+        if name in ("sim.particles", "sim.unperturbed"):
+            return particles * 6 * FLOAT32_BYTES, False
+        if name in ("sim.orbit", "sim.search_orbit"):
+            return ORBIT_ROWS_AT_MOST * 7 * FLOAT32_BYTES, True
+        if name in IMAGE_DATA:
+            return image_config.height * image_config.width * FLOAT32_BYTES, False
+        if name not in made:
+            return 0, False  # sim.timing: a small dict
+        entry = made[name]  # a derived array made per simulation or per image: the size of what it's made from
+        if derived.METHODS[entry["method"]].output == "image":
+            shapes = [arrays[source].nbytes for source in entry["inputs"] if source in arrays]
+            return (image_config.height * image_config.width * FLOAT32_BYTES if image_config is not None
+                    else (shapes[0] if shapes else 0)), False
+        first = entry["inputs"][0]  # one value per row of its first input
+        if first in arrays:
+            return len(arrays[first]) * FLOAT32_BYTES, False
+        if SIM_INPUT_KINDS.get(first) == "orbit":
+            return ORBIT_ROWS_AT_MOST * FLOAT32_BYTES, True
+        if SIM_INPUT_KINDS.get(first) == "particles":
+            return particles * FLOAT32_BYTES, False
+        return size(first, config, image_config)
+
+    def total(names: list[str]) -> dict:
+        items = {}
+        for name in names:
+            level = made[name]["level"] if name in made else "run" if name.startswith(EXTERNAL_PREFIX) else _stage(name)
+            if level == "run":  # one array for the whole run
+                cells = [size(name, None, None)]
+            elif level == "sim":
+                cells = [size(name, config, None) for config in configs] * n
+            else:
+                cells = [size(name, config, image_config) for config in configs for image_config in image_configs] * n
+            items[name] = {"arrays": len(cells), "bytes": sum(cell[0] for cell in cells),
+                           "upper_bound": any(cell[1] for cell in cells)}
+        return {"bytes": sum(item["bytes"] for item in items.values()),
+                "upper_bound": any(item["upper_bound"] for item in items.values()), "items": items}
+
+    return {
+        "models": n,
+        "simulators": s,
+        "image_entries": i,
+        "simulations": n * s if sim_items or by_level["sim"] else 0,
+        "sim_items": sim_items,
+        "images": n * s * i if image_items else 0,
+        "image_items": image_items,
+        "derived": {"run": len(by_level["run"]), "sim": n * s * len(by_level["sim"]),
+                    "img": n * s * i * len(by_level["img"])},
+        "metric_cells": {"sim_metrics": n * s * len(sim_entries), "img_metrics": n * s * i * len(img_entries)},
+        "composite": composite_weights is not None,
+        "externals": {key: {**record, "bytes": arrays[EXTERNAL_PREFIX + key].nbytes} for key, record in records.items()},
+        "return": total(returned),
+        "save": total(saved),
+    }
+
+
+def _bytes_text(count: int, upper_bound: bool = False) -> str:
+    """A byte count for people: "1.50 GB", "840.1 KB", with "up to" in front of an upper bound."""
+    for unit, scale in (("GB", 2**30), ("MB", 2**20), ("KB", 2**10)):
+        if count >= scale:
+            text = f"{count / scale:.2f} {unit}"
+            break
+    else:
+        text = f"{count} bytes"
+    return f"up to {text}" if upper_bound else text
+
+
+def format_plan(plan: dict) -> str:
+    """A plan (from `plan`) as text, a few lines to print or log."""
+    lines = [
+        f"{plan['models']} models x {plan['simulators']} simulator entries x {plan['image_entries']} image entries",
+        f"  simulations: {plan['simulations']:,}" + (f" (each computes {', '.join(plan['sim_items'])})"
+                                                      if plan["sim_items"] else ""),
+        f"  images:      {plan['images']:,}" + (f" (each makes {', '.join(plan['image_items'])})"
+                                                 if plan["image_items"] else ""),
+        f"  derived:     {plan['derived']['run']:,} once for the run, {plan['derived']['sim']:,} per simulation, "
+        f"{plan['derived']['img']:,} per image",
+        f"  metrics:     {plan['metric_cells']['sim_metrics']:,} simulation-level cells, "
+        f"{plan['metric_cells']['img_metrics']:,} image-level cells"
+        + (", and one composite per model" if plan["composite"] else ""),
+    ]
+    for key, external in plan["externals"].items():
+        lines.append(f"  external {key}: shape {tuple(external['shape'])}, {_bytes_text(external['bytes'])}, "
+                     f"from {external['source']}")
+    for section, what in (("return", "returned in memory"), ("save", "saved to disk")):
+        part = plan[section]
+        lines.append(f"  {what}: {_bytes_text(part['bytes'], part['upper_bound'])}"
+                     + ("" if part["items"] else " (nothing)"))
+        for name, item in part["items"].items():
+            lines.append(f"    {name}: {item['arrays']:,} arrays, {_bytes_text(item['bytes'], item['upper_bound'])}")
+    return "\n".join(lines)
+
+
 def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_records: dict, for_the_run: dict,
          to_save: dict, output, map) -> SimrResult:
     """`run`, once the models, the request and the externals are checked. `external_arrays` holds each
@@ -398,9 +571,7 @@ def _run(models: np.ndarray, parts: tuple, external_arrays: dict, external_recor
     for the run, by "drv.<name>"; `to_save` the once-per-run arrays run.save names (`_run_arrays_to_save`)."""
     returned, saved, configs, image_configs, sim_entries, img_entries, derived_entries, composite_weights = parts
     catalog_file, root = output_paths(output) if output is not None else (None, None)
-    if saved and root is None:
-        where = "no output was given" if output is None else f"{output} is a catalog file, not a folder"
-        raise ValueError(f"run.save names data to save, which needs an output folder, but {where}")
+    _save_needs_a_folder(saved, output)
     catalog = _open_catalog(catalog_file) if catalog_file is not None else None
     ids = _model_ids(catalog, models) if catalog is not None else [None] * len(models)
     versions = code_versions()

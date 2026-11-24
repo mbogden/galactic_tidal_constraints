@@ -156,6 +156,44 @@ result.data["img.model"][12, 1, 0]    # its image from image entry 0
 result.simulators[1].lnl                # what entry 1 was
 ```
 
+## Planning a run: `simr.plan`
+A config multiplies quickly (models × simulator entries × image entries × metric entries), and
+everything `run.return` names comes back into the memory of the one process that called `run`.
+`simr.plan` says what a run would do before it's started:
+
+```python
+plan = simr.plan(models, request, externals=None, output=None)
+print(simr.format_plan(plan))
+```
+```
+1000 models x 2 simulator entries x 1 image entries
+  simulations: 2,000 (each computes sim.particles, sim.search_orbit)
+  images:      2,000 (each makes img.model)
+  derived:     1 once for the run, 0 per simulation, 0 per image
+  metrics:     4,000 simulation-level cells, 2,000 image-level cells, and one composite per model
+  external tng_orbit: shape (601, 7), 16.43 KB, from /data/targets/tng_123/orbit.npy
+  returned in memory: 216.60 MB
+    sim.particles: 2,000 arrays, 91.60 MB
+    img.model: 2,000 arrays, 125.00 MB
+  saved to disk: up to 1.56 GB
+    sim.search_orbit: 2,000 arrays, up to 1.56 GB
+```
+
+- **It makes every check `run` makes before simulating** (the models, the request, the externals, the
+  derived entries made from them), through the same code, so a plan that comes back is a run that
+  would start. Externals are loaded and hashed, and once-per-run derived arrays computed, as `run` does
+  first. **Nothing is simulated and nothing is written.**
+- **`plan`** is a plain, JSON-ready dict: the counts (`models`, `simulations`, `images`, `derived`,
+  `metric_cells`), what each simulation and image computes (`sim_items`, `image_items`), the
+  `externals` used, and `return` and `save`, each with its total `bytes` and its `items`.
+- **Sizes** are the arrays as `float32`. They're exact for particles and images, which follow from
+  the config. An orbit's length depends on each model's start, which isn't known until it runs, so
+  every orbit is counted at the longest one can be (`simr.ORBIT_ROWS_AT_MOST` rows, about 840 KB) and
+  marked `upper_bound` ("up to" in the text). `sim.timing` and the metric values are a few numbers each
+  and count as 0.
+- **`output`** is only checked by name (`run.save` needs a folder). What's already saved there isn't
+  read, so a plan counts every simulation, though a run into that folder would reuse some.
+
 ## Spreading the work: `map`
 `simr.run(..., map=...)` takes a `map` function, built-in `map` by default. Each call handles **one
 model** with all its simulator entries: it loads what's saved, computes the rest, saves what's asked
@@ -475,6 +513,7 @@ and the composite are written to the run's record in the catalog; read them back
 | Function | Returns |
 |---|---|
 | `simr.read_models(path)` | A models file's models, `(N, 14)` |
+| `simr.plan(models, request, externals=None, output=None)` | What a run would do, without simulating or writing: counts, the externals used, and the bytes `return` would hold and `save` would write (see Planning a run). `simr.format_plan(plan)` gives it as text |
 | `simr.load_catalog(output)` | The catalog (of a folder or a `.json` file) as a dict |
 | `simr.load_metrics(output, run=-1)` | A recorded run's metric values and composite, as the run returned them: `{"sim_metrics", "img_metrics", "composite"}`, arrays indexed like the result's, with NaN for failed scalar cells. `run` picks the run by position (-1: the last) |
 | `simr.load_run(output, run=-1, externals=None)` | A recorded run's inputs, ready to run again: `{"models", "request", "externals"}` (below) |
