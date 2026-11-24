@@ -8,6 +8,7 @@ Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
 
     read_table, read_archive                return the values exactly as stored
     galaxy_properties, half_mass_radius     measure a galaxy from its particles, in the units given
+    archive_to_box                          take an archive's particles out of the old frame
     nearest_image                           undo the simulation box's wrap-around
     physical, spam_units                    stored values -> kpc, km/s, Msun -> SPAM's units
 
@@ -350,3 +351,37 @@ def nearest_image(positions, reference, box: float = BOX) -> np.ndarray:
         raise ValueError(f"box must be above 0, got {box}")
     positions = np.asarray(positions, dtype=np.float64)
     return positions - box * np.round((positions - np.asarray(reference, dtype=np.float64)) / box)
+
+
+def archive_to_box(positions, velocities, pos_matrix, vel_matrix) -> tuple[np.ndarray, np.ndarray]:
+    """Take an archive's particles out of the old frame, back to the simulation box.
+
+    The archives store particles in the earlier pipeline's frame: the box frame turned by a rotation
+    and moved by a shift, x_old = R x_box + t, with one 4x4 matrix for positions and one for
+    velocities. This undoes both, exactly: x_box = R^T (x_old - t).
+
+    Args:
+        positions: (n, 3), an archive's positions as read.
+        velocities: (n, 3), its velocities as read.
+        pos_matrix: (4, 4), the target's `orbital_frame_pos_transform` from the target table.
+        vel_matrix: (4, 4), its `orbital_frame_vel_transform`.
+
+    Returns:
+        (positions, velocities) in the box frame, as float64 and still in stored units (ckpc/h and
+        km/s / sqrt(a)).
+
+    A galaxy that sits across a face of the box comes back in two parts, as TNG stored it: follow
+    with `nearest_image` around the galaxy's center.
+    """
+    results = []
+    for values, matrix, name in ((positions, pos_matrix, "pos_matrix"), (velocities, vel_matrix, "vel_matrix")):
+        values, matrix = np.asarray(values, dtype=np.float64), np.asarray(matrix, dtype=np.float64)
+        if values.ndim != 2 or values.shape[1] != 3:
+            raise ValueError(f"Expected (n, 3) particles, got shape {values.shape}")
+        if matrix.shape != (4, 4) or not np.array_equal(matrix[3], [0, 0, 0, 1]):
+            raise ValueError(f"{name} must be a (4, 4) matrix with last row 0, 0, 0, 1")
+        rotation, shift = matrix[:3, :3], matrix[:3, 3]
+        if np.abs(rotation @ rotation.T - np.eye(3)).max() > 1e-6 or np.linalg.det(rotation) < 0:
+            raise ValueError(f"{name} doesn't hold a rotation")
+        results.append((values - shift) @ rotation)  # row form of R^T (x - t)
+    return results[0], results[1]

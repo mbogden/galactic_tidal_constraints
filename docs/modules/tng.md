@@ -1,10 +1,10 @@
 # TNG targets (`tng.py`)
 
 The IllustrisTNG (TNG50-1) data this project already has: two readers, two functions that measure a
-galaxy from its particles, one that undoes the simulation box's wrap-around, and two that convert
-units. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
+galaxy from its particles, one that takes an archive's particles out of the old frame, one that undoes
+the simulation box's wrap-around, and two that convert units. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
 functions work in whatever units they are given; units change only where `physical` or `spam_units`
-is called. Nothing here changes the frame yet.
+is called. The only change of frame so far is `archive_to_box`, back to the simulation box.
 
 ```python
 from galactic_tidal_constraints import tng
@@ -92,6 +92,28 @@ turns with the frame. So a spin is moved to another frame by the rotation alone,
 **`half_mass_radius(positions, masses, center)`** returns the distance from `center` of the first
 particle, going outward, at which the mass inside reaches half the total.
 
+## Out of the old frame: `archive_to_box`
+The archives store particles in the earlier pipeline's frame: the box frame turned by a rotation and
+moved by a shift, with one 4×4 matrix for positions and one for velocities, both in the target table.
+**`archive_to_box(positions, velocities, pos_matrix, vel_matrix)`** undoes both and returns
+`(positions, velocities)` in the box frame, as `float64` and still in stored units:
+
+```python
+row = int(np.flatnonzero(table["p_SubhaloIDRaw"] == archive["p_id"])[0])
+positions, velocities = tng.archive_to_box(archive["positions"], archive["velocities"],
+                                           table["orbital_frame_pos_transform"][row],
+                                           table["orbital_frame_vel_transform"][row])
+```
+
+- It is exact: the matrices hold a pure rotation and a shift, so x_box = Rᵀ (x_old − shift). A matrix
+  that isn't a rotation and a shift is an error.
+- In the box frame the particles can be compared with the catalog directly: a particle sits on each
+  galaxy's `SubhaloPos` (the most bound one), and the center of mass is `SubhaloCM`.
+- A galaxy that sits across a face of the box comes back in two parts, as TNG stored it. Follow with
+  `nearest_image(positions[galaxy], nucleus)`. Two archives need it: `49000000112167` (47,690 of the
+  primary's particles are across a face; unmended, its center of mass is 73 ckpc/h off and its spin
+  28% off) and `87000000451863` (10 particles).
+
 ## The box edge
 TNG50-1's box is 35,000 ckpc/h on a side (`tng.BOX`) and wraps around, so two points close together
 can have coordinates almost a whole box apart
@@ -112,7 +134,7 @@ apart = secondary - table["p_SubhaloPos"]
 - In the target table, 20 rows in 6 encounters have the pair split by a face; stored, they look
   about 34,800 ckpc/h apart. Two target archives (`49000000112167`, `87000000451863`) have galaxies
   whose own particles are split. An archive's positions can't be mended as read, because they are in
-  the old rotated frame; they have to be taken back to the box frame first.
+  the old rotated frame: use `archive_to_box` first.
 
 ## Units
 Two steps, each one function with the factors in one table.
@@ -165,7 +187,7 @@ comparison, its numbers and what it settles are in
 ## Tests
 `tests/test_tng.py`. The tests on small made-up files and particles always run. The tests on the
 real files, including the check against the catalog, run only when `GTC_DATA_DIR` names the data
-folder (the one holding `tng-data/`); they take about 15 seconds:
+folder (the one holding `tng-data/`); they take about 40 seconds, or 25 with `-m "not slow"`:
 
 ```bash
 GTC_DATA_DIR=../data uv run pytest tests/test_tng.py

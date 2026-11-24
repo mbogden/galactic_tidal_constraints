@@ -300,6 +300,55 @@ def test_a_box_of_zero_is_an_error():
         tng.nearest_image([1.0, 2.0, 3.0], [0.0, 0.0, 0.0], box=0.0)
 
 
+# --- Out of the old frame --------------------------------------------------------------------------------
+
+
+def old_frame(rotation, shift):
+    """A 4x4 matrix as the target table stores them: x_old = rotation @ x_box + shift."""
+    matrix = np.eye(4)
+    matrix[:3, :3], matrix[:3, 3] = rotation, shift
+    return matrix
+
+
+# A rotation that mixes all three axes: 30 degrees about z, then 50 degrees about x.
+_c, _s, _C, _S = np.cos(np.radians(30)), np.sin(np.radians(30)), np.cos(np.radians(50)), np.sin(np.radians(50))
+ROTATION = np.array([[1, 0, 0], [0, _C, -_S], [0, _S, _C]]) @ np.array([[_c, -_s, 0], [_s, _c, 0], [0, 0, 1]])
+
+
+def test_archive_to_box_undoes_the_old_frames_rotation_and_shift():
+    rng = np.random.default_rng(0)
+    positions, velocities = rng.uniform(0, 35000, (50, 3)), rng.normal(0, 200, (50, 3))
+    pos_shift, vel_shift = np.array([-15000.0, 31000.0, -12000.0]), np.array([58.0, -317.0, 51.0])
+    stored = positions @ ROTATION.T + pos_shift, velocities @ ROTATION.T + vel_shift
+    back = tng.archive_to_box(*stored, old_frame(ROTATION, pos_shift), old_frame(ROTATION, vel_shift))
+    assert back[0] == pytest.approx(positions, abs=1e-8) and back[1] == pytest.approx(velocities, abs=1e-10)
+
+
+def test_archive_to_box_returns_float64_and_changes_no_units():
+    positions = np.arange(12, dtype=np.float32).reshape(4, 3)
+    back = tng.archive_to_box(positions, positions * 2, np.eye(4), np.eye(4))
+    assert back[0].dtype == np.float64 and back[1].dtype == np.float64
+    assert np.array_equal(back[0], positions) and np.array_equal(back[1], positions * 2)
+
+
+@pytest.mark.parametrize("matrix, message", [
+    (np.eye(3), "pos_matrix must be a"),
+    (old_frame(ROTATION, [1.0, 2.0, 3.0])[[0, 1, 2, 2]], "pos_matrix must be a"),      # last row isn't 0, 0, 0, 1
+    (old_frame(ROTATION * 2, [0.0, 0.0, 0.0]), "pos_matrix doesn't hold a rotation"),  # it also stretches
+    (old_frame(np.diag([1.0, 1.0, -1.0]), [0.0, 0.0, 0.0]), "pos_matrix doesn't hold a rotation"),  # a mirror
+])
+def test_archive_to_box_refuses_a_matrix_that_is_not_a_rotation_and_shift(matrix, message):
+    with pytest.raises(ValueError, match=message):
+        tng.archive_to_box(np.zeros((4, 3)), np.zeros((4, 3)), matrix, np.eye(4))
+
+
+def test_archive_to_box_names_the_bad_matrix_and_checks_the_particles():
+    with pytest.raises(ValueError, match="vel_matrix must be a"):
+        tng.archive_to_box(np.zeros((4, 3)), np.zeros((4, 3)), np.eye(4), np.eye(3))
+    with pytest.raises(ValueError, match=r"Expected \(n, 3\) particles"):
+        tng.archive_to_box(np.zeros((4, 2)), np.zeros((4, 3)), np.eye(4), np.eye(4))
+
+
 # --- Units -----------------------------------------------------------------------------------------------
 
 
@@ -452,12 +501,17 @@ def measured(request):
     row = int(np.flatnonzero(table["p_SubhaloIDRaw"] == request.param)[0])
     row = {name: column[row] for name, column in table.items()}
     archive = tng.read_archive(DATA / f"target-archive-{request.param}.h5", "all")
+    box_positions, box_velocities = tng.archive_to_box(
+        archive["positions"], archive["velocities"], row["orbital_frame_pos_transform"], row["orbital_frame_vel_transform"])
     galaxies = {}
     for galaxy, side in ((0, "p"), (1, "s")):
         kept = archive["subfind_galaxy"] == galaxy
         positions, masses = archive["positions"][kept], archive["masses"][kept]
         galaxies[side] = tng.galaxy_properties(positions, archive["velocities"][kept], masses)
         a = row["scale_factor"]
+        in_box = tng.nearest_image(box_positions[kept], row[f"{side}_SubhaloPos"])
+        galaxies[side]["box"] = tng.galaxy_properties(in_box, box_velocities[kept], masses)
+        galaxies[side]["box"]["nearest"] = np.linalg.norm(in_box - row[f"{side}_SubhaloPos"], axis=1).min()
         galaxies[side]["physical"] = tng.galaxy_properties(
             tng.physical(positions, "length", a), tng.physical(archive["velocities"][kept], "particle_velocity", a),
             tng.physical(masses, "mass"))
@@ -531,3 +585,51 @@ def test_the_pairs_relative_velocity_in_km_per_s_matches_the_catalog(measured):
     relative = np.linalg.norm(galaxies["p"]["physical"]["velocity"] - galaxies["s"]["physical"]["velocity"])
     catalog = tng.physical(row["p_SubhaloVel"] - row["s_SubhaloVel"], "velocity")
     assert relative == pytest.approx(np.linalg.norm(catalog), rel=2e-6)
+
+
+# --- Real archives back in the box frame (only when GTC_DATA_DIR is set) ---------------------------------
+
+
+@pytest.mark.parametrize("side", ["p", "s"])
+def test_out_of_the_old_frame_particles_match_the_catalog_with_no_matrices(measured, side):
+    """In the box frame the particles sit where the catalog says, compared directly."""
+    row, galaxies = measured
+    galaxy, nucleus = galaxies[side]["box"], row[f"{side}_SubhaloPos"]
+    assert galaxy["nearest"] < 5e-3  # a particle sits on `SubhaloPos`: the most bound one (ckpc/h)
+    assert np.linalg.norm(galaxy["center_of_mass"] - tng.nearest_image(row[f"{side}_SubhaloCM"], nucleus)) < 5e-3
+    assert np.linalg.norm(galaxy["velocity"] * np.sqrt(row["scale_factor"]) - row[f"{side}_SubhaloVel"]) < 2e-4
+    assert angle_between(galaxy["spin"], row[f"{side}_SubhaloSpin"]) < 0.05
+
+
+def split_archive(target):
+    """A target whose primary sits across a face of the box: its row, and the primary's particles in the box frame."""
+    table = tng.read_table(DATA / "moi-4-targets.h5")
+    row = int(np.flatnonzero(table["p_SubhaloIDRaw"] == target)[0])
+    row = {name: column[row] for name, column in table.items()}
+    archive = tng.read_archive(DATA / f"target-archive-{target}.h5", "all")
+    primary = archive["subfind_galaxy"] == 0
+    positions, velocities = tng.archive_to_box(archive["positions"][primary], archive["velocities"][primary],
+                                               row["orbital_frame_pos_transform"], row["orbital_frame_vel_transform"])
+    return row, positions, velocities, archive["masses"][primary]
+
+
+@needs_data
+@pytest.mark.parametrize("target, across, off_before", [
+    (87000000451863, 10, 0.02),                                          # 10 particles across the z face
+    pytest.param(49000000112167, 47690, 70.0, marks=pytest.mark.slow),   # 47,690 across the y face; 28.8 M particles
+])
+def test_a_galaxy_split_by_the_box_edge_is_whole_again_after_nearest_image(target, across, off_before):
+    row, positions, velocities, masses = split_archive(target)
+    nucleus = row["p_SubhaloPos"]
+    center = tng.nearest_image(row["p_SubhaloCM"], nucleus)
+    # As stored, the galaxy spans the whole box along one axis, and its center of mass is off.
+    assert np.ptp(positions, axis=0).max() > 34900
+    assert np.linalg.norm(tng.galaxy_properties(positions, velocities, masses)["center_of_mass"] - center) > off_before
+
+    mended = tng.nearest_image(positions, nucleus)
+    assert int((np.abs(mended - positions).max(axis=1) > 1).sum()) == across
+    assert np.ptp(mended, axis=0).max() < 1500
+    galaxy = tng.galaxy_properties(mended, velocities, masses)
+    assert np.linalg.norm(galaxy["center_of_mass"] - center) < 5e-3
+    assert np.linalg.norm(galaxy["spin"]) * row["scale_factor"] ** 1.5 == pytest.approx(np.linalg.norm(row["p_SubhaloSpin"]), rel=5e-5)
+    assert tng.half_mass_radius(mended, masses, nucleus) == pytest.approx(row["p_SubhaloHalfmassRad"], rel=3e-4)
