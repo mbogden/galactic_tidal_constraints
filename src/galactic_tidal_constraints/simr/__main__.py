@@ -1,13 +1,17 @@
 """The command line for SIMR.
 
     python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--config config.json]
-        [--externals externals.json] [--mode solo|local|mpi] [--workers N] [--log-level INFO]
+        [--externals externals.json] [--mode solo|local|mpi] [--workers N] [--log-level INFO] [--dry-run]
+
+With --dry-run nothing is simulated or written: the inputs are checked as a run checks them, and the plan
+(`simr.plan`: the counts, and the sizes run.save would write) is logged.
 
 With MPI (`uv sync --group mpi`), rank 0 runs the command and every other rank is a worker:
 
     mpirun -n N python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi --models ... --output ...
 
-Exit codes: 0 when the run ran (even if some simulations failed: they're in the catalog and the log), 1 when
+Exit codes: 0 when the run ran (even if some simulations failed: they're in the catalog and the log) or a
+dry run found nothing wrong, 1 when
 it couldn't run or finish (a bad models file, config or output, or a worker that died), 2 when it ran but
 every simulation failed. Under MPI a worker that crashes usually ends the whole job instead; a rerun resumes.
 """
@@ -38,6 +42,10 @@ def main(argv: list[str] | None = None) -> int:
         models = simr.read_models(args.models)
         request = _read_config(args.config)
         externals = _read_externals(args.externals)
+        if args.dry_run:
+            plan = simr.plan(models, request, externals=externals, output=args.output)
+            logger.info("dry run: nothing is simulated or written. The run would be:\n%s", simr.format_plan(plan))
+            return RAN
         if args.mode == "local":
             result = _run_local(models, request, externals, args)
         elif args.mode == "mpi":
@@ -105,6 +113,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int,
                         help="with --mode local: how many processes (default: the CPUs this job may use)")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument("--dry-run", action="store_true",
+                        help="check the inputs and log what the run would do (counts and sizes), without "
+                             "simulating or writing anything")
     return parser
 
 

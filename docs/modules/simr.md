@@ -477,7 +477,7 @@ A run without `save` writes only the catalog: its models and its record, no mode
 ## The command line
 ```bash
 python -m galactic_tidal_constraints.simr --models models.txt --output runs/ [--config config.json] \
-    [--externals externals.json] [--mode solo|local|mpi] [--workers N] [--log-level INFO]
+    [--externals externals.json] [--mode solo|local|mpi] [--workers N] [--log-level INFO] [--dry-run]
 mpirun -n N python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi ...
 ```
 
@@ -490,6 +490,7 @@ mpirun -n N python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode m
 | `--mode` | `solo` (the default): one process. `local`: a pool of processes on this machine. `mpi`: MPI ranks, launched as above: rank 0 runs the command, the other N-1 are workers. Without `mpi4py`, with one rank, or without `-m mpi4py.futures` it stops with exit code 1 |
 | `--workers` | With `--mode local`: how many processes (default: the CPUs this job may use) |
 | `--log-level` | `DEBUG`, `INFO` (the default), `WARNING` or `ERROR` |
+| `--dry-run` | Check the inputs as a run checks them and log the plan (`simr.plan`: counts and sizes; see Planning a run), without simulating or writing anything. Exit code 0 if the run would start, 1 if something would stop it. Worth running before submitting a job |
 
 **The models file:** one model per line; the first 14 comma-separated values on the line are the
 model. Longer lines (SPAM's 22-value strings, JSPAM's `archive/data.txt`) are fine, and one log
@@ -500,7 +501,7 @@ isn't a number, is an error naming the line. `simr.read_models(path)` reads one 
 
 | Code | Meaning |
 |---|---|
-| 0 | The run ran, even if some simulations failed (they're in the catalog and the log) |
+| 0 | The run ran, even if some simulations failed (they're in the catalog and the log). With `--dry-run`: nothing would stop the run |
 | 1 | It couldn't run or finish: a bad models file, config or output, or a worker that died (a short message, no traceback). Under MPI a crashed worker usually ends the job with `mpirun`'s own error code |
 | 2 | It ran, but every simulation failed: almost always a setup mistake |
 

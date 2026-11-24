@@ -55,6 +55,30 @@ def test_the_config_is_optional(tmp_path, files):
     assert record["simulator"][0]["n1"] == 1000  # the full defaults are recorded
 
 
+def test_a_dry_run_logs_the_plan_and_writes_nothing(tmp_path, files, caplog, monkeypatch):
+    def never(*args, **kwargs):
+        raise AssertionError("a dry run must not run")
+
+    monkeypatch.setattr(simr, "run", never)
+    config = {"run": {"save": ["sim.particles"]}, "simulator": [SMALL, {**SMALL, "lnl": 0.01}],
+              "sim_metrics": [{"method": "closest_approach", "inputs": ["sim.orbit"], "select": "distance"}]}
+    with caplog.at_level("INFO"):
+        assert main(files(models=(MODEL, FIRST_APPROACH), config=config) + ["--dry-run"]) == 0
+    assert "dry run: nothing is simulated or written" in caplog.text
+    assert "2 models x 2 simulator entries x 1 image entries" in caplog.text
+    assert "simulations: 4 (each computes sim.particles, sim.orbit)" in caplog.text
+    assert "sim.particles: 4 arrays, 2.91 KB" in caplog.text
+    assert not (tmp_path / "runs").exists()
+
+
+def test_a_dry_run_finds_what_would_stop_the_run(tmp_path, files):
+    assert main(files(config={"simulater": SMALL}) + ["--dry-run"]) == 1  # a bad config
+    saving = {"run": {"save": ["sim.orbit"]}, "simulator": SMALL}
+    assert main(files(config=saving, output="runs.json") + ["--dry-run"]) == 1  # run.save needs a folder
+    assert main(files(config=saving) + ["--dry-run"]) == 0
+    assert not (tmp_path / "runs").exists() and not (tmp_path / "runs.json").exists()
+
+
 def test_save_writes_model_data(tmp_path, files):
     assert main(files(config={"run": {"save": ["sim.orbit"]}, "simulator": SMALL})) == 0
     assert simr.load_simulation(tmp_path / "runs" / "model_000000", "sim_00")["sim.orbit"].shape[1] == 7
