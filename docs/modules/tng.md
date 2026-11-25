@@ -2,7 +2,8 @@
 
 The IllustrisTNG (TNG50-1) data this project already has: two readers, two functions that measure a
 galaxy from its particles, one that takes an archive's particles out of the old frame, one that undoes
-the simulation box's wrap-around, two that convert units, and four that build the frame SPAM uses. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
+the simulation box's wrap-around, two that convert units, four that build the frame SPAM uses, and one that turns a spin into SPAM's
+disk angles. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
 functions work in whatever units they are given; units change only where `physical` or `spam_units`
 is called, and the frame only where `archive_to_box`, `relative_to` or a rotation is applied.
 
@@ -207,6 +208,23 @@ positions, velocities = positions @ R.T, velocities @ R.T                       
   archive, `velocities[archive["particle_type"] == tng.PARTICLE_TYPES["bh"]]`. The tests compare the two.
 - An earlier snapshot's nucleus positions (from the table) can be turned by the same `R` to draw the
   past orbit in this frame. Only the target snapshot has a measured nucleus velocity.
+
+## Disk angles: `disk_angles(spin)`
+Turns a disk's spin direction, in the frame SPAM will run in, into SPAM's two disk angles. Returns
+`(phi, theta)` in degrees, for `phi1`/`theta1` or `phi2`/`theta2`:
+
+```python
+spin = tng.galaxy_properties(positions[disk], velocities[disk], masses[disk])["spin"]   # in SPAM's frame
+phi, theta = tng.disk_angles(spin)
+```
+
+- `theta` is the angle from +z, 0 to 180: 0 is a flat disk turning counter-clockwise, 180 the same
+  disk turning clockwise, 90 edge-on.
+- `phi` is the direction of the spin's x-y part, 0 up to 360. A spin exactly along z has none, and
+  `phi` is 0.
+- Only the direction matters; a spin of zero is an error.
+- The convention is SPAM's own, and a test builds disks with SPAM and measures their spin to confirm
+  it ([tng_physics.md](../tng_physics.md#disk-angles)).
 
 ## Checked against the TNG catalog
 The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same

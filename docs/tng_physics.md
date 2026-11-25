@@ -199,6 +199,25 @@ The secondary is then at (distance, 0, 0) and its velocity has no z part.
   nothing else is done to a spin.
 - A pair moving exactly along the line between the nuclei has no orbit plane.
 
+## Disk angles
+SPAM describes each disk's tilt with two angles, φ and θ. It builds the disk flat in the x-y plane,
+turning counter-clockwise seen from +z, tilts it by θ about the y axis, then turns it by φ about the
+z axis (`setup_module.f90` in the JSPAM fork). The disk's spin axis ends up along
+
+    (sin θ cos φ, sin θ sin φ, cos θ)
+
+So, from a galaxy's spin L measured in the frame SPAM runs in (`tng.disk_angles`):
+
+    θ = arccos(L_z / |L|)        φ = atan2(L_y, L_x)
+
+- θ = 0 is a disk in the orbit's plane turning the same way as the orbit (prograde); θ = 180 is the
+  same disk turning against it (retrograde); θ = 90 is edge-on to the orbit.
+- **Checked through SPAM itself**, sense of rotation included: for several spin directions, SPAM
+  builds a disk from the angles, and the spin measured from its particles points along the direction
+  asked for, to within 0.5° (`test_spam_builds_a_disk_whose_spin_points_where_disk_angles_was_told`).
+- The spin must already be in SPAM's frame, and it gets there by rotation alone
+  ([The frame SPAM needs](#the-frame-spam-needs)).
+
 ## SPAM's side
 SPAM works with G = 1 in its own units ([spam_physics.md](spam_physics.md#units)). `tng.spam_units`
 converts physical values into them:

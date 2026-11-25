@@ -14,6 +14,7 @@ Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
     core_velocity, hubble_rate, relative_to, orbit_rotation
                                             the frame SPAM uses: primary at the origin and at rest,
                                             secondary on +x, the orbit in the x-y plane
+    disk_angles                             a spin direction -> SPAM's two disk angles
 
 The readers and the measuring functions convert nothing; units change only where `physical` or
 `spam_units` is called. What the stored values mean is in each function's docstring.
@@ -495,3 +496,31 @@ def orbit_rotation(relative_position, relative_velocity) -> np.ndarray:
     x_axis = position / np.linalg.norm(position)
     z_axis = momentum / np.linalg.norm(momentum)
     return np.stack([x_axis, np.cross(z_axis, x_axis), z_axis])
+
+
+def disk_angles(spin) -> tuple[float, float]:
+    """Turn a disk's spin direction into SPAM's two disk angles.
+
+    SPAM builds each disk flat in the x-y plane, turning counter-clockwise seen from +z, then tilts
+    it by theta about the y axis and turns it by phi about the z axis. Its spin axis ends up along
+    (sin(theta) cos(phi), sin(theta) sin(phi), cos(theta)). This is the inverse.
+
+    Args:
+        spin: (3,), the disk's spin (angular momentum) in the frame SPAM will run in. Only its
+            direction matters.
+
+    Returns:
+        (phi, theta) in degrees, as SPAM's `phi1`/`theta1` or `phi2`/`theta2`. theta is the angle
+        from +z, 0 to 180; phi is the direction of the spin's x-y part, 0 up to 360. A spin exactly
+        along z has no such direction, and phi is 0.
+    """
+    spin = np.asarray(spin, dtype=np.float64)
+    if spin.shape != (3,):
+        raise ValueError(f"spin has shape {spin.shape}, expected (3,)")
+    size = np.linalg.norm(spin)
+    if not size > 0:
+        raise ValueError("A spin of zero has no direction")
+    theta = np.degrees(np.arccos(np.clip(spin[2] / size, -1.0, 1.0)))
+    in_plane = np.hypot(spin[0], spin[1])
+    phi = np.degrees(np.arctan2(spin[1], spin[0])) % 360.0 if in_plane > 1e-12 * size else 0.0
+    return float(phi), float(theta)

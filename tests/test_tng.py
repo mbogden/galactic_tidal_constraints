@@ -493,6 +493,54 @@ def test_a_head_on_pair_has_no_orbit_plane(position, velocity):
         tng.orbit_rotation(position, velocity)
 
 
+# --- Disk angles -----------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("spin, phi, theta", [
+    ([0, 0, 5.0], 0.0, 0.0),            # along +z: flat, counter-clockwise
+    ([0, 0, -5.0], 0.0, 180.0),         # along -z: flat, clockwise
+    ([2.0, 0, 0], 0.0, 90.0),           # edge-on, spin along +x
+    ([0, 3.0, 0], 90.0, 90.0),
+    ([-1.0, 0, 0], 180.0, 90.0),
+    ([0, -1.0, 0], 270.0, 90.0),        # phi runs 0 up to 360
+    ([1.0, 1.0, np.sqrt(2)], 45.0, 45.0),
+    ([1.0, -1.0, -np.sqrt(2)], 315.0, 135.0),
+])
+def test_disk_angles_of_known_spin_directions(spin, phi, theta):
+    assert tng.disk_angles(spin) == pytest.approx((phi, theta), abs=1e-9)
+
+
+def test_disk_angles_depend_only_on_the_spins_direction():
+    assert tng.disk_angles([3.0, 4.0, 12.0]) == pytest.approx(tng.disk_angles([0.3, 0.4, 1.2]))
+    assert all(type(angle) is float for angle in tng.disk_angles([3.0, 4.0, 12.0]))
+
+
+def test_disk_angles_errors():
+    with pytest.raises(ValueError, match="no direction"):
+        tng.disk_angles([0.0, 0.0, 0.0])
+    with pytest.raises(ValueError, match=r"spin has shape \(2,\)"):
+        tng.disk_angles([1.0, 0.0])
+
+
+@pytest.mark.parametrize("axis_1, axis_2", [
+    ([0.0, 0.0, 1.0], [0.0, 0.0, -1.0]),          # flat, and flat the other way round
+    ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),           # both edge-on
+    ([0.3, -0.5, 0.8], [-0.7, 0.2, -0.4]),        # tilted, one in each half
+    ([-0.6, -0.6, 0.1], [0.2, 0.9, 0.5]),
+])
+def test_spam_builds_a_disk_whose_spin_points_where_disk_angles_was_told(axis_1, axis_2):
+    """Through SPAM itself: angles from a spin axis give a disk that spins about that axis."""
+    sim = pytest.importorskip("galactic_tidal_constraints.simr.simulation")
+    model = np.zeros(14)
+    model[[sim.PARAM_INDEX[name] for name in ("x", "vy", "mass1", "mass2", "rout1", "rout2")]] = [8.0, 0.5, 1.0, 1.0, 1.0, 1.0]
+    for number, axis in ((1, axis_1), (2, axis_2)):
+        model[sim.PARAM_INDEX[f"phi{number}"]], model[sim.PARAM_INDEX[f"theta{number}"]] = tng.disk_angles(axis)
+    particles = sim.unperturbed_particles(model, sim.SimulatorConfig(n1=500, n2=500))
+    for disk, axis in ((particles[:500], axis_1), (particles[500:1000], axis_2)):
+        spin = tng.galaxy_properties(disk[:, :3], disk[:, 3:], np.ones(500))["spin"]
+        assert angle_between(spin, np.array(axis)) < 0.5  # degrees
+
+
 # --- The real files (only when GTC_DATA_DIR is set) ------------------------------------------------------
 
 DATA = Path(os.environ["GTC_DATA_DIR"]) / "tng-data" if os.environ.get("GTC_DATA_DIR") else None
