@@ -17,6 +17,7 @@ Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
     disk_angles                             a spin direction -> SPAM's two disk angles
     primary_side                            which of the pair is the primary: "p" or "s"
     TngTargetConfig, measure_target         everything measured for one target at its snapshot
+    spam_model                              a measured target -> SPAM's 14 parameters
 
 The readers and the measuring functions convert nothing; units change only where `physical` or
 `spam_units` is called. What the stored values mean is in each function's docstring.
@@ -65,6 +66,10 @@ SPAM_LENGTH = 15.0                                  # kpc
 SPAM_MASS = 1.0e11                                  # Msun
 SPAM_VELOCITY = (G * SPAM_MASS / SPAM_LENGTH) ** 0.5  # km/s, about 169.3
 SPAM_TIME = SPAM_LENGTH / SPAM_VELOCITY * 0.9777922  # Gyr, about 0.0866 (1 kpc / (km/s) = 0.9777922 Gyr)
+
+# SPAM's 14 parameters, in SPAM's order (the same as `simr.simulation.PARAM_NAMES`).
+SPAM_PARAMETERS = ("x", "y", "z", "vx", "vy", "vz", "mass1", "mass2", "rout1", "rout2",
+                   "phi1", "phi2", "theta1", "theta2")
 
 # What a stored TNG value is multiplied by to become physical: (constant, power of the scale factor).
 _TO_PHYSICAL = {
@@ -736,3 +741,32 @@ def measure_target(table: dict, row: int, archive: dict, config: TngTargetConfig
             "separation": float(np.linalg.norm(position)), "position": position @ rotation.T,
             "velocity": velocities_by_measure["stars"], "velocities": velocities_by_measure,
             "rotation": rotation, "primary": galaxies["primary"], "secondary": galaxies["secondary"]}
+
+
+def spam_model(target: dict) -> np.ndarray:
+    """Turn a measured target into SPAM's 14 parameters: the model SPAM runs.
+
+    Args:
+        target: one target, as `measure_target` returns it.
+
+    Returns:
+        (14,), in the order of `SPAM_PARAMETERS` and in SPAM's units:
+
+        x, y, z              the secondary's nucleus          `position` / 15 kpc: (separation, 0, 0)
+        vx, vy, vz           its velocity                     `velocity` / about 169.3 km/s: no z part
+        mass1, mass2         the primary's and secondary's    each galaxy's `mass` / 1e11 Msun
+        rout1, rout2         their disk radii                 each `disk_radius` / 15 kpc
+        phi1, phi2           their disk angles, in degrees    each `phi`
+        theta1, theta2                                        each `theta`
+
+    Nothing is measured or chosen here: every choice was made by the `TngTargetConfig` the target was
+    measured with.
+    """
+    primary, secondary = target["primary"], target["secondary"]
+    return np.concatenate([
+        spam_units(target["position"], "length"),
+        spam_units(target["velocity"], "velocity"),
+        spam_units([primary["mass"], secondary["mass"]], "mass"),
+        spam_units([primary["disk_radius"], secondary["disk_radius"]], "length"),
+        [primary["phi"], secondary["phi"], primary["theta"], secondary["theta"]],
+    ])

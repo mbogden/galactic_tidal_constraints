@@ -787,6 +787,40 @@ def test_a_target_configs_defaults():
     assert (config.mass, config.disk_radius_factor, config.spin_radius_factor) == ("historical", 5.0, 5.0)
 
 
+# --- SPAM's 14 parameters --------------------------------------------------------------------------------
+
+
+def test_spam_model_gives_the_14_parameters_in_spams_units():
+    table, archive = made_up_target()
+    model = tng.spam_model(tng.measure_target(table, 0, archive))
+    assert model.shape == (14,) and model.dtype == np.float64
+    named = dict(zip(tng.SPAM_PARAMETERS, model))
+    velocity_unit = np.sqrt(4.30091e-6 * 1e11 / 15)                              # km/s, about 169.33
+    assert (named["x"], named["y"], named["z"]) == pytest.approx((100 / 15, 0, 0), abs=1e-12)
+    assert (named["vx"], named["vy"], named["vz"]) == pytest.approx((EXPANSION / velocity_unit, 150 / velocity_unit, 0), abs=1e-12)
+    everything = {side: 24 * STAR[side] + HOLE + NEAR_HALO[side] + FAR_HALO[side] for side in "ps"}
+    assert (named["mass1"], named["mass2"]) == pytest.approx((everything["p"] / 1e11, everything["s"] / 1e11))
+    assert (named["rout1"], named["rout2"]) == pytest.approx((10 / 15, 10 / 15))       # 5 x 2 kpc
+    angles = (np.degrees(np.arctan2(0.8, 0.6)), np.degrees(np.arctan2(400, 250)))
+    assert (named["phi1"], named["phi2"]) == pytest.approx((angles[0], angles[0]))
+    assert (named["theta1"], named["theta2"]) == pytest.approx((angles[1], angles[1]))
+
+
+def test_spam_model_follows_the_targets_config():
+    table, archive = made_up_target(star={"p": 1.0e8, "s": 2.0e8})                 # the table's secondary has more stars
+    config = tng.TngTargetConfig(mass="catalog", disk_radius_factor=3.0)
+    named = dict(zip(tng.SPAM_PARAMETERS, tng.spam_model(tng.measure_target(table, 0, archive, config))))
+    # The "stars" rule makes the table's secondary SPAM's primary, so its values come first.
+    assert (named["mass1"], named["mass2"]) == pytest.approx((CATALOG_MASS["s"] / tng.H / 10, CATALOG_MASS["p"] / tng.H / 10))
+    assert named["rout1"] == pytest.approx(3 * 2.0 / 15)
+    assert named["phi1"] == pytest.approx(180 + np.degrees(np.arctan2(0.8, 0.6)))
+
+
+def test_spam_parameters_are_in_the_simulators_order():
+    sim = pytest.importorskip("galactic_tidal_constraints.simr.simulation")
+    assert tng.SPAM_PARAMETERS == sim.PARAM_NAMES
+
+
 # --- The real files (only when GTC_DATA_DIR is set) ------------------------------------------------------
 
 DATA = Path(os.environ["GTC_DATA_DIR"]) / "tng-legacy-data" if os.environ.get("GTC_DATA_DIR") else None
@@ -1137,3 +1171,15 @@ def test_a_real_disks_spin_depends_on_which_stars_are_used(measured):
     for role, seen in zip(("primary", "secondary"), turned):
         assert inner[role]["spin_stars"] < everything[role]["spin_stars"]
         assert angle_between(inner[role]["spin"], everything[role]["spin"]) == pytest.approx(seen, abs=0.2)
+
+
+def test_spam_runs_a_real_targets_model_and_ends_where_the_target_is(measured):
+    """SPAM integrates back from the model and forward again: its secondary ends on the measured values."""
+    sim = pytest.importorskip("galactic_tidal_constraints.simr.simulation")
+    target = measured[1]["target"]["default"]
+    model = tng.spam_model(target)
+    assert model[[1, 2, 5]] == pytest.approx(0, abs=1e-9)                          # y, z, vz: the frame's own zeros
+    assert model[0] == pytest.approx(target["separation"] / 15)
+    particles = sim.simulate_particles(model, sim.SimulatorConfig(n1=50, n2=50))
+    assert np.isfinite(particles).all()
+    assert particles[-1] == pytest.approx(model[:6], abs=6e-3)                     # the secondary at time 0 (seen: 0.0035 off at most)

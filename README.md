@@ -109,7 +109,7 @@ and `tng_tour.ipynb` for reading the TNG target table and target archives (it ne
 src/galactic_tidal_constraints/
 ├── simr/            simulation.py (Simulator stage), simr.py (workflow), image_creator.py (Image Creator),
                      metrics.py (Metrics stage), derived.py (derived arrays), __main__.py (command line)
-└── tng.py           TNG targets: readers, galaxy measurements, units, measuring a target
+└── tng.py           TNG targets: readers, galaxy measurements, units, measuring a target, SPAM's 14 parameters
 docs/                the docs above: overview and references at the top
 ├── modules/         one per code module
 └── guides/          how-to guides

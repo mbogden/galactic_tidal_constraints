@@ -3,8 +3,8 @@
 The IllustrisTNG (TNG50-1) data this project already has: two readers, two functions that measure a
 galaxy from its particles, one that takes an archive's particles out of the old frame, one that undoes
 the simulation box's wrap-around, two that convert units, four that build the frame SPAM uses, one that turns a spin into SPAM's
-disk angles, one that says which galaxy is the primary, and `measure_target`, which puts them together
-for one target. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
+disk angles, one that says which galaxy is the primary, `measure_target`, which puts them together
+for one target, and `spam_model`, which turns the result into SPAM's 14 parameters. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
 functions work in whatever units they are given; units change only where `physical` or `spam_units`
 is called, and the frame only where `archive_to_box`, `relative_to` or a rotation is applied.
 
@@ -310,6 +310,30 @@ Each galaxy's dict:
   nucleus's velocity uses all stars within `core_radius`, whatever their label.
 - The spin depends on which stars are used:
   [tng_physics.md](../tng_physics.md#which-stars-give-a-disks-spin).
+
+## SPAM's 14 parameters: `spam_model(target)`
+Turns a measured target into the model SPAM runs: an array of shape `(14,)`, in the order of
+`tng.SPAM_PARAMETERS` (the simulator's `PARAM_NAMES`) and in SPAM's units.
+
+```python
+target = tng.measure_target(table, row, archive)
+model = tng.spam_model(target)
+particles = simulation.simulate_particles(model)        # galactic_tidal_constraints.simr.simulation
+```
+
+| Parameters | From the measured target | Unit |
+|---|---|---|
+| `x`, `y`, `z` | `position`: (separation, 0, 0) | 15 kpc |
+| `vx`, `vy`, `vz` | `velocity`: no z part | About 169.3 km/s |
+| `mass1`, `mass2` | The primary's and the secondary's `mass` | 10¹¹ M☉ |
+| `rout1`, `rout2` | Each `disk_radius` | 15 kpc |
+| `phi1`, `phi2`, `theta1`, `theta2` | Each `phi` and `theta` | Degrees |
+
+- It measures and chooses nothing: every choice was made by the `TngTargetConfig` the target was
+  measured with.
+- `y`, `z` and `vz` are zero because the frame was built that way.
+- A test runs SPAM on three real targets' models: its secondary ends on the model's position and
+  velocity at time 0, to within SPAM's own integration error (0.004 at most, in SPAM's units).
 
 ## Checked against the TNG catalog
 The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same
