@@ -275,7 +275,7 @@ config is made.
 | `hubble_flow` | `True` | Add the universe's expansion to the pair's relative velocity |
 | `mass` | `"historical"` | Which of a galaxy's three masses is the one for SPAM (below) |
 | `disk_radius_factor` | `5.0` | A disk's radius is this many stellar half-mass radii |
-| `spin_radius_factor` | `None` | Which stars give a disk's spin. `None`: all the galaxy's stars. A number: those within that many stellar half-mass radii of its nucleus |
+| `spin_radius_factor` | `5.0` | Which stars give a disk's spin: the galaxy's stars within this many stellar half-mass radii of its nucleus. `None`: all its stars |
 
 **What comes back.** Physical units throughout: kpc, km/s, M☉, and kpc km/s for spins. Every vector
 is in the frame SPAM uses.
@@ -296,7 +296,7 @@ Each galaxy's dict:
 | Key | Value |
 |---|---|
 | `side`, `subhalo_id` | Its letter in the table and its `SubhaloIDRaw` |
-| `masses` | `"historical"`: every particle, of all types, that belonged to it before the encounter. `"catalog"`: the catalog's `SubhaloMass`. `"within_radius"`: every particle within its disk radius of its nucleus, whichever galaxy it is labelled as |
+| `masses` | `"historical"`: every particle, of all types, that belonged to it before the encounter. `"catalog"`: the catalog's `SubhaloMass`. `"within_radius"`: those of the same particles within its disk radius of its nucleus |
 | `mass` | The one for SPAM: `masses[config.mass]` |
 | `stellar_mass` | The stars that belonged to it before the encounter |
 | `half_mass_radius` | The radius around its nucleus that holds half of that stellar mass |
@@ -308,8 +308,6 @@ Each galaxy's dict:
 - A nucleus is the catalog's `SubhaloPos`. Everything else is measured from the archive's particles.
 - A galaxy's own particles are those it owned before the encounter (`historical_galaxy`). A
   nucleus's velocity uses all stars within `core_radius`, whatever their label.
-- When the two galaxies are closer than a disk radius, the `"within_radius"` masses overlap: a
-  particle near both nuclei counts for both.
 - The spin depends on which stars are used:
   [tng_physics.md](../tng_physics.md#which-stars-give-a-disks-spin).
 

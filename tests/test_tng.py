@@ -705,7 +705,7 @@ def test_measure_target_gives_each_disks_spin_and_angles():
     for galaxy in (tng.measure_target(table, 0, archive)[role] for role in ("primary", "secondary")):
         # Per unit mass: rings of radius 0.5 and 2 about +z, 4 about (0.6, 0.8, 0), at 100 km/s, a third of the stars each.
         assert galaxy["spin"] == pytest.approx([80, 320 / 3, 250 / 3], abs=1e-9)
-        assert galaxy["spin_stars"] == 24
+        assert galaxy["spin_stars"] == 24                      # within 5 x 2 kpc: every ring
         angles = (np.degrees(np.arctan2(0.8, 0.6)), np.degrees(np.arctan2(400, 250)))     # 53.13, 57.99
         assert (galaxy["phi"], galaxy["theta"]) == pytest.approx(angles, abs=1e-9)
 
@@ -784,7 +784,7 @@ def test_a_target_config_refuses_values_it_does_not_know(setting, message):
 def test_a_target_configs_defaults():
     config = tng.TngTargetConfig()
     assert (config.primary_rule, config.core_radius, config.hubble_flow) == ("stars", 1.0, True)
-    assert (config.mass, config.disk_radius_factor, config.spin_radius_factor) == ("historical", 5.0, None)
+    assert (config.mass, config.disk_radius_factor, config.spin_radius_factor) == ("historical", 5.0, 5.0)
 
 
 # --- The real files (only when GTC_DATA_DIR is set) ------------------------------------------------------
@@ -869,7 +869,8 @@ def measured(request):
     archive = tng.read_archive(DATA / f"target-archive-{request.param}.h5", "all")
     target = {"default": tng.measure_target(table, row, archive),
               "by_table": tng.measure_target(table, row, archive, tng.TngTargetConfig(primary_rule="table")),
-              "inner_spin": tng.measure_target(table, row, archive, tng.TngTargetConfig(spin_radius_factor=2.0))}
+              "inner_spin": tng.measure_target(table, row, archive, tng.TngTargetConfig(spin_radius_factor=2.0)),
+              "all_spin": tng.measure_target(table, row, archive, tng.TngTargetConfig(spin_radius_factor=None))}
     row = {name: column[row] for name, column in table.items()}
     box_positions, box_velocities = tng.archive_to_box(
         archive["positions"], archive["velocities"], row["orbital_frame_pos_transform"], row["orbital_frame_vel_transform"])
@@ -1125,13 +1126,13 @@ def test_a_real_galaxys_three_masses(measured, side):
     assert galaxy["masses"]["historical"] == pytest.approx(tng.physical(row[f"{side}a_SubhaloMass"], "mass"), rel=1e-5)
     assert galaxy["stellar_mass"] == pytest.approx(tng.physical(row[f"{side}s_SubhaloMass"], "mass"), rel=1e-5)
     assert galaxy["mass"] == galaxy["masses"]["historical"]
-    assert galaxy["stellar_mass"] < galaxy["masses"]["within_radius"]
+    assert galaxy["masses"]["within_radius"] < galaxy["masses"]["historical"]     # the same particles, fewer
     assert galaxy["disk_radius"] == pytest.approx(5 * galaxy["half_mass_radius"])
 
 
 def test_a_real_disks_spin_depends_on_which_stars_are_used(measured):
     row, galaxies = measured
-    everything, inner = galaxies["target"]["default"], galaxies["target"]["inner_spin"]
+    everything, inner = galaxies["target"]["all_spin"], galaxies["target"]["inner_spin"]
     turned = SEEN[int(row["p_SubhaloIDRaw"])][3]
     for role, seen in zip(("primary", "secondary"), turned):
         assert inner[role]["spin_stars"] < everything[role]["spin_stars"]

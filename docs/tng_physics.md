@@ -221,9 +221,9 @@ So, from a galaxy's spin L measured in the frame SPAM runs in (`tng.disk_angles`
 ### Which stars give a disk's spin
 A galaxy in an encounter has stars far from its disk: tidal tails, a stellar halo, satellites it
 swallowed. They are few, but each one's share of the spin grows with its distance, so they can turn
-the total. `tng.measure_target` therefore takes the choice as a setting (`spin_radius_factor`): all of
-the stars the galaxy owned before the encounter, or only those within a number of stellar half-mass
-radii of its nucleus.
+the total. `tng.measure_target` therefore takes the choice as a setting (`spin_radius_factor`): the
+stars the galaxy owned before the encounter that are within a number of stellar half-mass radii of
+its nucleus (5 by default, the disk radius), or all of them.
 
 How far the spin's direction moves, in degrees, from the all-stars spin to the spin of the stars
 within 2 and within 10 half-mass radii (`test_a_real_disks_spin_depends_on_which_stars_are_used`):
@@ -240,8 +240,12 @@ within 2 and within 10 half-mass radii (`test_a_real_disks_spin_depends_on_which
 - The choice moves a disk's angles by 7° to 45° on these three targets. It is not a detail.
 - For the primary of `75000000317209`, the 16% of its stars beyond 10 half-mass radii (56 kpc) turn
   the spin by 41°. The inner disk points one way and the all-stars spin another.
-- Neither choice is "the" answer. SPAM's disk is a thin, flat disk out to its radius, so the inner
-  stars describe what SPAM will build; the all-stars spin describes the whole galaxy's history.
+- Neither choice is "the" answer. SPAM's disk is a thin, flat disk out to its radius, so the default
+  takes the spin from the stars inside that radius: the ones SPAM's disk stands for.
+- **No radius recovers the spin of earlier snapshots.** Over all 61 targets, the spin of today's stars
+  is a median 20° from the galaxy's all-stars spin 0.6 Gyr earlier and 28° from it 1.6 Gyr earlier,
+  whichever radius is used (the earlier pipeline's `ps_` and `ss_` spins; radii from 0.5 to 10
+  half-mass radii differ by 2° to 6°, and all stars is the furthest off by a few degrees).
 
 ## Which galaxy is the primary
 SPAM's primary is the galaxy at the origin; by convention it is the more massive one. In the target

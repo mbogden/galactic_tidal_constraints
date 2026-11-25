@@ -585,13 +585,13 @@ class TngTargetConfig:
             "historical"      every particle (all types) that belonged to the galaxy before the
                               encounter. The default.
             "catalog"         the TNG catalog's `SubhaloMass`: every particle SUBFIND gives it now.
-            "within_radius"   every particle within the galaxy's disk radius of its nucleus,
-                              whichever galaxy it is labelled as.
+            "within_radius"   those of the same particles that are within the galaxy's disk
+                              radius of its nucleus.
 
         disk_radius_factor: a galaxy's disk radius is this many stellar half-mass radii. 5 by default.
-        spin_radius_factor: which stars give a disk's spin. None (the default): all the stars that
-            belonged to the galaxy before the encounter. A number: only those within that many
-            stellar half-mass radii of its nucleus.
+        spin_radius_factor: which stars give a disk's spin: those the galaxy owned before the
+            encounter that are within this many stellar half-mass radii of its nucleus. 5 by default,
+            the disk radius. None: all the stars it owned, however far out.
     """
 
     primary_rule: str = "stars"
@@ -599,7 +599,7 @@ class TngTargetConfig:
     hubble_flow: bool = True
     mass: str = "historical"
     disk_radius_factor: float = 5.0
-    spin_radius_factor: float | None = None
+    spin_radius_factor: float | None = 5.0
 
     def __post_init__(self):
         if self.primary_rule not in PRIMARY_RULES:
@@ -709,7 +709,7 @@ def measure_target(table: dict, row: int, archive: dict, config: TngTargetConfig
 
         galaxy_masses = {"historical": float(masses[own].sum()),
                          "catalog": float(physical(table[f"{side}_SubhaloMass"][row], "mass")),
-                         "within_radius": float(masses[distance < disk_radius].sum())}
+                         "within_radius": float(masses[own & (distance < disk_radius)].sum())}
         nuclei[role] = nucleus
         galaxies[role] = {"side": side, "subhalo_id": ids[side], "mass": galaxy_masses[config.mass],
                           "masses": galaxy_masses, "stellar_mass": float(masses[own_stars].sum()),
