@@ -844,6 +844,44 @@ def test_encounter_rows_errors():
         tng.encounter_rows(table, 3)
 
 
+# --- The separation along a track ------------------------------------------------------------------------
+
+
+def made_up_track():
+    """Three rows of one pair, stored as TNG stores it. In the last row the pair sits across the x face of the box."""
+    return {"scale_factor": np.array([0.5, 0.8, 1.0]),
+            "p_SubhaloPos": np.array([[100.0, 200.0, 300.0], [100.0, 200.0, 300.0], [34990.0, 200.0, 300.0]]),
+            "s_SubhaloPos": np.array([[100.0 + 2 * tng.H, 200.0, 300.0],                 # 2 ckpc x 0.5 = 1 kpc along +x
+                                      [100.0, 200.0 - 10 * tng.H, 300.0 + 5 * tng.H],    # (0, -8, 4) kpc
+                                      [20.0, 200.0, 300.0]])}                            # 30 ckpc/h through the face
+
+
+def test_track_separation_is_secondary_minus_primary_in_physical_kpc():
+    separation = tng.track_separation(made_up_track(), np.array([0, 1, 2]), "p")
+    assert separation.shape == (3, 3) and separation.dtype == np.float64
+    assert separation[0] == pytest.approx([1.0, 0, 0])                   # each row scaled by its own scale factor
+    assert separation[1] == pytest.approx([0, -8.0, 4.0])
+    assert separation[2] == pytest.approx([30 / tng.H, 0, 0])            # across the box edge: 44 kpc, not a box
+
+
+def test_track_separation_with_the_other_galaxy_as_primary_points_the_other_way():
+    table = made_up_track()
+    assert tng.track_separation(table, np.array([0, 1, 2]), "s") == pytest.approx(-tng.track_separation(table, np.array([0, 1, 2]), "p"))
+
+
+def test_track_separation_follows_the_rows_given():
+    table = made_up_track()
+    assert tng.track_separation(table, np.array([1]), "p")[0] == pytest.approx([0, -8.0, 4.0])
+    assert tng.track_separation(table, np.array([2, 0]), "p")[1] == pytest.approx([1.0, 0, 0])
+
+
+def test_track_separation_errors():
+    with pytest.raises(ValueError, match="primary_side must be 'p' or 's', got 'primary'"):
+        tng.track_separation(made_up_track(), np.array([0]), "primary")
+    with pytest.raises(ValueError, match="1-D array of row numbers"):
+        tng.track_separation(made_up_track(), np.array([0.0, 1.0]), "p")
+
+
 # --- The real files (only when GTC_DATA_DIR is set) ------------------------------------------------------
 
 DATA = Path(os.environ["GTC_DATA_DIR"]) / "tng-legacy-data" if os.environ.get("GTC_DATA_DIR") else None
@@ -1252,3 +1290,40 @@ def test_p_and_s_are_the_same_two_galaxies_along_every_real_track():
             for side in "ps":
                 assert table[f"{side}_DescendantID"][here] == table[f"{side}_SubhaloID"][after]
     assert links == 1196
+
+
+@needs_data
+@pytest.mark.parametrize("target, first, now, closest", [
+    (62000000190717, 319.8, 35.43, 8.83),      # kpc: at the track's first row, at the target, and the smallest
+    (75000000121160, 381.0, 19.31, 8.33),
+    (75000000317209, 438.7, 110.78, 11.01),
+])
+def test_the_separation_along_real_tracks(target, first, now, closest):
+    table = tng.read_table(DATA / "moi-4-targets.h5")
+    row = int(np.flatnonzero(table["p_SubhaloIDRaw"] == target)[0])
+    rows = tng.encounter_rows(table, row)
+    distance = np.linalg.norm(tng.track_separation(table, rows, "p"), axis=1)
+    assert distance[0] == pytest.approx(first, abs=0.1)
+    assert distance[rows == row][0] == pytest.approx(now, abs=0.01)       # the same as measure_target's "separation"
+    assert distance.min() == pytest.approx(closest, abs=0.01)
+
+
+@needs_data
+def test_no_real_track_jumps():
+    """Along every track with a target the pair starts far apart and never moves impossibly fast."""
+    table = tng.read_table(DATA / "moi-4-targets.h5")
+    encounters = {int(table["moi_2"][np.flatnonzero(table["p_SubhaloIDRaw"] == int(path.stem.split("-")[-1]))[0]])
+                  for path in DATA.glob("target-archive-*.h5")}
+    fastest, across = 0.0, set()
+    for encounter in encounters:
+        rows = tng.encounter_rows(table, int(np.flatnonzero(table["moi_2"] == encounter)[0]))
+        separation = tng.track_separation(table, rows, "p")
+        distance = np.linalg.norm(separation, axis=1)
+        assert 250 < distance[0] < 620 and distance.max() < 620             # kpc: far apart at the start, never a box apart
+        speed = np.linalg.norm(np.diff(separation, axis=0), axis=1) / np.diff(table["time_gyr"][rows]) * 0.9778   # km/s
+        fastest = max(fastest, float(speed.max()))
+        stored = np.linalg.norm(table["s_SubhaloPos"][rows].astype(np.float64) - table["p_SubhaloPos"][rows], axis=1)
+        if stored.max() > 30000:
+            across.add(encounter)
+    assert 600 < fastest < 700                                              # seen: 676 km/s, during a close pass
+    assert across == {55000000131486, 67000000260243, 99000000493433}       # stored a whole box apart in some rows

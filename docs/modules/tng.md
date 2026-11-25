@@ -5,7 +5,7 @@ galaxy from its particles, one that takes an archive's particles out of the old 
 the simulation box's wrap-around, two that convert units, four that build the frame SPAM uses, one that turns a spin into SPAM's
 disk angles, one that says which galaxy is the primary, `measure_target`, which puts them together
 for one target, `spam_model`, which turns the result into SPAM's 14 parameters, and
-`encounter_rows`, which finds a target's track in the table. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
+`encounter_rows` and `track_separation`, which follow a target's track in the table. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
 functions work in whatever units they are given; units change only where `physical` or `spam_units`
 is called, and the frame only where `archive_to_box`, `relative_to` or a rotation is applied.
 
@@ -355,6 +355,24 @@ ago = table["time_gyr"][row] - table["time_gyr"][rows]
 - **Several targets can share one track.** The 61 targets sit on 29 encounters: the same pair taken
   as a target at different snapshots. `62000000190717` shares its track with `61000000186579`,
   `63000000192216` and `64000000153811`.
+
+### The separation along it: `track_separation(table, rows, primary_side)`
+The secondary's nucleus relative to the primary's at each row of a track: `(n, 3)`, in physical kpc,
+along the box's axes.
+
+```python
+rows = tng.encounter_rows(table, row)
+separation = tng.track_separation(table, rows, target["primary_side"])     # (n, 3) kpc
+distance = np.linalg.norm(separation, axis=1)                              # (n,) kpc
+```
+
+- Each nucleus is the catalog's `SubhaloPos`. The pair is made whole across the box edge, then each
+  row is scaled by its own snapshot's scale factor: physical distances at that time, not comoving.
+- **`primary_side` is one choice for the whole track**, made at the target snapshot
+  (`measure_target`'s `"primary_side"`). Targets that share a track can make it differently.
+- At the target's row its length is `measure_target`'s `"separation"`.
+- On the 29 tracks that hold targets the pairs start 265 to 604 kpc apart, and the separation never
+  changes faster than 676 km/s between snapshots: no track has a jump (`test_no_real_track_jumps`).
 
 ## Checked against the TNG catalog
 The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same

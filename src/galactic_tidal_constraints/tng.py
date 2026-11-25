@@ -19,6 +19,7 @@ Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
     TngTargetConfig, measure_target         everything measured for one target at its snapshot
     spam_model                              a measured target -> SPAM's 14 parameters
     encounter_rows                          the table rows of one encounter, in order of snapshot
+    track_separation                        the secondary's nucleus relative to the primary's, row by row
 
 The readers and the measuring functions convert nothing; units change only where `physical` or
 `spam_units` is called. What the stored values mean is in each function's docstring.
@@ -801,3 +802,33 @@ def encounter_rows(table: dict, row: int) -> np.ndarray:
         twice = int(snaps[1:][np.diff(snaps) == 0][0])
         raise ValueError(f"Encounter {int(encounter[row])} has two rows for snapshot {twice}")
     return rows.astype(np.int64)
+
+
+def track_separation(table: dict, rows, primary_side: str) -> np.ndarray:
+    """The secondary's nucleus relative to the primary's at each row of a track, in kpc.
+
+    Args:
+        table: the target table, as `read_table` returns it.
+        rows: (n,), the rows of one encounter, as `encounter_rows` returns them.
+        primary_side: "p" or "s", the table's letter for the galaxy used as the primary. It is the
+            same for every row: the choice made at the target snapshot (`measure_target`'s
+            "primary_side"), not remade along the track.
+
+    Returns:
+        (n, 3) float64: secondary minus primary, in physical kpc, along the box's axes. Its length
+        is the distance between the two nuclei at that snapshot.
+
+    Each nucleus is the catalog's `SubhaloPos` (the most bound particle). The pair is made whole
+    across the box edge first, and each row is scaled by its own snapshot's scale factor, so the
+    distances are physical at that time, not comoving.
+    """
+    if primary_side not in GALAXY_LABELS:
+        raise ValueError(f"primary_side must be 'p' or 's', got {primary_side!r}")
+    rows = np.asarray(rows)
+    if rows.ndim != 1 or rows.dtype.kind not in "iu":
+        raise ValueError("rows must be a 1-D array of row numbers")
+    secondary_side = "s" if primary_side == "p" else "p"
+    primary = np.asarray(table[f"{primary_side}_SubhaloPos"], dtype=np.float64)[rows]
+    secondary = np.asarray(table[f"{secondary_side}_SubhaloPos"], dtype=np.float64)[rows]
+    scale_factor = np.asarray(table["scale_factor"], dtype=np.float64)[rows]
+    return physical(nearest_image(secondary, primary) - primary, "length", scale_factor)
