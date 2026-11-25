@@ -10,9 +10,9 @@ is called, and the frame only where `archive_to_box`, `relative_to` or a rotatio
 ```python
 from galactic_tidal_constraints import tng
 
-table = tng.read_table("../data/tng-data/moi-4-targets.h5")
-archive = tng.read_archive("../data/tng-data/target-archive-62000000190717.h5")           # stars
-archive = tng.read_archive("../data/tng-data/target-archive-62000000190717.h5", "all")    # every type
+table = tng.read_table("../data/tng-legacy-data/moi-4-targets.h5")
+archive = tng.read_archive("../data/tng-legacy-data/target-archive-62000000190717.h5")           # stars
+archive = tng.read_archive("../data/tng-legacy-data/target-archive-62000000190717.h5", "all")    # every type
 
 primary = archive["subfind_galaxy"] == 0
 measured = tng.galaxy_properties(archive["positions"][primary], archive["velocities"][primary],
@@ -266,7 +266,7 @@ comparison, its numbers and what it settles are in
 ## Tests
 `tests/test_tng.py`. The tests on small made-up files and particles always run. The tests on the
 real files, including the check against the catalog, run only when `GTC_DATA_DIR` names the data
-folder (the one holding `tng-data/`); they take about 40 seconds, or 25 with `-m "not slow"`:
+folder (the one holding `tng-legacy-data/`); they take about 40 seconds, or 25 with `-m "not slow"`:
 
 ```bash
 GTC_DATA_DIR=../data uv run pytest tests/test_tng.py

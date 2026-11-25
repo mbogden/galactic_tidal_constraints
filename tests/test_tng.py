@@ -2,7 +2,7 @@
 
 The first sections use small made-up files and particles and always run. The last section reads the real files and
 runs only when the environment variable GTC_DATA_DIR names the workspace's data folder (the one
-holding `tng-data/`).
+holding `tng-legacy-data/`).
 """
 
 import os
@@ -578,7 +578,7 @@ def test_primary_side_errors():
 
 # --- The real files (only when GTC_DATA_DIR is set) ------------------------------------------------------
 
-DATA = Path(os.environ["GTC_DATA_DIR"]) / "tng-data" if os.environ.get("GTC_DATA_DIR") else None
+DATA = Path(os.environ["GTC_DATA_DIR"]) / "tng-legacy-data" if os.environ.get("GTC_DATA_DIR") else None
 needs_data = pytest.mark.skipif(DATA is None, reason="GTC_DATA_DIR is not set")
 TARGETS = (62000000190717, 75000000121160, 75000000317209)
 
