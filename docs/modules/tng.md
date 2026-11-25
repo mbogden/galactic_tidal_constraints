@@ -4,7 +4,8 @@ The IllustrisTNG (TNG50-1) data this project already has: two readers, two funct
 galaxy from its particles, one that takes an archive's particles out of the old frame, one that undoes
 the simulation box's wrap-around, two that convert units, four that build the frame SPAM uses, one that turns a spin into SPAM's
 disk angles, one that says which galaxy is the primary, `measure_target`, which puts them together
-for one target, and `spam_model`, which turns the result into SPAM's 14 parameters. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
+for one target, `spam_model`, which turns the result into SPAM's 14 parameters, and
+`encounter_rows`, which finds a target's track in the table. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
 functions work in whatever units they are given; units change only where `physical` or `spam_units`
 is called, and the frame only where `archive_to_box`, `relative_to` or a rotation is applied.
 
@@ -334,6 +335,26 @@ particles = simulation.simulate_particles(model)        # galactic_tidal_constra
 - `y`, `z` and `vz` are zero because the frame was built that way.
 - A test runs SPAM on three real targets' models: its secondary ends on the model's position and
   velocity at time 0, to within SPAM's own integration error (0.004 at most, in SPAM's units).
+
+## A target's track: `encounter_rows(table, row)`
+The table rows of one encounter, earliest snapshot first. A target is one row of its encounter; the
+rows before it are its past and the rows after it its future.
+
+```python
+rows = tng.encounter_rows(table, row)             # e.g. 26 row numbers
+now = int(np.flatnonzero(rows == row)[0])         # where the target sits in its own track
+ago = table["time_gyr"][row] - table["time_gyr"][rows]
+```
+
+- It reads only `moi_2` (the encounter) and `snap`. Two rows with the same snapshot is an error.
+- **Snapshots can be missing.** Three of the encounters that hold targets have gaps (snapshots 45,
+  47 and 53 of `67000000260243`, for one). Use each row's own time, never the row number.
+- **`p` and `s` are the same two galaxies in every row.** A test follows TNG's merger tree along
+  every track: each galaxy's `DescendantID` is the same letter's `SubhaloID` in the next row, for all
+  1,196 links in the table.
+- **Several targets can share one track.** The 61 targets sit on 29 encounters: the same pair taken
+  as a target at different snapshots. `62000000190717` shares its track with `61000000186579`,
+  `63000000192216` and `64000000153811`.
 
 ## Checked against the TNG catalog
 The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same

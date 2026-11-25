@@ -18,6 +18,7 @@ Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
     primary_side                            which of the pair is the primary: "p" or "s"
     TngTargetConfig, measure_target         everything measured for one target at its snapshot
     spam_model                              a measured target -> SPAM's 14 parameters
+    encounter_rows                          the table rows of one encounter, in order of snapshot
 
 The readers and the measuring functions convert nothing; units change only where `physical` or
 `spam_units` is called. What the stored values mean is in each function's docstring.
@@ -770,3 +771,33 @@ def spam_model(target: dict) -> np.ndarray:
         spam_units([primary["disk_radius"], secondary["disk_radius"]], "length"),
         [primary["phi"], secondary["phi"], primary["theta"], secondary["theta"]],
     ])
+
+
+def encounter_rows(table: dict, row: int) -> np.ndarray:
+    """The table rows of one encounter, in order of snapshot: the track a target sits on.
+
+    Args:
+        table: the target table, as `read_table` returns it.
+        row: any row of the encounter, usually the target's.
+
+    Returns:
+        (n,) int64, the rows with the same `moi_2` as `row`, earliest snapshot first. `row` is one
+        of them: `np.flatnonzero(rows == row)[0]` is where the target sits in its own track. Rows
+        before it are its past, rows after it its future.
+
+    An encounter has one row per snapshot, with the same two galaxies as `p` and `s` in every row.
+    Snapshots can be missing from a track (three of the table's 59 encounters have such gaps), so
+    use each row's own time, never the row number. Two rows with the same snapshot is an error.
+    """
+    row = int(row)
+    encounter = np.asarray(table["moi_2"])
+    if not 0 <= row < len(encounter):
+        raise ValueError(f"row {row} is outside the table's {len(encounter)} rows")
+    rows = np.flatnonzero(encounter == encounter[row])
+    snaps = np.asarray(table["snap"])[rows]
+    order = np.argsort(snaps, kind="stable")
+    rows, snaps = rows[order], snaps[order]
+    if (np.diff(snaps) == 0).any():
+        twice = int(snaps[1:][np.diff(snaps) == 0][0])
+        raise ValueError(f"Encounter {int(encounter[row])} has two rows for snapshot {twice}")
+    return rows.astype(np.int64)

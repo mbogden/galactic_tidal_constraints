@@ -821,6 +821,29 @@ def test_spam_parameters_are_in_the_simulators_order():
     assert tng.SPAM_PARAMETERS == sim.PARAM_NAMES
 
 
+# --- An encounter's rows ---------------------------------------------------------------------------------
+
+
+def test_encounter_rows_are_the_rows_of_one_encounter_in_snapshot_order():
+    #                     row:  0   1   2   3   4   5   6
+    table = {"moi_2": np.array([7,  9,  7,  7,  9,  7,  8]),
+             "snap": np.array([62, 40, 60, 63, 41, 58, 62])}        # encounter 7 has no snapshots 59 and 61
+    rows = tng.encounter_rows(table, 0)
+    assert rows.tolist() == [5, 2, 0, 3] and rows.dtype == np.int64
+    assert table["snap"][rows].tolist() == [58, 60, 62, 63]          # gaps are kept as they are
+    assert int(np.flatnonzero(rows == 0)[0]) == 2                    # the target: two rows of past, one of future
+    assert tng.encounter_rows(table, 3).tolist() == [5, 2, 0, 3]     # any row of the encounter gives the same track
+    assert tng.encounter_rows(table, 6).tolist() == [6]              # an encounter of one row
+
+
+def test_encounter_rows_errors():
+    table = {"moi_2": np.array([7, 7, 7]), "snap": np.array([60, 61, 61])}
+    with pytest.raises(ValueError, match="Encounter 7 has two rows for snapshot 61"):
+        tng.encounter_rows(table, 0)
+    with pytest.raises(ValueError, match="row 3 is outside the table's 3 rows"):
+        tng.encounter_rows(table, 3)
+
+
 # --- The real files (only when GTC_DATA_DIR is set) ------------------------------------------------------
 
 DATA = Path(os.environ["GTC_DATA_DIR"]) / "tng-legacy-data" if os.environ.get("GTC_DATA_DIR") else None
@@ -1183,3 +1206,49 @@ def test_spam_runs_a_real_targets_model_and_ends_where_the_target_is(measured):
     particles = sim.simulate_particles(model, sim.SimulatorConfig(n1=50, n2=50))
     assert np.isfinite(particles).all()
     assert particles[-1] == pytest.approx(model[:6], abs=6e-3)                     # the secondary at time 0 (seen: 0.0035 off at most)
+
+
+# --- The real table's tracks (only when GTC_DATA_DIR is set) ---------------------------------------------
+
+
+@needs_data
+def test_the_real_tracks():
+    table = tng.read_table(DATA / "moi-4-targets.h5")
+    row = int(np.flatnonzero(table["p_SubhaloIDRaw"] == 62000000190717)[0])
+    rows = tng.encounter_rows(table, row)
+    assert len(rows) == 26 and int(np.flatnonzero(rows == row)[0]) == 23          # 23 snapshots of past, 2 of future
+    assert table["snap"][rows].tolist() == list(range(39, 65))
+    # Four of the 61 targets are this one encounter, seen at snapshots 61 to 64.
+    assert table["p_SubhaloIDRaw"][rows][-4:].tolist() == [61000000186579, 62000000190717, 63000000192216, 64000000153811]
+
+    targets = [int(path.stem.split("-")[-1]) for path in DATA.glob("target-archive-*.h5")]
+    tracks = {}
+    for target in targets:
+        row = int(np.flatnonzero(table["p_SubhaloIDRaw"] == target)[0])
+        tracks.setdefault(int(table["moi_2"][row]), []).append(target)
+    assert (len(targets), len(tracks)) == (61, 29)                                 # 61 targets on 29 encounters
+
+    gaps = {}
+    for encounter in np.unique(table["moi_2"]):
+        rows = tng.encounter_rows(table, int(np.flatnonzero(table["moi_2"] == encounter)[0]))
+        missing = sorted(set(range(table["snap"][rows[0]], table["snap"][rows[-1]])) - set(table["snap"][rows].tolist()))
+        if missing:
+            gaps[int(encounter)] = missing
+    assert set(gaps) & set(tracks) == {55000000046171, 67000000260243, 99000000438148}
+    assert gaps[67000000260243] == [45, 47, 53] and gaps[99000000438148] == [60]
+
+
+@needs_data
+def test_p_and_s_are_the_same_two_galaxies_along_every_real_track():
+    """TNG's merger tree: each galaxy's descendant is the same letter's galaxy in the next snapshot's row."""
+    table = tng.read_table(DATA / "moi-4-targets.h5")
+    links = 0
+    for encounter in np.unique(table["moi_2"]):
+        rows = tng.encounter_rows(table, int(np.flatnonzero(table["moi_2"] == encounter)[0]))
+        for here, after in zip(rows[:-1], rows[1:]):
+            if table["snap"][after] != table["snap"][here] + 1:
+                continue                                                           # a gap: the tree skips a snapshot
+            links += 1
+            for side in "ps":
+                assert table[f"{side}_DescendantID"][here] == table[f"{side}_SubhaloID"][after]
+    assert links == 1196
