@@ -218,6 +218,31 @@ So, from a galaxy's spin L measured in the frame SPAM runs in (`tng.disk_angles`
 - The spin must already be in SPAM's frame, and it gets there by rotation alone
   ([The frame SPAM needs](#the-frame-spam-needs)).
 
+### Which stars give a disk's spin
+A galaxy in an encounter has stars far from its disk: tidal tails, a stellar halo, satellites it
+swallowed. They are few, but each one's share of the spin grows with its distance, so they can turn
+the total. `tng.measure_target` therefore takes the choice as a setting (`spin_radius_factor`): all of
+the stars the galaxy owned before the encounter, or only those within a number of stellar half-mass
+radii of its nucleus.
+
+How far the spin's direction moves, in degrees, from the all-stars spin to the spin of the stars
+within 2 and within 10 half-mass radii (`test_a_real_disks_spin_depends_on_which_stars_are_used`):
+
+| Target | Galaxy | Within 2 | Within 10 | Stars inside 10 |
+|---|---|---|---|---|
+| `62000000190717` | primary | 6.7 | 3.7 | 90% |
+| `62000000190717` | secondary | 22.5 | 7.3 | 93% |
+| `75000000121160` | primary | 19.3 | 5.4 | 99% |
+| `75000000121160` | secondary | 30.0 | 0.0 | 100% |
+| `75000000317209` | primary | 44.5 | 40.6 | 84% |
+| `75000000317209` | secondary | 7.2 | 3.3 | 100% |
+
+- The choice moves a disk's angles by 7° to 45° on these three targets. It is not a detail.
+- For the primary of `75000000317209`, the 16% of its stars beyond 10 half-mass radii (56 kpc) turn
+  the spin by 41°. The inner disk points one way and the all-stars spin another.
+- Neither choice is "the" answer. SPAM's disk is a thin, flat disk out to its radius, so the inner
+  stars describe what SPAM will build; the all-stars spin describes the whole galaxy's history.
+
 ## Which galaxy is the primary
 SPAM's primary is the galaxy at the origin; by convention it is the more massive one. In the target
 table, "primary" is only the earlier pipeline's label, and for some targets it is the lighter galaxy.

@@ -212,6 +212,11 @@ How it works: [docs/modules/tng.md](docs/modules/tng.md). What the TNG values me
 - Which galaxy is the primary is a named rule (2026-11-25): `"table"` (the table's own label) or
   `"stars"` (more mass in the stars it owned before the encounter). Not the catalog's total mass,
   which swings during an encounter. The table and archives are never relabelled.
+- A target is measured by one function, `measure_target`, whose choices are the fields of
+  `TngTargetConfig` (2026-11-25): the primary rule, the nucleus radius (1 kpc), the Hubble flow (on),
+  which mass goes to SPAM (all particles the galaxy owned before the encounter; the catalog's and the
+  mass within the disk radius are recorded too), the disk radius (5 stellar half-mass radii), and
+  which stars give the spin (all, or within a number of half-mass radii). It writes no files.
 - Units change in two explicit steps (2026-11-24): stored TNG values to physical (kpc, km/s, M☉),
   then physical to SPAM's units. Each step is one function with its factors in one table.
 

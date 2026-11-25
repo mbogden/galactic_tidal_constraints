@@ -576,6 +576,217 @@ def test_primary_side_errors():
         tng.primary_side(pair([1.0], []), "stars")
 
 
+# --- Measuring a target ----------------------------------------------------------------------------------
+#
+# A made-up pair with known answers, built in physical units and then stored the way TNG stores it.
+# Scale factor 0.5. The secondary's nucleus is 100 kpc from the primary's along +x and moves at 150 km/s
+# along +y, so with no rotation needed the answers can be read off. Each galaxy has:
+#   - 24 equal stars on three rings (0.5, 2 and 4 kpc), each turning at 100 km/s. The inner two rings
+#     spin about +z, the outer one about (0.6, 0.8, 0), in the orbit's plane.
+#   - a black hole on the nucleus, moving a little differently from the stars
+#   - two dark matter particles, 5 and 50 kpc from the nucleus
+
+A = 0.5
+SEPARATION, ORBIT_SPEED = 100.0, 150.0                                  # kpc, km/s
+STAR = {"p": 1.0e8, "s": 5.0e7}                                         # Msun, each star
+HOLE, NEAR_HALO, FAR_HALO = 1.0e6, {"p": 1.0e9, "s": 5.0e8}, {"p": 1.0e10, "s": 5.0e9}
+HOLE_KICK = {"p": [3.0, 0.0, 0.0], "s": [0.0, 0.0, 4.0]}                # km/s, black hole relative to its galaxy
+CATALOG_MASS = {"p": 2.0, "s": 1.0}                                     # stored: 1e10 Msun/h
+
+
+def tilted_ring(radius, speed, normal, count=8):
+    """Evenly spaced particles on a circle about the origin, turning counter-clockwise about `normal`."""
+    normal = np.asarray(normal, dtype=np.float64)
+    u = np.cross(normal, [0.0, 1.0, 0.0]) if abs(normal[1]) < 0.5 else np.cross(normal, [1.0, 0.0, 0.0])
+    u = u / np.linalg.norm(u)
+    w = np.cross(normal, u)
+    angle = 2 * np.pi * np.arange(count) / count
+    cos, sin = np.cos(angle)[:, None], np.sin(angle)[:, None]
+    return radius * (cos * u + sin * w), speed * (-sin * u + cos * w)
+
+
+def made_up_target(star=STAR, primary_at=(100.0, 200.0, 300.0), old_frame=None):
+    """A one-row table and its archive (every particle type), for the pair described above.
+
+    Args:
+        star: each galaxy's mass per star.
+        primary_at: the primary's nucleus in the box, stored units (ckpc/h).
+        old_frame: (rotation, shift) the archive's particles are stored in; the box frame when None.
+    """
+    nucleus = {"p": np.zeros(3), "s": np.array([SEPARATION, 0.0, 0.0])}               # kpc
+    bulk = {"p": np.array([10.0, 20.0, 30.0]), "s": np.array([10.0, 20.0 + ORBIT_SPEED, 30.0])}  # km/s
+    positions, velocities, masses, types, owner = [], [], [], [], []
+    for side, label in tng.GALAXY_LABELS.items():
+        for radius, normal in ((0.5, [0, 0, 1]), (2.0, [0, 0, 1]), (4.0, [0.6, 0.8, 0])):
+            where, moving = tilted_ring(radius, 100.0, normal)
+            positions += [nucleus[side] + where]; velocities += [bulk[side] + moving]
+            masses += [np.full(8, star[side])]; types += [np.full(8, 4)]
+        positions += [nucleus[side][None], nucleus[side] + [[0, 0, 5.0], [0, 0, 50.0]]]
+        velocities += [(bulk[side] + HOLE_KICK[side])[None], np.tile(bulk[side], (2, 1))]
+        masses += [[HOLE], [NEAR_HALO[side], FAR_HALO[side]]]; types += [[5], [1, 1]]
+        owner += [np.full(27, label)]
+    positions, velocities = np.concatenate(positions), np.concatenate(velocities)
+
+    primary_at = np.asarray(primary_at, dtype=np.float64)
+    in_box = lambda kpc: (primary_at + np.asarray(kpc) * tng.H / A) % tng.BOX      # stored, wrapped into the box
+    stored_positions, stored_velocities = in_box(positions), velocities / np.sqrt(A)
+    rotation, shift = (np.eye(3), np.zeros(3)) if old_frame is None else old_frame
+    matrix = np.eye(4)
+    matrix[:3, :3] = rotation
+    pos_matrix, vel_matrix = matrix.copy(), matrix.copy()
+    pos_matrix[:3, 3] = shift
+    archive = {"positions": stored_positions @ rotation.T + shift, "velocities": stored_velocities @ rotation.T,
+               "masses": np.concatenate(masses) * tng.H / 1e10, "particle_type": np.concatenate(types).astype(np.int8),
+               "historical_galaxy": np.concatenate(owner).astype(np.int8), "subfind_galaxy": np.zeros(54, dtype=np.int8),
+               "p_id": 62000000000001, "s_id": 62000000000002, "t_snap": 62}
+    table = {"p_SubhaloIDRaw": np.array([62000000000001]), "s_SubhaloIDRaw": np.array([62000000000002]),
+             "snap": np.array([62]), "scale_factor": np.array([A]),
+             "orbital_frame_pos_transform": pos_matrix[None], "orbital_frame_vel_transform": vel_matrix[None]}
+    for side in "ps":
+        table[f"{side}_SubhaloPos"] = in_box(nucleus[side])[None]
+        table[f"{side}_SubhaloVel"] = np.array([[0.0, 90.0 if side == "s" else 0.0, 0.0]])  # the halo's, slower
+        table[f"{side}_SubhaloMass"] = np.array([CATALOG_MASS[side]])
+    return table, archive
+
+
+EXPANSION = float(tng.hubble_rate(A)) * SEPARATION      # km/s: what the Hubble flow adds along the separation
+
+
+def test_measure_target_gives_the_pairs_orbit_in_spams_frame():
+    target = tng.measure_target(*made_up_target()[:1], 0, made_up_target()[1])
+    assert (target["target"], target["snap"], target["scale_factor"]) == (62000000000001, 62, A)
+    assert target["primary_side"] == "p"
+    assert target["separation"] == pytest.approx(SEPARATION)
+    assert target["position"] == pytest.approx([SEPARATION, 0, 0], abs=1e-9)
+    assert target["velocity"] == pytest.approx([EXPANSION, ORBIT_SPEED, 0], abs=1e-9)
+    assert target["rotation"] == pytest.approx(np.eye(3), abs=1e-12)
+
+
+def test_measure_target_gives_three_measures_of_the_velocity():
+    table, archive = made_up_target()
+    velocities = tng.measure_target(table, 0, archive)["velocities"]
+    assert velocities["stars"] == pytest.approx([EXPANSION, ORBIT_SPEED, 0], abs=1e-9)             # the one used
+    assert velocities["black_hole"] == pytest.approx([EXPANSION - 3, ORBIT_SPEED, 4], abs=1e-9)    # its own kicks
+    assert velocities["catalog"] == pytest.approx([EXPANSION, 90, 0], abs=1e-9)                    # the halo's
+
+
+def test_measure_target_without_the_hubble_flow():
+    table, archive = made_up_target()
+    target = tng.measure_target(table, 0, archive, tng.TngTargetConfig(hubble_flow=False))
+    assert target["velocity"] == pytest.approx([0, ORBIT_SPEED, 0], abs=1e-9)
+
+
+@pytest.mark.parametrize("role, side", [("primary", "p"), ("secondary", "s")])
+def test_measure_target_gives_each_galaxys_masses_and_sizes(role, side):
+    table, archive = made_up_target()
+    galaxy = tng.measure_target(table, 0, archive)[role]
+    assert (galaxy["side"], galaxy["subhalo_id"]) == (side, int(table[f"{side}_SubhaloIDRaw"][0]))
+    assert galaxy["stellar_mass"] == pytest.approx(24 * STAR[side])
+    assert galaxy["half_mass_radius"] == pytest.approx(2.0)        # the middle ring holds the 12th of 24 stars
+    assert galaxy["disk_radius"] == pytest.approx(10.0)            # 5 x 2
+    everything = 24 * STAR[side] + HOLE + NEAR_HALO[side] + FAR_HALO[side]
+    assert galaxy["masses"] == pytest.approx({"historical": everything,
+                                              "catalog": CATALOG_MASS[side] * 1e10 / tng.H,
+                                              "within_radius": everything - FAR_HALO[side]})   # 50 kpc is outside 10
+    assert galaxy["mass"] == galaxy["masses"]["historical"]
+    assert galaxy["black_hole_offset"] == pytest.approx(0, abs=1e-9)
+
+
+@pytest.mark.parametrize("mass", tng.MASS_CHOICES)
+def test_measure_target_hands_spam_the_mass_the_config_names(mass):
+    table, archive = made_up_target()
+    target = tng.measure_target(table, 0, archive, tng.TngTargetConfig(mass=mass))
+    for role in ("primary", "secondary"):
+        assert target[role]["mass"] == target[role]["masses"][mass]
+
+
+def test_measure_target_gives_each_disks_spin_and_angles():
+    table, archive = made_up_target()
+    for galaxy in (tng.measure_target(table, 0, archive)[role] for role in ("primary", "secondary")):
+        # Per unit mass: rings of radius 0.5 and 2 about +z, 4 about (0.6, 0.8, 0), at 100 km/s, a third of the stars each.
+        assert galaxy["spin"] == pytest.approx([80, 320 / 3, 250 / 3], abs=1e-9)
+        assert galaxy["spin_stars"] == 24
+        angles = (np.degrees(np.arctan2(0.8, 0.6)), np.degrees(np.arctan2(400, 250)))     # 53.13, 57.99
+        assert (galaxy["phi"], galaxy["theta"]) == pytest.approx(angles, abs=1e-9)
+
+
+def test_measure_target_can_take_the_spin_from_the_inner_stars_only():
+    table, archive = made_up_target()
+    target = tng.measure_target(table, 0, archive, tng.TngTargetConfig(spin_radius_factor=1.5))   # within 3 kpc
+    for galaxy in (target["primary"], target["secondary"]):
+        assert galaxy["spin"] == pytest.approx([0, 0, 125], abs=1e-9)      # the two inner rings: flat in the orbit's plane
+        assert galaxy["spin_stars"] == 16 and galaxy["theta"] == pytest.approx(0, abs=1e-6)
+    with pytest.raises(ValueError, match="No stars of galaxy 'p' within 0.1 half-mass radii"):
+        tng.measure_target(table, 0, archive, tng.TngTargetConfig(spin_radius_factor=0.1))
+
+
+def test_measure_target_puts_the_galaxy_the_rule_names_at_the_origin():
+    table, archive = made_up_target(star={"p": 1.0e8, "s": 2.0e8})         # the table's secondary has more stars
+    by_table = tng.measure_target(table, 0, archive, tng.TngTargetConfig(primary_rule="table"))
+    by_stars = tng.measure_target(table, 0, archive)                       # "stars" is the default
+    assert (by_table["primary_side"], by_table["primary"]["side"]) == ("p", "p")
+    assert (by_stars["primary_side"], by_stars["primary"]["side"], by_stars["secondary"]["side"]) == ("s", "s", "p")
+    # Seen from the other galaxy the orbit is the same, and the frame is turned half way round about z.
+    assert by_stars["position"] == pytest.approx([SEPARATION, 0, 0], abs=1e-9)
+    assert by_stars["velocity"] == pytest.approx([EXPANSION, ORBIT_SPEED, 0], abs=1e-9)
+    assert by_stars["rotation"] == pytest.approx(np.diag([-1.0, -1.0, 1.0]), abs=1e-12)
+    assert by_stars["primary"]["spin"] == pytest.approx([-80, -320 / 3, 250 / 3], abs=1e-9)
+    assert by_stars["primary"]["phi"] == pytest.approx(180 + np.degrees(np.arctan2(0.8, 0.6)))
+    assert by_stars["primary"]["stellar_mass"] == pytest.approx(24 * 2.0e8)
+
+
+def same(a, b):
+    """Two results of `measure_target` agree, entry by entry."""
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(same(a[key], b[key]) for key in a)
+    if isinstance(a, (str, int)) or a is None:
+        return a == b
+    return np.allclose(a, b, rtol=1e-7, atol=1e-7)
+
+
+def test_measure_target_does_not_depend_on_the_old_frame_or_the_box_edge():
+    """The same pair stored in a turned and shifted frame, and sitting across a face of the box."""
+    plain = tng.measure_target(*made_up_target()[:1], 0, made_up_target()[1])
+    turn = tng.orbit_rotation([1.0, 2.0, 3.0], [-2.0, 0.5, 1.0])           # any rotation
+    table, archive = made_up_target(old_frame=(turn, np.array([40.0, -700.0, 3.0])))
+    assert same(tng.measure_target(table, 0, archive), plain)
+    table, archive = made_up_target(primary_at=(34990.0, 200.0, 300.0), old_frame=(turn, np.zeros(3)))
+    assert np.ptp(table["s_SubhaloPos"] - table["p_SubhaloPos"]) > 34000    # stored, the pair looks a box apart
+    assert same(tng.measure_target(table, 0, archive), plain)
+
+
+def test_measure_target_errors():
+    table, archive = made_up_target()
+    with pytest.raises(ValueError, match="the archive holds target 75000000121160"):
+        tng.measure_target(table, 0, {**archive, "p_id": 75000000121160})
+    stars = archive["particle_type"] == 4
+    only_stars = {name: value[stars] if isinstance(value, np.ndarray) else value for name, value in archive.items()}
+    with pytest.raises(ValueError, match="holds only stars"):
+        tng.measure_target(table, 0, only_stars)
+    no_holes = {name: value[archive["particle_type"] != 5] if isinstance(value, np.ndarray) else value
+                for name, value in archive.items()}
+    target = tng.measure_target(table, 0, no_holes)                        # no black holes: that measure is left out
+    assert target["velocities"]["black_hole"] is None and target["primary"]["black_hole_offset"] is None
+
+
+@pytest.mark.parametrize("setting, message", [
+    ({"primary_rule": "mass"}, "Unknown primary_rule 'mass'"),
+    ({"mass": "peak"}, "Unknown mass 'peak'"),
+    ({"core_radius": 0.0}, "core_radius must be above 0"),
+    ({"disk_radius_factor": -5.0}, "disk_radius_factor must be above 0"),
+    ({"spin_radius_factor": 0.0}, "spin_radius_factor must be None or above 0"),
+])
+def test_a_target_config_refuses_values_it_does_not_know(setting, message):
+    with pytest.raises(ValueError, match=message):
+        tng.TngTargetConfig(**setting)
+
+
+def test_a_target_configs_defaults():
+    config = tng.TngTargetConfig()
+    assert (config.primary_rule, config.core_radius, config.hubble_flow) == ("stars", 1.0, True)
+    assert (config.mass, config.disk_radius_factor, config.spin_radius_factor) == ("historical", 5.0, None)
+
+
 # --- The real files (only when GTC_DATA_DIR is set) ------------------------------------------------------
 
 DATA = Path(os.environ["GTC_DATA_DIR"]) / "tng-legacy-data" if os.environ.get("GTC_DATA_DIR") else None
@@ -655,8 +866,11 @@ def measured(request):
         pytest.skip("GTC_DATA_DIR is not set")
     table = tng.read_table(DATA / "moi-4-targets.h5")
     row = int(np.flatnonzero(table["p_SubhaloIDRaw"] == request.param)[0])
-    row = {name: column[row] for name, column in table.items()}
     archive = tng.read_archive(DATA / f"target-archive-{request.param}.h5", "all")
+    target = {"default": tng.measure_target(table, row, archive),
+              "by_table": tng.measure_target(table, row, archive, tng.TngTargetConfig(primary_rule="table")),
+              "inner_spin": tng.measure_target(table, row, archive, tng.TngTargetConfig(spin_radius_factor=2.0))}
+    row = {name: column[row] for name, column in table.items()}
     box_positions, box_velocities = tng.archive_to_box(
         archive["positions"], archive["velocities"], row["orbital_frame_pos_transform"], row["orbital_frame_vel_transform"])
     galaxies = {}
@@ -694,6 +908,7 @@ def measured(request):
     sample = positions[::5000]
     frame["sample"] = (sample - frame["nucleus"]["p"], (sample - frame["nucleus"]["p"]) @ frame["rotation"].T)
     galaxies["frame"] = frame
+    galaxies["target"] = target
     return row, galaxies
 
 
@@ -861,3 +1076,63 @@ def test_the_primary_of_real_targets_by_both_rules(target, by_stars):
     archive = tng.read_archive(DATA / f"target-archive-{target}.h5")  # stars
     assert tng.primary_side(archive, "table") == "p"
     assert tng.primary_side(archive, "stars") == by_stars
+
+
+# --- Real targets measured (only when GTC_DATA_DIR is set) -----------------------------------------------
+
+# For each test target: the primary by the "stars" rule, the nuclei's separation (kpc), their relative
+# speed (km/s), and how far each disk's spin turns (degrees, primary then secondary) when it is taken
+# from the stars within 2 half-mass radii and not from all of the galaxy's stars.
+SEEN = {62000000190717: ("p", 35.43, 145.1, (6.7, 22.6)),
+        75000000121160: ("p", 19.31, 106.6, (19.3, 30.0)),
+        75000000317209: ("s", 110.78, 86.9, (44.5, 7.2))}
+
+
+def test_a_real_target_measured_with_the_default_config(measured):
+    row, galaxies = measured
+    target = galaxies["target"]["default"]
+    primary, separation, speed, _ = SEEN[int(row["p_SubhaloIDRaw"])]
+    assert (target["target"], target["snap"]) == (row["p_SubhaloIDRaw"], row["snap"])
+    assert target["primary_side"] == target["primary"]["side"] == primary
+    assert target["separation"] == pytest.approx(separation, abs=0.01)
+    assert target["position"] == pytest.approx([target["separation"], 0, 0], abs=1e-9)
+    assert abs(target["velocity"][2]) < 1e-9 and target["velocity"][1] > 0       # in the plane, counter-clockwise
+    assert np.linalg.norm(target["velocity"]) == pytest.approx(speed, abs=0.1)
+    for role in ("primary", "secondary"):
+        assert target[role]["black_hole_offset"] < 0.1                             # kpc: its own black hole
+
+
+def test_measure_target_agrees_with_the_same_steps_done_by_hand(measured):
+    """With the table's primary at the origin, it gives what the frame tests above build step by step."""
+    row, galaxies = measured
+    target, frame = galaxies["target"]["by_table"], galaxies["frame"]
+    assert target["primary_side"] == "p"
+    assert target["rotation"] == pytest.approx(frame["rotation"], abs=1e-9)
+    assert target["velocities"]["stars"] == pytest.approx(frame["secondary_stars"][1] @ frame["rotation"].T, abs=1e-6)
+    assert target["velocities"]["black_hole"] == pytest.approx(frame["secondary_black_hole"][1] @ frame["rotation"].T, abs=1e-6)
+    by_stars = galaxies["target"]["default"]
+    assert by_stars["separation"] == pytest.approx(target["separation"])           # either galaxy at the origin
+    assert np.linalg.norm(by_stars["velocity"]) == pytest.approx(np.linalg.norm(target["velocity"]))
+
+
+@pytest.mark.parametrize("side", ["p", "s"])
+def test_a_real_galaxys_three_masses(measured, side):
+    row, galaxies = measured
+    target = galaxies["target"]["by_table"]
+    galaxy = target["primary" if side == "p" else "secondary"]
+    assert galaxy["masses"]["catalog"] == pytest.approx(tng.physical(row[f"{side}_SubhaloMass"], "mass"))
+    # The earlier pipeline's own sums by historical ownership: all types ("pa_", "sa_") and stars ("ps_", "ss_").
+    assert galaxy["masses"]["historical"] == pytest.approx(tng.physical(row[f"{side}a_SubhaloMass"], "mass"), rel=1e-5)
+    assert galaxy["stellar_mass"] == pytest.approx(tng.physical(row[f"{side}s_SubhaloMass"], "mass"), rel=1e-5)
+    assert galaxy["mass"] == galaxy["masses"]["historical"]
+    assert galaxy["stellar_mass"] < galaxy["masses"]["within_radius"]
+    assert galaxy["disk_radius"] == pytest.approx(5 * galaxy["half_mass_radius"])
+
+
+def test_a_real_disks_spin_depends_on_which_stars_are_used(measured):
+    row, galaxies = measured
+    everything, inner = galaxies["target"]["default"], galaxies["target"]["inner_spin"]
+    turned = SEEN[int(row["p_SubhaloIDRaw"])][3]
+    for role, seen in zip(("primary", "secondary"), turned):
+        assert inner[role]["spin_stars"] < everything[role]["spin_stars"]
+        assert angle_between(inner[role]["spin"], everything[role]["spin"]) == pytest.approx(seen, abs=0.2)

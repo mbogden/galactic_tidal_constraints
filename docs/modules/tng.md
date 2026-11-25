@@ -3,7 +3,8 @@
 The IllustrisTNG (TNG50-1) data this project already has: two readers, two functions that measure a
 galaxy from its particles, one that takes an archive's particles out of the old frame, one that undoes
 the simulation box's wrap-around, two that convert units, four that build the frame SPAM uses, one that turns a spin into SPAM's
-disk angles, and one that says which galaxy is the primary. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
+disk angles, one that says which galaxy is the primary, and `measure_target`, which puts them together
+for one target. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
 functions work in whatever units they are given; units change only where `physical` or `spam_units`
 is called, and the frame only where `archive_to_box`, `relative_to` or a rotation is applied.
 
@@ -248,6 +249,70 @@ origin = table[f"{primary}_SubhaloPos"][row]        # the primary's nucleus
 - `"stars"` needs star particles in both galaxies, or it is an error.
 - Why not the catalog's total mass: [tng_physics.md](../tng_physics.md#which-galaxy-is-the-primary).
 
+## Measuring a target: `measure_target(table, row, archive, config=None)`
+Everything measured for one target at its snapshot, in one dict. It uses the functions above in
+order and writes nothing.
+
+```python
+table = tng.read_table("../data/tng-legacy-data/moi-4-targets.h5")
+row = int(np.flatnonzero(table["p_SubhaloIDRaw"] == 62000000190717)[0])
+archive = tng.read_archive("../data/tng-legacy-data/target-archive-62000000190717.h5", "all")
+
+target = tng.measure_target(table, row, archive)                                # the default choices
+target = tng.measure_target(table, row, archive, tng.TngTargetConfig(primary_rule="table"))
+```
+
+The archive must hold every particle type (`"all"`) and belong to the row, or it is an error. One
+target takes a few seconds once its archive is read.
+
+**The choices** are the fields of `TngTargetConfig`. A value it doesn't know is an error when the
+config is made.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `primary_rule` | `"stars"` | Which galaxy is the primary: `"stars"` or `"table"` (`primary_side`) |
+| `core_radius` | `1.0` | A nucleus's velocity is the mean of the stars within this many kpc of it |
+| `hubble_flow` | `True` | Add the universe's expansion to the pair's relative velocity |
+| `mass` | `"historical"` | Which of a galaxy's three masses is the one for SPAM (below) |
+| `disk_radius_factor` | `5.0` | A disk's radius is this many stellar half-mass radii |
+| `spin_radius_factor` | `None` | Which stars give a disk's spin. `None`: all the galaxy's stars. A number: those within that many stellar half-mass radii of its nucleus |
+
+**What comes back.** Physical units throughout: kpc, km/s, M☉, and kpc km/s for spins. Every vector
+is in the frame SPAM uses.
+
+| Key | Value |
+|---|---|
+| `target`, `snap`, `scale_factor` | The table's `p_SubhaloIDRaw` for the row (the archive's name), the snapshot, its scale factor |
+| `primary_side` | `"p"` or `"s"`: the table's letter for the galaxy used as the primary |
+| `separation` | The distance between the two nuclei |
+| `position` | `(3,)` the secondary's nucleus: `(separation, 0, 0)` |
+| `velocity` | `(3,)` the secondary's velocity, from the stars around each nucleus. No z part |
+| `velocities` | The same by three measures: `"stars"` (the one used), `"black_hole"` (`None` if a galaxy has none) and `"catalog"` (`SubhaloVel`). The last two can have a z part |
+| `rotation` | `(3, 3)` from the box's axes to this frame: `vectors @ rotation.T` |
+| `primary`, `secondary` | One dict per galaxy (below) |
+
+Each galaxy's dict:
+
+| Key | Value |
+|---|---|
+| `side`, `subhalo_id` | Its letter in the table and its `SubhaloIDRaw` |
+| `masses` | `"historical"`: every particle, of all types, that belonged to it before the encounter. `"catalog"`: the catalog's `SubhaloMass`. `"within_radius"`: every particle within its disk radius of its nucleus, whichever galaxy it is labelled as |
+| `mass` | The one for SPAM: `masses[config.mass]` |
+| `stellar_mass` | The stars that belonged to it before the encounter |
+| `half_mass_radius` | The radius around its nucleus that holds half of that stellar mass |
+| `disk_radius` | `disk_radius_factor` × the half-mass radius |
+| `spin`, `spin_stars` | `(3,)` the spin of its stars, per unit mass, and how many stars it was measured from |
+| `phi`, `theta` | SPAM's disk angles for that spin, in degrees |
+| `black_hole_offset` | How far its black hole is from its nucleus (`None` without one) |
+
+- A nucleus is the catalog's `SubhaloPos`. Everything else is measured from the archive's particles.
+- A galaxy's own particles are those it owned before the encounter (`historical_galaxy`). A
+  nucleus's velocity uses all stars within `core_radius`, whatever their label.
+- When the two galaxies are closer than a disk radius, the `"within_radius"` masses overlap: a
+  particle near both nuclei counts for both.
+- The spin depends on which stars are used:
+  [tng_physics.md](../tng_physics.md#which-stars-give-a-disks-spin).
+
 ## Checked against the TNG catalog
 The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same
 galaxies: mass, separation, relative velocity (with √a), spin (× a^1.5) and half-mass radius. The
@@ -266,7 +331,7 @@ comparison, its numbers and what it settles are in
 ## Tests
 `tests/test_tng.py`. The tests on small made-up files and particles always run. The tests on the
 real files, including the check against the catalog, run only when `GTC_DATA_DIR` names the data
-folder (the one holding `tng-legacy-data/`); they take about 40 seconds, or 25 with `-m "not slow"`:
+folder (the one holding `tng-legacy-data/`); they take about a minute, or 45 seconds with `-m "not slow"`:
 
 ```bash
 GTC_DATA_DIR=../data uv run pytest tests/test_tng.py

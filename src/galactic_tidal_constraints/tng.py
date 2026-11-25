@@ -16,6 +16,7 @@ Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
                                             secondary on +x, the orbit in the x-y plane
     disk_angles                             a spin direction -> SPAM's two disk angles
     primary_side                            which of the pair is the primary: "p" or "s"
+    TngTargetConfig, measure_target         everything measured for one target at its snapshot
 
 The readers and the measuring functions convert nothing; units change only where `physical` or
 `spam_units` is called. What the stored values mean is in each function's docstring.
@@ -23,6 +24,7 @@ The readers and the measuring functions convert nothing; units change only where
 The readers need `h5py` (the `tng` dependency group).
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +35,10 @@ PARTICLE_TYPES = {"gas": 0, "dm": 1, "stars": 4, "bh": 5}
 # The two galaxies of a pair: the letter that starts their columns in the target table ("p_", "s_")
 # and their number in an archive's galaxy labels.
 GALAXY_LABELS = {"p": 0, "s": 1}
+
+# The rules `primary_side` knows, and the masses `measure_target` can give to SPAM.
+PRIMARY_RULES = ("table", "stars")
+MASS_CHOICES = ("historical", "catalog", "within_radius")
 
 # Columns every target table must have.
 TABLE_COLUMNS = ("moi_2", "snap", "p_SubhaloIDRaw", "s_SubhaloIDRaw")
@@ -551,10 +557,10 @@ def primary_side(archive: dict, rule: str) -> str:
     galaxies share one dark halo and SUBFIND gives it to whichever it calls the central one. Stars
     sit deep in each galaxy, and their mass ratio stays steady.
     """
+    if rule not in PRIMARY_RULES:
+        raise ValueError(f"Unknown rule {rule!r}. Known: 'table', 'stars'")
     if rule == "table":
         return "p"
-    if rule != "stars":
-        raise ValueError(f"Unknown rule {rule!r}. Known: 'table', 'stars'")
     stars = np.asarray(archive["particle_type"]) == PARTICLE_TYPES["stars"]
     masses = np.asarray(archive["masses"], dtype=np.float64)[stars]
     galaxy = np.asarray(archive["historical_galaxy"])[stars]
@@ -562,3 +568,171 @@ def primary_side(archive: dict, rule: str) -> str:
     if not (mass["p"] > 0 and mass["s"] > 0):
         raise ValueError("The 'stars' rule needs star particles in both galaxies")
     return "s" if mass["s"] > mass["p"] else "p"
+
+
+@dataclass(frozen=True)
+class TngTargetConfig:
+    """The choices made when a target is measured (`measure_target`).
+
+    Attributes:
+        primary_rule: which galaxy is the primary: "stars" (the default) or "table". See `primary_side`.
+        core_radius: a nucleus's velocity is the mean of the stars within this many kpc of it. 1 by
+            default.
+        hubble_flow: add the universe's expansion to the pair's relative velocity. On by default.
+        mass: which of a galaxy's three measured masses is the one for SPAM (all three are always
+            returned):
+
+            "historical"      every particle (all types) that belonged to the galaxy before the
+                              encounter. The default.
+            "catalog"         the TNG catalog's `SubhaloMass`: every particle SUBFIND gives it now.
+            "within_radius"   every particle within the galaxy's disk radius of its nucleus,
+                              whichever galaxy it is labelled as.
+
+        disk_radius_factor: a galaxy's disk radius is this many stellar half-mass radii. 5 by default.
+        spin_radius_factor: which stars give a disk's spin. None (the default): all the stars that
+            belonged to the galaxy before the encounter. A number: only those within that many
+            stellar half-mass radii of its nucleus.
+    """
+
+    primary_rule: str = "stars"
+    core_radius: float = 1.0
+    hubble_flow: bool = True
+    mass: str = "historical"
+    disk_radius_factor: float = 5.0
+    spin_radius_factor: float | None = None
+
+    def __post_init__(self):
+        if self.primary_rule not in PRIMARY_RULES:
+            raise ValueError(f"Unknown primary_rule {self.primary_rule!r}. Known: {list(PRIMARY_RULES)}")
+        if self.mass not in MASS_CHOICES:
+            raise ValueError(f"Unknown mass {self.mass!r}. Known: {list(MASS_CHOICES)}")
+        for name in ("core_radius", "disk_radius_factor"):
+            if not getattr(self, name) > 0:
+                raise ValueError(f"{name} must be above 0, got {getattr(self, name)}")
+        if self.spin_radius_factor is not None and not self.spin_radius_factor > 0:
+            raise ValueError(f"spin_radius_factor must be None or above 0, got {self.spin_radius_factor}")
+
+
+def measure_target(table: dict, row: int, archive: dict, config: TngTargetConfig | None = None) -> dict:
+    """Measure one target at its snapshot: the pair's orbit and each galaxy's mass, size and spin.
+
+    Args:
+        table: the target table, as `read_table` returns it.
+        row: the target's row in the table.
+        archive: the target's particles, as `read_archive(path, "all")` returns them. Every particle
+            type is needed.
+        config: the choices to make. `TngTargetConfig()` when None.
+
+    Returns:
+        A dict in physical units (kpc, km/s, Msun; spins in kpc km/s). Every vector is in the frame
+        SPAM uses: the primary's nucleus at the origin and at rest, the secondary on +x, the orbit
+        in the x-y plane.
+
+        target           int      the table's `p_SubhaloIDRaw` for the row (the archive's name)
+        snap             int      the snapshot
+        scale_factor     float
+        primary_side     str      "p" or "s": the table's letter for the galaxy used as the primary
+        separation       float    the distance between the two nuclei
+        position         (3,)     the secondary's nucleus: (separation, 0, 0)
+        velocity         (3,)     the secondary's velocity, from the stars around each nucleus
+        velocities       dict     the same by three measures: "stars" (the one used), "black_hole"
+                                  (each nucleus's black hole; None when a galaxy has none) and
+                                  "catalog" (`SubhaloVel`, the average over the whole halo)
+        rotation         (3, 3)   from the box's axes to this frame: `vectors @ rotation.T`
+        primary, secondary        one dict per galaxy:
+
+            side               str     its letter in the table
+            subhalo_id         int     its `SubhaloIDRaw`
+            mass               float   the mass for SPAM: `masses[config.mass]`
+            masses             dict    "historical", "catalog", "within_radius" (see `TngTargetConfig`)
+            stellar_mass       float   the stars that belonged to it before the encounter
+            half_mass_radius   float   the radius around its nucleus holding half of that stellar mass
+            disk_radius        float   `config.disk_radius_factor` x the half-mass radius
+            spin               (3,)    the spin of its stars, per unit mass
+            spin_stars         int     how many stars the spin was measured from
+            phi, theta         float   SPAM's disk angles for that spin, in degrees
+            black_hole_offset  float   how far its black hole is from its nucleus (None without one)
+
+    How it is measured:
+        - A nucleus is the catalog's `SubhaloPos` (the most bound particle). Everything else is
+          measured from the archive's particles, out of the old frame and whole across the box edge.
+        - A galaxy's stars are those it owned before the encounter (`historical_galaxy`).
+        - A nucleus's velocity is the mean of all stars within `config.core_radius` of it.
+        - The frame comes from the nuclei's relative position and the "stars" relative velocity.
+          The other two velocities are in the same frame, so they can have a z part.
+    """
+    config = TngTargetConfig() if config is None else config
+    row = int(row)
+    ids = {side: int(table[f"{side}_SubhaloIDRaw"][row]) for side in GALAXY_LABELS}
+    snap = int(table["snap"][row])
+    if (ids["p"], ids["s"], snap) != (archive["p_id"], archive["s_id"], archive["t_snap"]):
+        raise ValueError(f"Row {row} is target {ids['p']} at snapshot {snap}, but the archive holds "
+                         f"target {archive['p_id']} at snapshot {archive['t_snap']}")
+    types = np.asarray(archive["particle_type"])
+    stars = types == PARTICLE_TYPES["stars"]
+    if stars.all():
+        raise ValueError("The archive holds only stars: read it with read_archive(path, 'all')")
+
+    scale_factor = float(table["scale_factor"][row])
+    sides = {"primary": primary_side(archive, config.primary_rule)}
+    sides["secondary"] = "s" if sides["primary"] == "p" else "p"
+    origin = np.asarray(table[f"{sides['primary']}_SubhaloPos"][row], dtype=np.float64)
+
+    # The particles: out of the old frame, whole across the box edge, relative to the primary's nucleus, physical.
+    positions, velocities = archive_to_box(archive["positions"], archive["velocities"],
+                                           table["orbital_frame_pos_transform"][row], table["orbital_frame_vel_transform"][row])
+    positions = physical(nearest_image(positions, origin) - origin, "length", scale_factor)
+    velocities = physical(velocities, "particle_velocity", scale_factor)
+    masses = physical(archive["masses"], "mass")
+    holes = np.flatnonzero(types == PARTICLE_TYPES["bh"])
+
+    galaxies, nuclei, nucleus_velocity = {}, {}, {"stars": {}, "black_hole": {}, "catalog": {}}
+    for role, side in sides.items():
+        stored = np.asarray(table[f"{side}_SubhaloPos"][row], dtype=np.float64)
+        nucleus = physical(nearest_image(stored, origin) - origin, "length", scale_factor)
+        distance = np.linalg.norm(positions - nucleus, axis=1)
+        own = np.asarray(archive["historical_galaxy"]) == GALAXY_LABELS[side]
+        own_stars = own & stars
+        half = half_mass_radius(positions[own_stars], masses[own_stars], nucleus)
+        disk_radius = config.disk_radius_factor * half
+
+        for_spin = own_stars if config.spin_radius_factor is None else own_stars & (distance < config.spin_radius_factor * half)
+        if not for_spin.any():
+            raise ValueError(f"No stars of galaxy {side!r} within {config.spin_radius_factor} half-mass radii of its nucleus")
+        spin = galaxy_properties(positions[for_spin], velocities[for_spin], masses[for_spin])["spin"]
+
+        nucleus_velocity["stars"][role] = core_velocity(positions[stars], velocities[stars], masses[stars],
+                                                        nucleus, config.core_radius)
+        nucleus_velocity["catalog"][role] = physical(table[f"{side}_SubhaloVel"][row], "velocity")
+        hole = holes[np.argmin(distance[holes])] if len(holes) else None
+        nucleus_velocity["black_hole"][role] = None if hole is None else velocities[hole]
+
+        galaxy_masses = {"historical": float(masses[own].sum()),
+                         "catalog": float(physical(table[f"{side}_SubhaloMass"][row], "mass")),
+                         "within_radius": float(masses[distance < disk_radius].sum())}
+        nuclei[role] = nucleus
+        galaxies[role] = {"side": side, "subhalo_id": ids[side], "mass": galaxy_masses[config.mass],
+                          "masses": galaxy_masses, "stellar_mass": float(masses[own_stars].sum()),
+                          "half_mass_radius": half, "disk_radius": disk_radius, "spin": spin,
+                          "spin_stars": int(for_spin.sum()),
+                          "black_hole_offset": None if hole is None else float(distance[hole])}
+
+    # The secondary relative to the primary, by each measure of velocity; the frame from the stars' measure.
+    relative = {}
+    for measure, velocity in nucleus_velocity.items():
+        if velocity["primary"] is None or velocity["secondary"] is None:
+            relative[measure] = None
+            continue
+        position, relative[measure] = relative_to(nuclei["secondary"], velocity["secondary"], nuclei["primary"],
+                                                  velocity["primary"], scale_factor, config.hubble_flow)
+    rotation = orbit_rotation(position, relative["stars"])
+
+    for galaxy in galaxies.values():
+        galaxy["spin"] = galaxy["spin"] @ rotation.T
+        galaxy["phi"], galaxy["theta"] = disk_angles(galaxy["spin"])
+    velocities_by_measure = {measure: None if velocity is None else velocity @ rotation.T
+                             for measure, velocity in relative.items()}
+    return {"target": ids["p"], "snap": snap, "scale_factor": scale_factor, "primary_side": sides["primary"],
+            "separation": float(np.linalg.norm(position)), "position": position @ rotation.T,
+            "velocity": velocities_by_measure["stars"], "velocities": velocities_by_measure,
+            "rotation": rotation, "primary": galaxies["primary"], "secondary": galaxies["secondary"]}
