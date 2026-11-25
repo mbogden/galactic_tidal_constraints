@@ -209,6 +209,9 @@ How it works: [docs/modules/tng.md](docs/modules/tng.md). What the TNG values me
 - The frame for SPAM (2026-11-24): the primary's nucleus at the origin and at rest; x toward the
   secondary and z along the orbit's angular momentum, both at the target snapshot. The Hubble flow is
   added to relative velocities unless switched off. Rotations are plain 3×3 matrices.
+- Which galaxy is the primary is a named rule (2026-11-25): `"table"` (the table's own label) or
+  `"stars"` (more mass in the stars it owned before the encounter). Not the catalog's total mass,
+  which swings during an encounter. The table and archives are never relabelled.
 - Units change in two explicit steps (2026-11-24): stored TNG values to physical (kpc, km/s, M☉),
   then physical to SPAM's units. Each step is one function with its factors in one table.
 

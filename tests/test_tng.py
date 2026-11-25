@@ -541,6 +541,41 @@ def test_spam_builds_a_disk_whose_spin_points_where_disk_angles_was_told(axis_1,
         assert angle_between(spin, np.array(axis)) < 0.5  # degrees
 
 
+# --- Which galaxy is the primary -------------------------------------------------------------------------
+
+
+def pair(star_masses_p, star_masses_s, other_p=0.0, other_s=0.0):
+    """A made-up archive: stars of each galaxy by its historical label, and one dark matter particle each."""
+    masses = [*star_masses_p, *star_masses_s, other_p, other_s]
+    return {"masses": np.array(masses, dtype=np.float32),
+            "particle_type": np.array([4] * (len(masses) - 2) + [1, 1], dtype=np.int8),
+            "historical_galaxy": np.array([0] * len(star_masses_p) + [1] * len(star_masses_s) + [0, 1], dtype=np.int8),
+            "subfind_galaxy": np.zeros(len(masses), dtype=np.int8)}  # SUBFIND gives everything to the primary
+
+
+def test_the_table_rule_keeps_the_tables_primary():
+    assert tng.primary_side(pair([1.0], [5.0]), "table") == "p"
+    assert tng.GALAXY_LABELS == {"p": 0, "s": 1}
+
+
+def test_the_stars_rule_picks_the_galaxy_with_more_mass_in_its_own_stars():
+    assert tng.primary_side(pair([1.0, 2.0], [5.0]), "stars") == "s"
+    assert tng.primary_side(pair([4.0, 2.0], [5.0]), "stars") == "p"
+    assert tng.primary_side(pair([5.0], [2.0, 3.0]), "stars") == "p"  # a tie keeps the table's primary
+
+
+def test_the_stars_rule_ignores_other_particles_and_subfinds_labels():
+    # The table's primary holds a huge halo and SUBFIND's label gives it everything; the stars still decide.
+    assert tng.primary_side(pair([1.0], [5.0], other_p=1000.0, other_s=0.1), "stars") == "s"
+
+
+def test_primary_side_errors():
+    with pytest.raises(ValueError, match="Unknown rule 'mass'"):
+        tng.primary_side(pair([1.0], [5.0]), "mass")
+    with pytest.raises(ValueError, match="needs star particles in both galaxies"):
+        tng.primary_side(pair([1.0], []), "stars")
+
+
 # --- The real files (only when GTC_DATA_DIR is set) ------------------------------------------------------
 
 DATA = Path(os.environ["GTC_DATA_DIR"]) / "tng-data" if os.environ.get("GTC_DATA_DIR") else None
@@ -814,3 +849,15 @@ def test_the_nuclei_move_faster_than_the_catalogs_halo_velocities_say(measured):
     nuclei = np.linalg.norm(galaxies["frame"]["stars"]["s"] - galaxies["frame"]["stars"]["p"])
     catalog = np.linalg.norm(row["s_SubhaloVel"] - row["p_SubhaloVel"])
     assert 1.3 < nuclei / catalog < 1.8
+
+
+@needs_data
+@pytest.mark.parametrize("target, by_stars", [
+    (62000000190717, "p"),    # stars 3.66 and 2.73 (1e10 Msun/h): the table's primary is the heavier
+    (75000000121160, "p"),    # 6.69 and 3.18
+    (75000000317209, "s"),    # 2.81 and 7.07: the table's secondary is the heavier
+])
+def test_the_primary_of_real_targets_by_both_rules(target, by_stars):
+    archive = tng.read_archive(DATA / f"target-archive-{target}.h5")  # stars
+    assert tng.primary_side(archive, "table") == "p"
+    assert tng.primary_side(archive, "stars") == by_stars

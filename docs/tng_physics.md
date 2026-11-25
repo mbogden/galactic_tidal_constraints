@@ -218,6 +218,40 @@ So, from a galaxy's spin L measured in the frame SPAM runs in (`tng.disk_angles`
 - The spin must already be in SPAM's frame, and it gets there by rotation alone
   ([The frame SPAM needs](#the-frame-spam-needs)).
 
+## Which galaxy is the primary
+SPAM's primary is the galaxy at the origin; by convention it is the more massive one. In the target
+table, "primary" is only the earlier pipeline's label, and for some targets it is the lighter galaxy.
+Deciding by mass needs care, because **the catalog's total mass is not steady during an encounter**.
+
+The two galaxies come to share one dark halo, and SUBFIND gives that halo to whichever galaxy it
+calls the central one. The `SubhaloMass` of the other drops, and the label can change from snapshot to
+snapshot. Stars sit deep in each galaxy and are not part of the shared halo, so their mass ratio
+holds. Mass ratio (table's secondary ÷ primary) along two encounters, every third snapshot up to the
+target:
+
+| Target | Catalog `SubhaloMass` | Stars, by the galaxy they belonged to before the encounter |
+|---|---|---|
+| `62000000190717` | 0.78, 0.76, 0.54, 0.40, 0.09, 0.13, 0.13, 0.07 | 0.80, 0.75, 0.74, 0.73, 0.78, 0.74, 0.75, 0.78 |
+| `75000000317209` | 43.4, 1.81, 1.85, 0.72, 0.50, 7.88, 22.1 | 6.47, 1.38, 1.33, 1.27, 1.24, 1.31, 2.35 |
+
+(The star columns are the earlier pipeline's `ps_SubhaloMass` and `ss_SubhaloMass`; at the target
+snapshot they equal the sums over the archives' particles.) The first galaxy pair did not go from
+0.78 to 0.07 of each other's mass: its halo was relabelled.
+
+Rules based on the catalog's total mass therefore disagree with each other. Five were tried on the 61
+targets (mass at the target snapshot, at the first snapshot, each galaxy's own peak, both at the
+lighter one's peak, and total mass by historical ownership): they name a different primary for 17 of
+the 61.
+
+`tng.primary_side` offers two rules: `"table"` keeps the table's label, and `"stars"` picks the
+galaxy with more mass in the stars it owned before the encounter, at the target snapshot. By
+`"stars"` the table's secondary is the heavier galaxy for 8 of the 61 targets.
+
+- **Many pairs are close:** for 21 of the 61 the two stellar masses are within a factor of 1.5. For
+  those the choice is nearly arbitrary, and it only decides which nucleus is the origin.
+- **It is decided per target, at its own snapshot:** for 13 of the 61 the order changes somewhere
+  along the earlier track.
+
 ## SPAM's side
 SPAM works with G = 1 in its own units ([spam_physics.md](spam_physics.md#units)). `tng.spam_units`
 converts physical values into them:

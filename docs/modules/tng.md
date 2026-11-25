@@ -2,8 +2,8 @@
 
 The IllustrisTNG (TNG50-1) data this project already has: two readers, two functions that measure a
 galaxy from its particles, one that takes an archive's particles out of the old frame, one that undoes
-the simulation box's wrap-around, two that convert units, four that build the frame SPAM uses, and one that turns a spin into SPAM's
-disk angles. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
+the simulation box's wrap-around, two that convert units, four that build the frame SPAM uses, one that turns a spin into SPAM's
+disk angles, and one that says which galaxy is the primary. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
 functions work in whatever units they are given; units change only where `physical` or `spam_units`
 is called, and the frame only where `archive_to_box`, `relative_to` or a rotation is applied.
 
@@ -225,6 +225,28 @@ phi, theta = tng.disk_angles(spin)
 - Only the direction matters; a spin of zero is an error.
 - The convention is SPAM's own, and a test builds disks with SPAM and measures their spin to confirm
   it ([tng_physics.md](../tng_physics.md#disk-angles)).
+
+## Which galaxy is the primary: `primary_side(archive, rule)`
+Returns `"p"` or `"s"`: the letter that starts the primary's columns in the target table.
+`tng.GALAXY_LABELS` (`{"p": 0, "s": 1}`) gives each letter's number in an archive's galaxy labels.
+The rule must be named:
+
+| `rule` | The primary is |
+|---|---|
+| `"table"` | The galaxy the target table calls the primary. Always `"p"` |
+| `"stars"` | The galaxy with more mass in stars, each star counted for the galaxy it belonged to before the encounter (`historical_galaxy`). A tie gives `"p"` |
+
+```python
+archive = tng.read_archive(path)                    # stars
+primary = tng.primary_side(archive, "stars")        # "p" or "s"
+secondary = "s" if primary == "p" else "p"
+origin = table[f"{primary}_SubhaloPos"][row]        # the primary's nucleus
+```
+
+- Nothing is renamed or rewritten: the table and the archive keep their own `p` and `s`. Code that
+  builds a target uses the answer to choose which galaxy goes at the origin.
+- `"stars"` needs star particles in both galaxies, or it is an error.
+- Why not the catalog's total mass: [tng_physics.md](../tng_physics.md#which-galaxy-is-the-primary).
 
 ## Checked against the TNG catalog
 The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same

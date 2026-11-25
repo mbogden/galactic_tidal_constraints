@@ -15,6 +15,7 @@ Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
                                             the frame SPAM uses: primary at the origin and at rest,
                                             secondary on +x, the orbit in the x-y plane
     disk_angles                             a spin direction -> SPAM's two disk angles
+    primary_side                            which of the pair is the primary: "p" or "s"
 
 The readers and the measuring functions convert nothing; units change only where `physical` or
 `spam_units` is called. What the stored values mean is in each function's docstring.
@@ -28,6 +29,10 @@ import numpy as np
 
 # Particle types, by the TNG snapshot's PartType number.
 PARTICLE_TYPES = {"gas": 0, "dm": 1, "stars": 4, "bh": 5}
+
+# The two galaxies of a pair: the letter that starts their columns in the target table ("p_", "s_")
+# and their number in an archive's galaxy labels.
+GALAXY_LABELS = {"p": 0, "s": 1}
 
 # Columns every target table must have.
 TABLE_COLUMNS = ("moi_2", "snap", "p_SubhaloIDRaw", "s_SubhaloIDRaw")
@@ -524,3 +529,36 @@ def disk_angles(spin) -> tuple[float, float]:
     in_plane = np.hypot(spin[0], spin[1])
     phi = np.degrees(np.arctan2(spin[1], spin[0])) % 360.0 if in_plane > 1e-12 * size else 0.0
     return float(phi), float(theta)
+
+
+def primary_side(archive: dict, rule: str) -> str:
+    """Say which galaxy of a pair is the primary: the table's "p" or its "s".
+
+    Args:
+        archive: one target's particles, as `read_archive` returns them. The "stars" rule uses
+            "masses", "particle_type" and "historical_galaxy", and needs the star particles.
+        rule: how to decide:
+
+            "table"   the galaxy the target table calls the primary. Always "p".
+            "stars"   the galaxy with more mass in stars, each star counted for the galaxy it
+                      belonged to before the encounter ("historical_galaxy"). A tie gives "p".
+
+    Returns:
+        "p" or "s": the letter that starts the primary's columns in the target table.
+        `GALAXY_LABELS` gives its number in the archive's labels.
+
+    Why stars: during an encounter the catalog's total mass (`SubhaloMass`) swings, because the two
+    galaxies share one dark halo and SUBFIND gives it to whichever it calls the central one. Stars
+    sit deep in each galaxy, and their mass ratio stays steady.
+    """
+    if rule == "table":
+        return "p"
+    if rule != "stars":
+        raise ValueError(f"Unknown rule {rule!r}. Known: 'table', 'stars'")
+    stars = np.asarray(archive["particle_type"]) == PARTICLE_TYPES["stars"]
+    masses = np.asarray(archive["masses"], dtype=np.float64)[stars]
+    galaxy = np.asarray(archive["historical_galaxy"])[stars]
+    mass = {side: masses[galaxy == label].sum() for side, label in GALAXY_LABELS.items()}
+    if not (mass["p"] > 0 and mass["s"] > 0):
+        raise ValueError("The 'stars' rule needs star particles in both galaxies")
+    return "s" if mass["s"] > mass["p"] else "p"
