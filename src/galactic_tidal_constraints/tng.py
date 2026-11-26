@@ -22,6 +22,7 @@ Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
     track_separation                        the secondary's nucleus relative to the primary's, row by row
     age_of_universe, track_time             a snapshot's age; a track's times relative to the target
     track_spline                            a smooth curve through a track's rows
+    target_orbit                            a target's orbit for SPAM's metrics, sampled from that curve
 
 The readers and the measuring functions convert nothing; units change only where `physical` or
 `spam_units` is called. What the stored values mean is in each function's docstring.
@@ -958,3 +959,57 @@ def track_spline(time, values, start_slope=None, end_slope=None) -> TrackSpline:
         system[row, row], system[row, other] = 2 * width[near], width[near]
         right[row] = 6 * sign * (chord[near] - slope)
     return TrackSpline(time, values, np.linalg.solve(system, right))
+
+
+def target_orbit(table: dict, row: int, target: dict, spacing: float = 0.01, earliest: float = -30.0) -> np.ndarray:
+    """A target's orbit up to now, sampled finely, in SPAM's frame and units: what the orbit metrics compare with.
+
+    Args:
+        table: the target table, as `read_table` returns it.
+        row: the target's row.
+        target: the target measured at that row, as `measure_target` returns it. Its "primary_side"
+            and "rotation" set the frame.
+        spacing: the time between samples, in SPAM's time units. 0.01 by default (about 0.9 Myr).
+        earliest: the earliest time sampled, in SPAM's time units. -30 by default, where SPAM's own
+            backward search of the orbit stops.
+
+    Returns:
+        (n, 7) float64, one row per sample, times increasing and ending exactly at 0 (now):
+
+        x, y, z       the secondary's nucleus relative to the primary's, in SPAM's length unit
+        vx, vy, vz    zeros. They are not measured: the columns are there so that the array has the
+                      shape of SPAM's own orbits
+        t             the time, in SPAM's time unit: 0 is now, the past is negative
+
+        The last row is the target itself: (separation, 0, 0, 0, 0, 0, 0).
+
+    How it is made: the track's rows (`encounter_rows`), their separations (`track_separation`)
+    turned by the target's one rotation, their times (`track_time`), and a cubic spline through all
+    of them, later rows included (`track_spline`). The samples start at `earliest`, or at the
+    track's first row when that is later: the curve is not extended beyond its rows. A target with
+    no earlier row gives one sample, now.
+
+    The curve is good between close passes and for when a pass happened, not for how close a tight
+    one came (docs/tng_physics.md, "A curve through the snapshots").
+    """
+    row = int(row)
+    if int(table["p_SubhaloIDRaw"][row]) != target["target"]:
+        raise ValueError(f"Row {row} is target {int(table['p_SubhaloIDRaw'][row])}, but the measurements are of {target['target']}")
+    if not spacing > 0:
+        raise ValueError(f"spacing must be above 0, got {spacing}")
+    if not earliest < 0:
+        raise ValueError(f"earliest must be below 0, got {earliest}")
+    rows = encounter_rows(table, row)
+    time = spam_units(track_time(table, rows, row), "time")
+    path = spam_units(track_separation(table, rows, target["primary_side"]) @ np.asarray(target["rotation"]).T, "length")
+
+    start = max(float(earliest), float(time[0]))
+    when = 0.0 - spacing * np.arange(int(np.floor(-start / spacing + 1e-9)), -1, -1.0)    # ..., -2 spacing, -spacing, 0
+    orbit = np.zeros((len(when), 7))
+    orbit[:, 6] = when
+    if len(time) == 1:
+        orbit[:, :3] = path
+    else:
+        orbit[:, :3] = track_spline(time, path)(when)
+    orbit[-1, :3] = path[rows == row][0]            # exactly the target's row, not the curve's rounding of it
+    return orbit

@@ -5,7 +5,8 @@ galaxy from its particles, one that takes an archive's particles out of the old 
 the simulation box's wrap-around, two that convert units, four that build the frame SPAM uses, one that turns a spin into SPAM's
 disk angles, one that says which galaxy is the primary, `measure_target`, which puts them together
 for one target, `spam_model`, which turns the result into SPAM's 14 parameters, and
-`encounter_rows`, `track_separation`, `track_time` and `track_spline`, which follow a target's track in the table. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
+`encounter_rows`, `track_separation`, `track_time` and `track_spline`, which follow a target's track in the table,
+and `target_orbit`, which makes the orbit SPAM's metrics compare with. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
 functions work in whatever units they are given; units change only where `physical` or `spam_units`
 is called, and the frame only where `archive_to_box`, `relative_to` or a rotation is applied.
 
@@ -425,6 +426,35 @@ curve.slope(0.0)                            # (3,) the velocity along the curve,
   both sides. 12 of the 61 targets have no later row; for them now is a free end.
 - **What it can and can't recover** at TNG's snapshot spacing, measured:
   [tng_physics.md](../tng_physics.md#a-curve-through-the-snapshots).
+
+## A target's orbit: `target_orbit(table, row, target, spacing=0.01, earliest=-30.0)`
+The target's orbit up to now, sampled finely, in SPAM's frame and units: the array the orbit metrics
+compare a model's orbit with. It runs the four track functions above in order.
+
+```python
+target = tng.measure_target(table, row, archive)
+orbit = tng.target_orbit(table, row, target)             # (3001, 7) for a track that reaches back to -30
+
+model_orbit = simulation.search_orbit(tng.spam_model(target))
+weights = derived.recent_approach_cosine_window(orbit)   # centered on the target's most recent close pass
+metrics.orbit_position_error(orbit, model_orbit, weights)
+```
+
+| Column | Value |
+|---|---|
+| `x`, `y`, `z` | The secondary's nucleus relative to the primary's, in SPAM's length unit (15 kpc) |
+| `vx`, `vy`, `vz` | **Zeros.** Not measured: the columns are there so the array has the shape of SPAM's own orbits. The orbit metrics read only positions and times |
+| `t` | SPAM's time unit, increasing, ending exactly at 0 (now) |
+
+- **The last row is the target:** `(separation, 0, 0)`, the model's `x`, `y`, `z`.
+- **It starts at `earliest`**, -30 by default, where SPAM's own backward search stops; or at the
+  track's first row when that is later (15 of the 61 targets). The curve is never extended beyond
+  its rows. One target has no earlier row and gives a single sample.
+- **`spacing`** is the time between samples: 0.01 SPAM units, about 0.9 Myr.
+- The curve is fitted through all of the track's rows, later ones included, and sampled up to now.
+- **13 of the 61 targets have no close pass in their sampled orbit**, so the recent-approach window
+  can't be made for them: they are on first approach, or the pass is too near the orbit's start.
+- How far to trust it: [tng_physics.md](../tng_physics.md#a-curve-through-the-snapshots).
 
 ## Checked against the TNG catalog
 The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same

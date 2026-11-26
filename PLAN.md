@@ -223,7 +223,8 @@ How it works: [docs/modules/tng.md](docs/modules/tng.md). What the TNG values me
   catalog's separations made whole and physical, turned by the target's one rotation, with times from
   TNG's cosmology. Between snapshots it is a cubic spline through the positions of every row, before
   and after the target; no catalog velocities. It is trusted for when a close pass happened, not for
-  how close a tight one came.
+  how close a tight one came. The orbit given to the metrics is that curve sampled from t = -30 (SPAM's
+  own limit) to now, with zeros in the velocity columns: the metrics read positions and times only.
 - Units change in two explicit steps (2026-11-24): stored TNG values to physical (kpc, km/s, M☉),
   then physical to SPAM's units. Each step is one function with its factors in one table.
 

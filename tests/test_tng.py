@@ -976,6 +976,69 @@ def test_track_spline_errors():
         tng.track_spline(UNEVEN, values)(1.0)
 
 
+# --- A target's sampled orbit ----------------------------------------------------------------------------
+#
+# A made-up track of five rows. The secondary moves in a straight line at a steady velocity in physical
+# kpc, so the curve through the rows is that line and every sample is known. The target is row 3.
+
+TRACK_A = np.array([0.50, 0.55, 0.60, 0.65, 0.70])                     # scale factors of the five rows
+TRACK_NOW = 3
+TRACK_START, TRACK_VELOCITY = np.array([30.0, -6.0, 9.0]), np.array([-40.0, 25.0, 10.0])   # kpc at now; kpc per Gyr
+
+
+def made_up_track_table():
+    time = tng.age_of_universe(TRACK_A) - tng.age_of_universe(TRACK_A[TRACK_NOW])           # Gyr from the target
+    separation = TRACK_START + TRACK_VELOCITY * time[:, None]                                # kpc
+    primary = np.tile([100.0, 200.0, 300.0], (5, 1))
+    return {"moi_2": np.full(5, 7), "snap": np.arange(40, 45), "scale_factor": TRACK_A,
+            "p_SubhaloIDRaw": 43000000000001 + np.arange(5) * 1000000000000 - 3000000000000,
+            "p_SubhaloPos": primary, "s_SubhaloPos": primary + separation * (tng.H / TRACK_A)[:, None]}, time
+
+
+def test_target_orbit_samples_the_track_in_spams_units_up_to_now():
+    table, time = made_up_track_table()
+    turn = tng.orbit_rotation([1.0, 2.0, 3.0], [-2.0, 0.5, 1.0])
+    target = {"target": int(table["p_SubhaloIDRaw"][TRACK_NOW]), "primary_side": "p", "rotation": turn}
+    orbit = tng.target_orbit(table, TRACK_NOW, target, spacing=0.5)
+    first = time[0] / tng.SPAM_TIME                                                           # about -28: later than -30
+    assert orbit.shape == (int(-first // 0.5) + 1, 7) and orbit.dtype == np.float64
+    assert orbit[:, 6] == pytest.approx(-0.5 * np.arange(len(orbit) - 1, -1, -1))             # ..., -1, -0.5, 0
+    assert orbit[-1, 6] == 0 and not np.signbit(orbit[-1, 6]) and orbit[0, 6] >= first        # ends at now; starts inside the track
+    assert np.all(orbit[:, 3:6] == 0)                                                         # velocities are not measured
+    known = (TRACK_START + TRACK_VELOCITY * (orbit[:, 6] * tng.SPAM_TIME)[:, None]) @ turn.T / tng.SPAM_LENGTH
+    assert orbit[:, :3] == pytest.approx(known, abs=1e-9)
+    assert orbit[-1, :3] == pytest.approx(TRACK_START @ turn.T / 15)                          # the target's own row
+
+
+def test_target_orbit_stops_at_the_earliest_time_asked_for():
+    table, _ = made_up_track_table()
+    target = {"target": int(table["p_SubhaloIDRaw"][TRACK_NOW]), "primary_side": "p", "rotation": np.eye(3)}
+    orbit = tng.target_orbit(table, TRACK_NOW, target, spacing=0.25, earliest=-10.0)
+    assert (len(orbit), orbit[0, 6], orbit[-1, 6]) == (41, -10.0, 0.0)
+    assert len(tng.target_orbit(table, TRACK_NOW, target)) == int(-tng.track_time(table, np.arange(5), TRACK_NOW)[0] / tng.SPAM_TIME / 0.01) + 1
+    other = {**target, "primary_side": "s"}
+    assert tng.target_orbit(table, TRACK_NOW, other, spacing=0.25, earliest=-10.0)[:, :3] == pytest.approx(-orbit[:, :3])
+
+
+def test_target_orbit_of_a_target_with_no_earlier_row_is_one_sample():
+    table, _ = made_up_track_table()
+    target = {"target": int(table["p_SubhaloIDRaw"][0]), "primary_side": "p", "rotation": np.eye(3)}
+    orbit = tng.target_orbit(table, 0, target)
+    assert orbit.shape == (1, 7) and orbit[0, 6] == 0
+    assert orbit[0, :3] == pytest.approx(tng.track_separation(table, np.array([0]), "p")[0] / 15)
+
+
+def test_target_orbit_errors():
+    table, _ = made_up_track_table()
+    target = {"target": int(table["p_SubhaloIDRaw"][TRACK_NOW]), "primary_side": "p", "rotation": np.eye(3)}
+    with pytest.raises(ValueError, match="but the measurements are of"):
+        tng.target_orbit(table, 2, target)
+    with pytest.raises(ValueError, match="spacing must be above 0"):
+        tng.target_orbit(table, TRACK_NOW, target, spacing=0.0)
+    with pytest.raises(ValueError, match="earliest must be below 0"):
+        tng.target_orbit(table, TRACK_NOW, target, earliest=0.0)
+
+
 # --- The real files (only when GTC_DATA_DIR is set) ------------------------------------------------------
 
 DATA = Path(os.environ["GTC_DATA_DIR"]) / "tng-legacy-data" if os.environ.get("GTC_DATA_DIR") else None
@@ -1474,3 +1537,53 @@ def test_a_curve_through_real_tracks_finds_a_left_out_snapshot():
     assert (len(off), int(near_pass.sum())) == (614, 127)
     assert np.median(off[~near_pass]) == pytest.approx(1.3, abs=0.1)      # kpc, away from a close pass
     assert np.median(off[near_pass]) == pytest.approx(10.4, abs=0.5)      # kpc, at or next to one
+
+
+def test_a_real_targets_orbit_is_what_the_orbit_metrics_take(measured):
+    sim = pytest.importorskip("galactic_tidal_constraints.simr.simulation")
+    from galactic_tidal_constraints.simr import derived, metrics
+
+    row, galaxies = measured
+    target = galaxies["target"]["default"]
+    table = tng.read_table(DATA / "moi-4-targets.h5")
+    index = int(np.flatnonzero(table["p_SubhaloIDRaw"] == row["p_SubhaloIDRaw"])[0])
+    orbit = tng.target_orbit(table, index, target)
+    model = tng.spam_model(target)
+    assert orbit.shape == (3001, 7) and (orbit[0, 6], orbit[-1, 6]) == (-30.0, 0.0)          # these tracks reach past -30
+    assert np.all(np.diff(orbit[:, 6]) > 0) and np.all(orbit[:, 3:6] == 0)
+    assert orbit[-1, :3] == pytest.approx(model[:3], abs=1e-9)                               # it ends on the model's x, y, z
+    # The curve goes through the track's rows: at each snapshot's time the sample beside it is close to the row.
+    rows = tng.encounter_rows(table, index)
+    time = tng.spam_units(tng.track_time(table, rows, index), "time")
+    path = tng.spam_units(tng.track_separation(table, rows, target["primary_side"]) @ target["rotation"].T, "length")
+    inside = (time >= -30) & (time <= 0)
+    nearest = np.abs(orbit[:, 6][None, :] - time[inside][:, None]).argmin(axis=1)
+    assert np.abs(orbit[nearest, :3] - path[inside]).max() < 0.02                            # within half a sample's travel
+
+    spam = sim.search_orbit(model)
+    weights = derived.recent_approach_cosine_window(orbit)                                    # each has a pass in its past
+    assert weights.shape == (3001,) and weights.max() == 1 and weights[-1] == 0
+    for error in (metrics.orbit_position_error, metrics.orbit_time_error):
+        assert np.isfinite(error(orbit, spam)) and error(orbit, spam) > 0
+        assert error(orbit, spam, weights) < error(orbit, spam)                               # closer near the last pass than overall
+
+
+@needs_data
+def test_every_real_targets_orbit():
+    """Shapes for all 61. Distances don't depend on the frame, so no particles are read."""
+    from galactic_tidal_constraints.simr import derived
+
+    table = tng.read_table(DATA / "moi-4-targets.h5")
+    lengths, no_window = [], []
+    for path in DATA.glob("target-archive-*.h5"):
+        target = int(path.stem.split("-")[-1])
+        row = int(np.flatnonzero(table["p_SubhaloIDRaw"] == target)[0])
+        orbit = tng.target_orbit(table, row, {"target": target, "primary_side": "p", "rotation": np.eye(3)})
+        assert orbit[-1, 6] == 0 and orbit[0, 6] >= -30 and np.isfinite(orbit).all()
+        lengths.append(len(orbit))
+        try:
+            derived.recent_approach_cosine_window(orbit)
+        except ValueError:
+            no_window.append(target)
+    assert sorted(lengths)[0] == 1 and lengths.count(3001) == 46          # 46 reach back to -30; one target has no past
+    assert len(no_window) == 13                                           # no close pass in their past to center a window on
