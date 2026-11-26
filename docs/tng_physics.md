@@ -192,12 +192,34 @@ The secondary is then at (distance, 0, 0) and its velocity has no z part.
 - **This is the plane the pair moves in now, and SPAM's own orbit lies in it**, since the forces
   on SPAM's two centers lie in that plane.
 - **TNG's earlier orbit need not lie in it.** Real halos are extended and lumpy, so the plane turns
-  over time. Drawn in this frame, the track of `62000000190717` over the last 1.5 Gyr stays within
-  20% of its distance from the plane; those of `75000000121160` and `75000000317209` leave it by half
-  their distance.
+  over time: [The track leaves the plane](#the-track-leaves-the-plane).
 - **A spin only turns:** positions, velocities and spins are all rotated by the same matrix, and
   nothing else is done to a spin.
 - A pair moving exactly along the line between the nuclei has no orbit plane.
+
+### The track leaves the plane
+Each target's track (the catalog's `SubhaloPos` separations at every snapshot of its encounter) was
+turned into the target's own frame, for all 61 targets. How far a row sits out of the x-y plane is
+|z| ÷ its distance: 0 in the plane, 1 straight above it.
+
+| Over the rows up to the target | Median | Middle half | Largest |
+|---|---|---|---|
+| Largest \|z\| ÷ distance, whole past (about 3 Gyr) | 0.25 | 0.12 to 0.37 | 0.85 |
+| Largest \|z\| ÷ distance, since the most recent close pass | 0.07 | 0.03 to 0.14 | 0.71 |
+| The track's own plane over the last Gyr, degrees from the frame's z | 9° | 5° to 29° | 175° |
+
+- **Since the last close pass the track stays close to the plane** for most targets. Further back it
+  does not: one plane does not describe a whole encounter.
+- **For 8 of the 61 targets the last Gyr of track goes round the other way** (more than 90° from the
+  frame's z). Most of these pairs are moving almost straight toward or away from each other at the
+  target snapshot, so the sideways part of the velocity, which alone decides the plane and the sense
+  of the orbit, is small. For `73000000145217` it is 8 km/s out of 240, while the two measures of
+  the nucleus velocity (stars within 1 kpc, and the black holes) differ by about 10 km/s. For such a
+  target the plane, and with it whether a disk is prograde or retrograde, is not well determined
+  from one snapshot's velocity.
+- An alternative for those targets is to take the plane from the track's positions (the target
+  snapshot and the one before). It is not used: the frame is always built from the target snapshot's
+  position and velocity.
 
 ## Disk angles
 SPAM describes each disk's tilt with two angles, φ and θ. It builds the disk flat in the x-y plane,

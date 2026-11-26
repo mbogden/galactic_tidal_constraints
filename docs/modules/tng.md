@@ -374,6 +374,19 @@ distance = np.linalg.norm(separation, axis=1)                              # (n,
 - On the 29 tracks that hold targets the pairs start 265 to 604 kpc apart, and the separation never
   changes faster than 676 km/s between snapshots: no track has a jump (`test_no_real_track_jumps`).
 
+### The track in SPAM's frame
+The target's one rotation turns the whole track, past and future, into the frame SPAM runs in:
+
+```python
+target = tng.measure_target(table, row, archive)
+rows = tng.encounter_rows(table, row)
+path = tng.track_separation(table, rows, target["primary_side"]) @ target["rotation"].T     # (n, 3) kpc
+```
+
+- At the target's own row this is `target["position"]`: `(separation, 0, 0)`.
+- The frame is fixed at the target snapshot. The pair's orbit plane turns during an encounter, so
+  earlier and later rows have a z part: [tng_physics.md](../tng_physics.md#the-track-leaves-the-plane).
+
 ## Checked against the TNG catalog
 The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same
 galaxies: mass, separation, relative velocity (with √a), spin (× a^1.5) and half-mass radius. The

@@ -1327,3 +1327,20 @@ def test_no_real_track_jumps():
             across.add(encounter)
     assert 600 < fastest < 700                                              # seen: 676 km/s, during a close pass
     assert across == {55000000131486, 67000000260243, 99000000493433}       # stored a whole box apart in some rows
+
+
+def test_a_real_track_turned_into_spams_frame(measured):
+    """The track's rows by the target's one rotation: the target's own row lands on (separation, 0, 0)."""
+    row, galaxies = measured
+    target = galaxies["target"]["default"]
+    table = tng.read_table(DATA / "moi-4-targets.h5")
+    index = int(np.flatnonzero(table["p_SubhaloIDRaw"] == row["p_SubhaloIDRaw"])[0])
+    rows = tng.encounter_rows(table, index)
+    along_box = tng.track_separation(table, rows, target["primary_side"])
+    path = along_box @ target["rotation"].T
+    now = int(np.flatnonzero(rows == index)[0])
+    assert path[now] == pytest.approx(target["position"], abs=1e-6)                 # where measure_target put the secondary
+    assert path[now] == pytest.approx([target["separation"], 0, 0], abs=1e-6)
+    assert np.linalg.norm(path, axis=1) == pytest.approx(np.linalg.norm(along_box, axis=1))   # a rotation keeps distances
+    # The rest of the track is not in that plane: earlier rows have a z part (seen: 12 to 250 kpc at the first row).
+    assert abs(path[0, 2]) > 10
