@@ -922,6 +922,60 @@ def test_track_time_is_zero_at_the_target_and_negative_before_it():
         tng.track_time(table, rows, 4)
 
 
+# --- A curve through a track's rows ----------------------------------------------------------------------
+
+UNEVEN = np.array([-3.0, -2.6, -1.5, -1.3, -0.4, 0.0, 0.9])            # times with uneven spacing, like a track with gaps
+
+
+def test_a_track_spline_passes_through_every_row():
+    values = np.column_stack([np.sin(UNEVEN), UNEVEN ** 2, np.cos(2 * UNEVEN)])
+    curve = tng.track_spline(UNEVEN, values)
+    assert curve(UNEVEN) == pytest.approx(values, abs=1e-12)
+    assert curve(-1.5).shape == (3,) and curve(np.array([-2.0, -1.0])).shape == (2, 3)   # one time, or several
+    assert curve.slope(-1.5).shape == (3,)
+
+
+def test_a_track_spline_with_known_end_slopes_is_exact_for_a_cubic():
+    cubic = lambda t: np.column_stack([2 * t ** 3 - t ** 2 + 3 * t - 1, -t ** 3 + 4 * t])
+    slope = lambda t: np.column_stack([6 * t ** 2 - 2 * t + 3, -3 * t ** 2 + 4])
+    curve = tng.track_spline(UNEVEN, cubic(UNEVEN), start_slope=slope(UNEVEN[:1])[0], end_slope=slope(UNEVEN[-1:])[0])
+    between = np.linspace(UNEVEN[0], UNEVEN[-1], 101)
+    assert curve(between) == pytest.approx(cubic(between), abs=1e-10)
+    assert curve.slope(between) == pytest.approx(slope(between), abs=1e-9)
+
+
+def test_a_track_spline_with_free_ends_keeps_a_straight_line_straight():
+    line = np.column_stack([3 * UNEVEN + 1, -2 * UNEVEN])
+    curve = tng.track_spline(UNEVEN, line)
+    between = np.linspace(UNEVEN[0], UNEVEN[-1], 50)
+    assert curve(between) == pytest.approx(np.column_stack([3 * between + 1, -2 * between]), abs=1e-12)
+    assert curve.slope(between) == pytest.approx(np.tile([3.0, -2.0], (50, 1)), abs=1e-12)
+    assert tng.track_spline(UNEVEN[:2], line[:2])(-2.8) == pytest.approx([3 * -2.8 + 1, 5.6])   # two rows: the line between them
+
+
+def test_a_track_splines_slope_is_its_own_rate_of_change_with_no_kinks():
+    values = np.column_stack([np.sin(UNEVEN), np.exp(UNEVEN / 2)])
+    curve = tng.track_spline(UNEVEN, values)
+    when, step = np.linspace(-2.9, 0.8, 40), 1e-6
+    assert curve.slope(when) == pytest.approx((curve(when + step) - curve(when - step)) / (2 * step), abs=1e-6)
+    for row in UNEVEN[1:-1]:                                             # the slope is the same on both sides of a row
+        assert curve.slope(row - 1e-9) == pytest.approx(curve.slope(row + 1e-9), abs=1e-6)
+    close = tng.track_spline(np.linspace(-3, 1, 81), np.sin(np.linspace(-3, 1, 81))[:, None])
+    assert close(when)[:, 0] == pytest.approx(np.sin(when), abs=1e-5)    # with close rows it follows a smooth curve
+
+
+def test_track_spline_errors():
+    values = np.zeros((7, 3))
+    with pytest.raises(ValueError, match="at least two increasing values"):
+        tng.track_spline(UNEVEN[::-1], values)
+    with pytest.raises(ValueError, match=r"values has shape \(7,\), expected \(7, k\)"):
+        tng.track_spline(UNEVEN, np.zeros(7))
+    with pytest.raises(ValueError, match=r"A slope has shape \(2,\), expected \(3,\)"):
+        tng.track_spline(UNEVEN, values, end_slope=[1.0, 2.0])
+    with pytest.raises(ValueError, match="not extended beyond its rows"):
+        tng.track_spline(UNEVEN, values)(1.0)
+
+
 # --- The real files (only when GTC_DATA_DIR is set) ------------------------------------------------------
 
 DATA = Path(os.environ["GTC_DATA_DIR"]) / "tng-legacy-data" if os.environ.get("GTC_DATA_DIR") else None
@@ -1397,3 +1451,26 @@ def test_the_tables_times_agree_with_the_age_formula():
     assert time[rows == row][0] == 0 and np.all(np.diff(time) > 0)
     assert (time[0], time[-1]) == pytest.approx((-3.58, 0.29), abs=0.01)           # Gyr: 23 snapshots back, 2 on
     assert tng.spam_units(time[0], "time") == pytest.approx(-41.3, abs=0.1)        # SPAM's own search stops at -30
+
+
+@needs_data
+def test_a_curve_through_real_tracks_finds_a_left_out_snapshot():
+    """Leave each snapshot out in turn (a gap of two snapshots): how far the curve lands from it."""
+    table = tng.read_table(DATA / "moi-4-targets.h5")
+    encounters = {int(table["moi_2"][np.flatnonzero(table["p_SubhaloIDRaw"] == int(path.stem.split("-")[-1]))[0]])
+                  for path in DATA.glob("target-archive-*.h5")}
+    off, near_pass = [], []
+    for encounter in sorted(encounters):
+        rows = tng.encounter_rows(table, int(np.flatnonzero(table["moi_2"] == encounter)[0]))
+        time, path = tng.track_time(table, rows, rows[0]), tng.track_separation(table, rows, "p")
+        assert tng.track_spline(time, path)(time) == pytest.approx(path, abs=1e-9)
+        distance = np.linalg.norm(path, axis=1)
+        for left_out in range(1, len(rows) - 1):
+            kept = np.arange(len(rows)) != left_out
+            off.append(np.linalg.norm(tng.track_spline(time[kept], path[kept])(time[left_out]) - path[left_out]))
+            around = range(max(left_out - 1, 1), min(left_out + 1, len(rows) - 2) + 1)
+            near_pass.append(any(distance[i] < distance[i - 1] and distance[i] < distance[i + 1] for i in around))
+    off, near_pass = np.array(off), np.array(near_pass)
+    assert (len(off), int(near_pass.sum())) == (614, 127)
+    assert np.median(off[~near_pass]) == pytest.approx(1.3, abs=0.1)      # kpc, away from a close pass
+    assert np.median(off[near_pass]) == pytest.approx(10.4, abs=0.5)      # kpc, at or next to one

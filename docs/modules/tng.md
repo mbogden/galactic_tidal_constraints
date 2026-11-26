@@ -5,7 +5,7 @@ galaxy from its particles, one that takes an archive's particles out of the old 
 the simulation box's wrap-around, two that convert units, four that build the frame SPAM uses, one that turns a spin into SPAM's
 disk angles, one that says which galaxy is the primary, `measure_target`, which puts them together
 for one target, `spam_model`, which turns the result into SPAM's 14 parameters, and
-`encounter_rows`, `track_separation` and `track_time`, which follow a target's track in the table. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
+`encounter_rows`, `track_separation`, `track_time` and `track_spline`, which follow a target's track in the table. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
 functions work in whatever units they are given; units change only where `physical` or `spam_units`
 is called, and the frame only where `archive_to_box`, `relative_to` or a rotation is applied.
 
@@ -404,6 +404,27 @@ tng.age_of_universe(1.0)                             # 13.80 Gyr, today
   units (2.6 Gyr). 46 of the 61 targets have rows earlier than that (the median target's first row
   is at -34.8; the furthest at -71.3).
 - The formula: [tng_physics.md](../tng_physics.md#the-hubble-flow).
+
+### A curve through it: `track_spline(time, values, start_slope=None, end_slope=None)`
+A smooth curve through a track's rows: a cubic spline, each column against time. It returns a
+`TrackSpline`, which is called with times.
+
+```python
+curve = tng.track_spline(time, path)        # through every row, before and after the target
+curve(0.0)                                  # (3,) the position at the target: one of the rows
+curve(np.linspace(time[0], 0, 500))         # (500, 3) positions between the rows
+curve.slope(0.0)                            # (3,) the velocity along the curve, per unit of `time`
+```
+
+- It passes exactly through every row, with no kinks: value, slope and bend are continuous. The
+  rows may be unevenly spaced.
+- **Ends are free by default** (no bend there). `start_slope` or `end_slope` sets the curve's slope
+  at that end when it is known.
+- It is not extended beyond the first or last row: a time outside them is an error.
+- Fit it through all of a track's rows, later ones included, so that the target's row is held from
+  both sides. 12 of the 61 targets have no later row; for them now is a free end.
+- **What it can and can't recover** at TNG's snapshot spacing, measured:
+  [tng_physics.md](../tng_physics.md#a-curve-through-the-snapshots).
 
 ## Checked against the TNG catalog
 The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same

@@ -228,6 +228,41 @@ turned into the target's own frame, for all 61 targets. How far a row sits out o
   snapshot and the one before). It is not used: the frame is always built from the target snapshot's
   position and velocity.
 
+## A curve through the snapshots
+TNG50-1 saves a snapshot about every 0.15 Gyr, and a close pass takes less than that. To have the
+pair's path between snapshots, a cubic spline is fitted through the catalog's separations, each axis
+against time (`tng.track_spline`). Only positions are used: the catalog's velocities are halo
+averages ([A galaxy's velocity](#a-galaxys-velocity)). Two tests say how far to trust the curve.
+
+**Leaving a snapshot out.** On the 29 tracks that hold targets, each snapshot in turn was left out
+and the curve fitted through the rest, a gap of two snapshots. How far the curve lands from the
+left-out position (`test_a_curve_through_real_tracks_finds_a_left_out_snapshot`):
+
+| Left-out snapshot | Count | Cubic spline | Straight line | Hermite, catalog velocities |
+|---|---|---|---|---|
+| Away from a close pass | 487 | 1.3 kpc | 3.3 kpc | 1.8 kpc |
+| At or next to a close pass | 127 | 10.4 kpc | 18.2 kpc | 9.2 kpc |
+
+(Medians. The gap here is twice the real one, so the real error is smaller.) Forcing the curve
+through the catalog's velocities as well (a Hermite spline, the earlier pipeline's choice) is no
+better overall than positions alone.
+
+**Against a known answer.** SPAM's own orbit for three targets' models was kept only at TNG's
+spacing, fitted, and compared with the full orbit. These models have fast, tight passes (0.3 to 1.3
+SPAM lengths, 5 to 20 kpc):
+
+- **The time of a close pass is recovered** to about 0.1 to 0.3 SPAM time units (10 to 25 Myr).
+- **The distance of a tight pass is not.** For a true pass at 0.32 SPAM lengths the curve gave 0.09
+  to 1.6, depending only on where the snapshots happened to fall. Near the pass the curve is off by
+  up to 2 SPAM lengths (30 kpc).
+- **Knowing the true velocity at every snapshot does not rescue it**: the same test with a Hermite
+  spline through exact velocities gave 0.06 to 1.1.
+- Where now is the curve's last point, setting its slope there to the true velocity reduces the error
+  in the last interval by about a third.
+
+So the curve is good between passes and for when a pass happened, and not for how close a tight pass
+came. Comparisons with SPAM's orbit should not lean on the closest distance.
+
 ## Disk angles
 SPAM describes each disk's tilt with two angles, φ and θ. It builds the disk flat in the x-y plane,
 turning counter-clockwise seen from +z, tilts it by θ about the y axis, then turns it by φ about the

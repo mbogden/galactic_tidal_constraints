@@ -21,6 +21,7 @@ Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
     encounter_rows                          the table rows of one encounter, in order of snapshot
     track_separation                        the secondary's nucleus relative to the primary's, row by row
     age_of_universe, track_time             a snapshot's age; a track's times relative to the target
+    track_spline                            a smooth curve through a track's rows
 
 The readers and the measuring functions convert nothing; units change only where `physical` or
 `spam_units` is called. What the stored values mean is in each function's docstring.
@@ -879,3 +880,81 @@ def track_time(table: dict, rows, row: int) -> np.ndarray:
         raise ValueError(f"row {int(row)} is not one of the track's rows")
     scale_factor = np.asarray(table["scale_factor"], dtype=np.float64)
     return age_of_universe(scale_factor[rows]) - age_of_universe(scale_factor[int(row)])
+
+
+@dataclass(frozen=True)
+class TrackSpline:
+    """A smooth curve through a track's rows, made by `track_spline`. Call it with times.
+
+    Attributes:
+        time: (n,), the rows' times, increasing.
+        values: (n, k), what the curve passes through at those times.
+        bend: (n, k), the curve's second derivative at those times.
+    """
+
+    time: np.ndarray
+    values: np.ndarray
+    bend: np.ndarray
+
+    def _pieces(self, when):
+        when = np.asarray(when, dtype=np.float64)
+        if np.any(when < self.time[0]) or np.any(when > self.time[-1]):
+            raise ValueError(f"The curve runs from {self.time[0]} to {self.time[-1]}: it is not extended beyond its rows")
+        left = np.clip(np.searchsorted(self.time, when, side="right") - 1, 0, len(self.time) - 2)
+        width = (self.time[left + 1] - self.time[left])[..., None]
+        to_right = (self.time[left + 1] - when)[..., None] / width      # 1 at the left row, 0 at the right one
+        return left, width, to_right, 1 - to_right
+
+    def __call__(self, when) -> np.ndarray:
+        """The curve at the given times: (k,) for one time, (m, k) for m times."""
+        left, width, a, b = self._pieces(when)
+        return (a * self.values[left] + b * self.values[left + 1]
+                + ((a ** 3 - a) * self.bend[left] + (b ** 3 - b) * self.bend[left + 1]) * width ** 2 / 6)
+
+    def slope(self, when) -> np.ndarray:
+        """The curve's rate of change at the given times, per unit of time: the velocity along it."""
+        left, width, a, b = self._pieces(when)
+        return ((self.values[left + 1] - self.values[left]) / width
+                + ((3 * b ** 2 - 1) * self.bend[left + 1] - (3 * a ** 2 - 1) * self.bend[left]) * width / 6)
+
+
+def track_spline(time, values, start_slope=None, end_slope=None) -> TrackSpline:
+    """Fit a smooth curve through a track's rows: a cubic spline, each column against time.
+
+    Args:
+        time: (n,), the rows' times, increasing; any spacing (snapshots can be missing).
+        values: (n, k), what to pass through at those times: a track's positions, (n, 3).
+        start_slope: (k,), the curve's rate of change at the first row, if it is known. None (the
+            default) leaves that end free: no bend there.
+        end_slope: (k,), the same at the last row.
+
+    Returns:
+        A `TrackSpline`. `curve(when)` is the position at any times within the rows' span, and
+        `curve.slope(when)` the velocity there, in the units of `values` per unit of `time`.
+
+    The curve passes exactly through every row and has no kinks: its value, slope and bend are
+    continuous. Between two rows it is a cubic, so it can't follow anything sharper than the rows'
+    spacing shows. It is not extended beyond the first or last row.
+    """
+    time, values = np.asarray(time, dtype=np.float64), np.asarray(values, dtype=np.float64)
+    if time.ndim != 1 or len(time) < 2 or not np.all(np.diff(time) > 0):
+        raise ValueError("time must be at least two increasing values")
+    if values.ndim != 2 or len(values) != len(time):
+        raise ValueError(f"values has shape {values.shape}, expected ({len(time)}, k)")
+    count, width = len(time), np.diff(time)
+    chord = np.diff(values, axis=0) / width[:, None]              # the straight-line slope across each interval
+    system, right = np.zeros((count, count)), np.zeros_like(values)
+    for row in range(1, count - 1):
+        system[row, row - 1:row + 2] = width[row - 1], 2 * (width[row - 1] + width[row]), width[row]
+        right[row] = 6 * (chord[row] - chord[row - 1])
+    for row, slope, near, sign in ((0, start_slope, 0, 1.0), (count - 1, end_slope, count - 2, -1.0)):
+        if slope is None:
+            system[row, row] = 1.0                                # a free end: no bend
+            continue
+        slope = np.asarray(slope, dtype=np.float64)
+        if slope.shape != values.shape[1:]:
+            raise ValueError(f"A slope has shape {slope.shape}, expected {values.shape[1:]}")
+        other = 1 if row == 0 else count - 2
+        system[row, row], system[row, other] = 2 * width[near], width[near]
+        right[row] = 6 * sign * (chord[near] - slope)
+    return TrackSpline(time, values, np.linalg.solve(system, right))

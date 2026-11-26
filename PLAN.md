@@ -219,6 +219,11 @@ How it works: [docs/modules/tng.md](docs/modules/tng.md). What the TNG values me
   half-mass radii), and which stars give the spin (those within the disk radius; all is an option).
   It writes no files. These defaults are first choices, to be compared against the alternatives later.
   `spam_model` then only converts the result to SPAM's 14 parameters.
+- A target's orbit comes from its track in the table (2026-11-26): the rows of its encounter, the
+  catalog's separations made whole and physical, turned by the target's one rotation, with times from
+  TNG's cosmology. Between snapshots it is a cubic spline through the positions of every row, before
+  and after the target; no catalog velocities. It is trusted for when a close pass happened, not for
+  how close a tight one came.
 - Units change in two explicit steps (2026-11-24): stored TNG values to physical (kpc, km/s, M☉),
   then physical to SPAM's units. Each step is one function with its factors in one table.
 
