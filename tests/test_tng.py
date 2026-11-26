@@ -882,6 +882,46 @@ def test_track_separation_errors():
         tng.track_separation(made_up_track(), np.array([0.0, 1.0]), "p")
 
 
+# --- The time axis ---------------------------------------------------------------------------------------
+
+
+def test_the_age_of_the_universe_today_and_early_on():
+    assert tng.age_of_universe(1.0) == pytest.approx(13.80, abs=0.01)             # Gyr, TNG's cosmology
+    assert tng.age_of_universe(0.5) == pytest.approx(5.87, abs=0.01)              # redshift 1
+    # Early on only matter counts, and the age is 2/3 of the Hubble time 1 / H(a).
+    early = 0.01
+    assert tng.age_of_universe(early) * tng.hubble_rate(early) / tng.GYR_PER_KPC_PER_KMS == pytest.approx(2 / 3, rel=1e-5)
+    ages = tng.age_of_universe(np.array([0.2, 0.5, 1.0]))
+    assert ages.shape == (3,) and np.all(np.diff(ages) > 0)
+
+
+@pytest.mark.parametrize("a", [0.1, 0.3, 0.6167, 0.7419, 1.0])
+def test_the_age_is_the_time_integral_of_the_hubble_rate(a):
+    """dt = da / (a H): the age's slope against the scale factor matches `hubble_rate`."""
+    step = 1e-5
+    slope = (tng.age_of_universe(a) - tng.age_of_universe(a - step)) / step       # Gyr per unit of a
+    middle = a - step / 2
+    assert slope == pytest.approx(tng.GYR_PER_KPC_PER_KMS / (middle * tng.hubble_rate(middle)), rel=1e-7)
+
+
+def test_age_of_universe_errors():
+    for bad in (0.0, 1.5, [0.5, -0.1]):
+        with pytest.raises(ValueError, match="above 0 and at most 1"):
+            tng.age_of_universe(bad)
+
+
+def test_track_time_is_zero_at_the_target_and_negative_before_it():
+    table = {"scale_factor": np.array([0.9, 0.5, 0.6, 0.7, 0.8])}                 # rows 1 to 3 are the track
+    rows = np.array([1, 2, 3])
+    time = tng.track_time(table, rows, 2)
+    assert time.shape == (3,) and time.dtype == np.float64
+    assert time[1] == 0 and time[0] < 0 < time[2]
+    assert time == pytest.approx(tng.age_of_universe([0.5, 0.6, 0.7]) - tng.age_of_universe(0.6))
+    assert time[2] - time[0] == pytest.approx(tng.track_time(table, rows, 1)[2])  # moving the target only shifts the zero
+    with pytest.raises(ValueError, match="row 4 is not one of the track's rows"):
+        tng.track_time(table, rows, 4)
+
+
 # --- The real files (only when GTC_DATA_DIR is set) ------------------------------------------------------
 
 DATA = Path(os.environ["GTC_DATA_DIR"]) / "tng-legacy-data" if os.environ.get("GTC_DATA_DIR") else None
@@ -1344,3 +1384,16 @@ def test_a_real_track_turned_into_spams_frame(measured):
     assert np.linalg.norm(path, axis=1) == pytest.approx(np.linalg.norm(along_box, axis=1))   # a rotation keeps distances
     # The rest of the track is not in that plane: earlier rows have a z part (seen: 12 to 250 kpc at the first row).
     assert abs(path[0, 2]) > 10
+
+
+@needs_data
+def test_the_tables_times_agree_with_the_age_formula():
+    table = tng.read_table(DATA / "moi-4-targets.h5")
+    difference = np.abs(tng.age_of_universe(table["scale_factor"]) - table["time_gyr"])
+    assert difference.max() < 1e-6                                                 # Gyr, over all 1268 rows
+    row = int(np.flatnonzero(table["p_SubhaloIDRaw"] == 62000000190717)[0])
+    rows = tng.encounter_rows(table, row)
+    time = tng.track_time(table, rows, row)
+    assert time[rows == row][0] == 0 and np.all(np.diff(time) > 0)
+    assert (time[0], time[-1]) == pytest.approx((-3.58, 0.29), abs=0.01)           # Gyr: 23 snapshots back, 2 on
+    assert tng.spam_units(time[0], "time") == pytest.approx(-41.3, abs=0.1)        # SPAM's own search stops at -30

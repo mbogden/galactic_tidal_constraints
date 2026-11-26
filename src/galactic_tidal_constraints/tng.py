@@ -20,6 +20,7 @@ Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
     spam_model                              a measured target -> SPAM's 14 parameters
     encounter_rows                          the table rows of one encounter, in order of snapshot
     track_separation                        the secondary's nucleus relative to the primary's, row by row
+    age_of_universe, track_time             a snapshot's age; a track's times relative to the target
 
 The readers and the measuring functions convert nothing; units change only where `physical` or
 `spam_units` is called. What the stored values mean is in each function's docstring.
@@ -67,7 +68,8 @@ G = 4.30091e-6
 SPAM_LENGTH = 15.0                                  # kpc
 SPAM_MASS = 1.0e11                                  # Msun
 SPAM_VELOCITY = (G * SPAM_MASS / SPAM_LENGTH) ** 0.5  # km/s, about 169.3
-SPAM_TIME = SPAM_LENGTH / SPAM_VELOCITY * 0.9777922  # Gyr, about 0.0866 (1 kpc / (km/s) = 0.9777922 Gyr)
+GYR_PER_KPC_PER_KMS = 0.9777922                     # 1 kpc / (km/s), in Gyr
+SPAM_TIME = SPAM_LENGTH / SPAM_VELOCITY * GYR_PER_KPC_PER_KMS  # Gyr, about 0.0866
 
 # SPAM's 14 parameters, in SPAM's order (the same as `simr.simulation.PARAM_NAMES`).
 SPAM_PARAMETERS = ("x", "y", "z", "vx", "vy", "vz", "mass1", "mass2", "rout1", "rout2",
@@ -832,3 +834,48 @@ def track_separation(table: dict, rows, primary_side: str) -> np.ndarray:
     secondary = np.asarray(table[f"{secondary_side}_SubhaloPos"], dtype=np.float64)[rows]
     scale_factor = np.asarray(table["scale_factor"], dtype=np.float64)[rows]
     return physical(nearest_image(secondary, primary) - primary, "length", scale_factor)
+
+
+def age_of_universe(scale_factor):
+    """The age of the universe at a snapshot, in TNG's cosmology.
+
+    Args:
+        scale_factor: the snapshot's scale factor a = 1 / (1 + z); a number or an array.
+
+    Returns:
+        The age in Gyr, as float64 in the shape given. Today (a = 1) it is 13.80.
+
+    For a flat universe of matter and dark energy the age has a closed form:
+    t(a) = 2 / (3 H0 sqrt(L)) * asinh(sqrt(L / OMEGA_M) * a**1.5), with L = 1 - OMEGA_M. It is the
+    time integral of `hubble_rate`: dt = da / (a H(a)). Radiation is left out, which changes the age
+    by less than 0.01 Gyr at the snapshots used here.
+    """
+    scale_factor = np.asarray(scale_factor, dtype=np.float64)
+    if np.any(scale_factor <= 0) or np.any(scale_factor > 1):
+        raise ValueError("scale_factor must be above 0 and at most 1")
+    dark_energy = 1 - OMEGA_M
+    hubble_time = GYR_PER_KPC_PER_KMS / (0.1 * H)  # 1 / H0 in Gyr, about 14.43
+    return 2 * hubble_time / (3 * dark_energy ** 0.5) * np.arcsinh((dark_energy / OMEGA_M) ** 0.5 * scale_factor ** 1.5)
+
+
+def track_time(table: dict, rows, row: int) -> np.ndarray:
+    """Each row's time relative to the target's, in Gyr: now is 0 and the past is negative.
+
+    Args:
+        table: the target table, as `read_table` returns it.
+        rows: (n,), the rows of the target's encounter, as `encounter_rows` returns them.
+        row: the target's row. It must be one of `rows`.
+
+    Returns:
+        (n,) float64, in Gyr: `age_of_universe` of each row's snapshot minus the target's. It
+        increases along a track, and `spam_units(..., "time")` puts it in SPAM's units, where SPAM's
+        own orbit also has now at 0 and the past negative.
+
+    The times come from each row's scale factor, not from the table's `time_gyr` column; a test
+    checks that the two agree.
+    """
+    rows = np.asarray(rows)
+    if int(row) not in rows:
+        raise ValueError(f"row {int(row)} is not one of the track's rows")
+    scale_factor = np.asarray(table["scale_factor"], dtype=np.float64)
+    return age_of_universe(scale_factor[rows]) - age_of_universe(scale_factor[int(row)])

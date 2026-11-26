@@ -177,6 +177,13 @@ not to.
 - It is small for close pairs: 3 km/s for nuclei 35 kpc apart, 9 km/s at 111 kpc.
 - It points along the separation, so it changes the speed and never the plane of the orbit.
 
+**The age of the universe** follows from the same H(a), since dt = da / (a H). For matter and dark
+energy it has a closed form (`tng.age_of_universe`), with Λ = 1 − Ωm:
+
+    t(a) = 2 / (3 H0 √Λ) · asinh( √(Λ / Ωm) · a^1.5 )
+
+It gives 13.80 Gyr today. A track's time axis is the difference of two such ages (`tng.track_time`).
+
 ## The frame SPAM needs
 SPAM puts the primary at the origin and at rest ([spam_physics.md](spam_physics.md#what-spam-is)), and
 any rotation of the whole system is allowed: the physics doesn't change. This project fixes the

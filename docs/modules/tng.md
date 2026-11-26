@@ -5,7 +5,7 @@ galaxy from its particles, one that takes an archive's particles out of the old 
 the simulation box's wrap-around, two that convert units, four that build the frame SPAM uses, one that turns a spin into SPAM's
 disk angles, one that says which galaxy is the primary, `measure_target`, which puts them together
 for one target, `spam_model`, which turns the result into SPAM's 14 parameters, and
-`encounter_rows` and `track_separation`, which follow a target's track in the table. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
+`encounter_rows`, `track_separation` and `track_time`, which follow a target's track in the table. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
 functions work in whatever units they are given; units change only where `physical` or `spam_units`
 is called, and the frame only where `archive_to_box`, `relative_to` or a rotation is applied.
 
@@ -386,6 +386,24 @@ path = tng.track_separation(table, rows, target["primary_side"]) @ target["rotat
 - At the target's own row this is `target["position"]`: `(separation, 0, 0)`.
 - The frame is fixed at the target snapshot. The pair's orbit plane turns during an encounter, so
   earlier and later rows have a z part: [tng_physics.md](../tng_physics.md#the-track-leaves-the-plane).
+
+### Its time axis: `track_time(table, rows, row)` and `age_of_universe(scale_factor)`
+`track_time` gives each row's time relative to the target's, in Gyr: 0 at the target, negative
+before it. `age_of_universe` is the age at a scale factor in TNG's cosmology, which it is built on.
+
+```python
+time = tng.track_time(table, rows, row)              # (n,) Gyr, 0 at the target
+spam_time = tng.spam_units(time, "time")             # SPAM's units (one is about 86.6 Myr)
+tng.age_of_universe(1.0)                             # 13.80 Gyr, today
+```
+
+- SPAM's own orbit has the same zero and sign: now at 0, the past negative.
+- The times come from each row's scale factor, not from the table's `time_gyr` column. A test finds
+  the two agree to a millionth of a Gyr over the whole table.
+- **Tracks reach further back than SPAM looks.** SPAM's backward orbit search stops at t = -30 in its
+  units (2.6 Gyr). 46 of the 61 targets have rows earlier than that (the median target's first row
+  is at -34.8; the furthest at -71.3).
+- The formula: [tng_physics.md](../tng_physics.md#the-hubble-flow).
 
 ## Checked against the TNG catalog
 The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same
