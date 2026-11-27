@@ -263,6 +263,19 @@ SPAM lengths, 5 to 20 kpc):
 So the curve is good between passes and for when a pass happened, and not for how close a tight pass
 came. Comparisons with SPAM's orbit should not lean on the closest distance.
 
+**On the 61 targets.** Two checks of the sampled orbit (`tng.target_orbit`) against what is known:
+
+- **Its slope at now is not the measured velocity.** Where the track has a later snapshot (50
+  targets) the slope and the stars' velocity differ by a median 42 km/s as vectors (11° in direction;
+  no lean to fast or slow). Where now is the curve's last point (11 targets) the median is 171 km/s
+  and 22°, and three targets just after a pass are over 110° off. The measured velocity is the one
+  to use at now; the curve's slope is not a velocity measurement
+  (`test_the_curves_slope_at_now_is_not_the_measured_velocity`).
+- **The last close pass falls between snapshots.** 49 orbits have a close pass. Only 2 of them sit
+  on a snapshot; the median is 0.58 SPAM time units from the nearest one. The pass distance is then
+  the curve's own: a median 0.67 of the nearest snapshot's distance, and for some under 0.1, a dip
+  no snapshot saw (`test_every_real_targets_last_pass_falls_between_snapshots`).
+
 ## Disk angles
 SPAM describes each disk's tilt with two angles, φ and θ. It builds the disk flat in the x-y plane,
 turning counter-clockwise seen from +z, tilts it by θ about the y axis, then turns it by φ about the

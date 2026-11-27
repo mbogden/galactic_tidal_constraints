@@ -1587,3 +1587,56 @@ def test_every_real_targets_orbit():
             no_window.append(target)
     assert sorted(lengths)[0] == 1 and lengths.count(3001) == 46          # 46 reach back to -30; one target has no past
     assert len(no_window) == 13                                           # no close pass in their past to center a window on
+
+
+SLOPE_AT_NOW = {62000000190717: (2, 194.9, 6.6),         # later rows, the curve's speed (km/s), its angle from the stars' velocity
+                75000000121160: (0, 263.7, 130.4),       # now is the curve's free end, just after a close pass: the slope is no guide
+                75000000317209: (5, 70.3, 23.5)}
+
+
+def test_the_curves_slope_at_now_is_not_the_measured_velocity(measured):
+    """The check at now: what the curve through the snapshots implies, against the stars' own velocity (pins)."""
+    row, galaxies = measured
+    target = int(row["p_SubhaloIDRaw"])
+    later_rows, curve_speed, angle = SLOPE_AT_NOW[target]
+    seen = galaxies["target"]["default"]
+    table = tng.read_table(DATA / "moi-4-targets.h5")
+    index = int(np.flatnonzero(table["p_SubhaloIDRaw"] == target)[0])
+    rows = tng.encounter_rows(table, index)
+    time = tng.track_time(table, rows, index)
+    path = tng.track_separation(table, rows, seen["primary_side"]) @ seen["rotation"].T
+    slope = tng.track_spline(time, path).slope(0.0) * tng.GYR_PER_KPC_PER_KMS            # kpc/Gyr -> km/s
+    stars = np.asarray(seen["velocities"]["stars"])
+    assert int((time > 1e-9).sum()) == later_rows
+    assert np.linalg.norm(slope) == pytest.approx(curve_speed, abs=0.5)
+    cosine = slope @ stars / (np.linalg.norm(slope) * np.linalg.norm(stars))
+    assert np.degrees(np.arccos(cosine)) == pytest.approx(angle, abs=0.5)
+
+
+@needs_data
+def test_every_real_targets_last_pass_falls_between_snapshots():
+    """Closest approach for all 61: 49 orbits have a close pass, and the curve, not a snapshot, sets how close."""
+    table = tng.read_table(DATA / "moi-4-targets.h5")
+    free_end, off_snapshot, deeper = 0, [], []
+    for path in DATA.glob("target-archive-*.h5"):
+        target = int(path.stem.split("-")[-1])
+        row = int(np.flatnonzero(table["p_SubhaloIDRaw"] == target)[0])
+        rows = tng.encounter_rows(table, row)
+        time = tng.spam_units(tng.track_time(table, rows, row), "time")
+        free_end += int(time[-1] < 1e-9)
+        orbit = tng.target_orbit(table, row, {"target": target, "primary_side": "p", "rotation": np.eye(3)})
+        if len(orbit) < 3:
+            continue
+        distance = np.linalg.norm(orbit[:, :3], axis=1)
+        dips = np.flatnonzero((distance[1:-1] < distance[:-2]) & (distance[1:-1] <= distance[2:])) + 1
+        if len(dips):
+            nearest = int(np.abs(time - orbit[dips[-1], 6]).argmin())
+            off_snapshot.append(abs(time[nearest] - orbit[dips[-1], 6]))
+            at_snapshot = np.linalg.norm(tng.spam_units(tng.track_separation(table, rows[nearest:nearest + 1], "p"), "length"))
+            deeper.append(distance[dips[-1]] / at_snapshot)
+    assert free_end == 11                                         # targets with no later row: now is the curve's free end
+    assert len(off_snapshot) == 49                                # the other 12 have no close pass in their orbit
+    assert int((np.array(off_snapshot) < 0.2).sum()) == 2         # only 2 passes sit on a snapshot (they are 1.73 apart)
+    assert np.median(off_snapshot) == pytest.approx(0.58, abs=0.03)
+    assert np.median(deeper) == pytest.approx(0.67, abs=0.03)     # the curve's pass, as a share of the nearest snapshot's distance
+    assert min(deeper) < 0.1                                      # and for some the curve dips far inside anything a snapshot saw
