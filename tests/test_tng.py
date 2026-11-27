@@ -1218,6 +1218,47 @@ def test_write_target_follows_its_config_and_replaces_what_was_there(tmp_path):
     assert len(list(folder.iterdir())) == len(tng.TARGET_FILES)
 
 
+# --- SPAM's units, checked against SPAM's own dynamics ---------------------------------------------------
+#
+# `spam_units` assumes SPAM works with G = 1. These run SPAM's orbit with friction off and check that it does.
+
+
+def test_spams_orbit_obeys_g_equal_one():
+    """Along SPAM's orbit the secondary's inward acceleration is (mass1 + mass2) x the unit galaxy's force at r."""
+    sim = pytest.importorskip("galactic_tidal_constraints.simr.simulation")
+    free = sim.SimulatorConfig(lnl=0.0)
+    model = np.array([3.0, 0, 0, 0.2, 0.6, 0, 2.0, 1.0, 1.0, 1.0, 0, 0, 0, 0])
+    orbit = sim.search_orbit(model, free)[5:-5]
+    profile = sim.mass_profile(free)
+    distance = np.linalg.norm(orbit[:, :3], axis=1)
+    assert distance.max() < profile["radius"][-1] and distance.min() > 0.1          # inside the force table throughout
+    change = np.gradient(orbit[:, 3:6], orbit[:, 6], axis=0)
+    inward = -(change * orbit[:, :3]).sum(axis=1) / distance
+    expected = (model[6] + model[7]) * np.interp(distance, profile["radius"], profile["force"])
+    assert inward[2:-2] == pytest.approx(expected[2:-2], rel=0.01)
+    assert np.median(inward / expected) == pytest.approx(1.0, abs=0.002)
+
+
+def test_spams_circular_orbit_keeps_keplers_time():
+    """Two unit-mass galaxies 5 lengths apart on a circle: outside both galaxies' mass, so they act as points."""
+    sim = pytest.importorskip("galactic_tidal_constraints.simr.simulation")
+    model = np.array([5.0, 0, 0, 0, np.sqrt(2.0 / 5.0), 0, 1.0, 1.0, 1.0, 1.0, 0, 0, 0, 0])
+    orbit = sim.search_orbit(model, sim.SimulatorConfig(lnl=0.0))
+    distance = np.linalg.norm(orbit[:, :3], axis=1)
+    swept = abs(np.ptp(np.unwrap(np.arctan2(orbit[:, 1], orbit[:, 0]))))
+    assert distance == pytest.approx(5.0, rel=0.001)
+    assert swept == pytest.approx(30.0 * np.sqrt(2.0 / 5.0 ** 3), rel=0.002)        # angular speed sqrt(G M / r^3), for 30 time units
+
+
+def test_spams_unit_galaxy_is_the_same_size_whatever_its_mass():
+    """Why a galaxy's mass for SPAM matters: SPAM puts all of it within 3 lengths (45 kpc), 85% within 1 (15 kpc)."""
+    sim = pytest.importorskip("galactic_tidal_constraints.simr.simulation")
+    profile = sim.mass_profile()
+    inside = lambda r: float(np.interp(r, profile["radius"], profile["total"]))
+    assert inside(1.0) == pytest.approx(0.853, abs=0.005) and inside(3.0) == pytest.approx(1.0, abs=0.001)
+    assert profile["radius"][-1] == pytest.approx(10.0, abs=0.01)                   # the force table ends at 10 lengths (150 kpc)
+
+
 # --- The real files (only when GTC_DATA_DIR is set) ------------------------------------------------------
 
 DATA = Path(os.environ["GTC_DATA_DIR"]) / "tng-legacy-data" if os.environ.get("GTC_DATA_DIR") else None

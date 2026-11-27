@@ -372,6 +372,46 @@ converts physical values into them:
 The velocity and time are computed with G = 4.30091 × 10⁻⁶ kpc (km/s)² / M☉ and agree with the
 constants in SPAM's source to 3 × 10⁻⁵ (`test_spams_units_are_15_kpc_and_1e11_msun_with_g_equal_to_one`).
 
+### The units, checked against SPAM's own dynamics
+The constants agreeing is not the same as SPAM using them. Three runs of SPAM's orbit with friction
+off (`lnl` = 0) check that it does:
+
+- **SPAM obeys G = 1.** Along its orbit for three targets' models, the secondary's inward acceleration
+  is (mass1 + mass2) × the unit galaxy's force at that separation, to 0.1% (the median over 30,000
+  steps is within 0.0008 of 1). Both masses count: it is the two-body relative orbit
+  (`test_spams_orbit_obeys_g_equal_one`).
+- **A circular orbit keeps Kepler's time** to 0.1% for two unit-mass galaxies 2, 5 and 9 lengths
+  apart (`test_spams_circular_orbit_keeps_keplers_time`).
+- **Beyond 10 lengths (150 kpc) it does not.** SPAM's force table ends there. Circular orbits started
+  at 12, 20 and 40 lengths fall inward and sweep 15 to 30% more angle than Kepler's. This is a known
+  limit of SPAM, not of the units; it matters for a pair that was further apart than 150 kpc in the
+  time SPAM runs.
+
+So a length, mass, velocity and time from `spam_units` mean to SPAM what they mean here.
+
+### The old recipe's units, and what is left
+The earlier pipeline took lengths as ckpc/h × 0.7 (correct: × a ÷ 0.6774) and masses as 10¹⁰ M☉/h ×
+0.7 (correct: ÷ 0.6774), so its lengths were 0.64 to 0.77 of the true ones at these snapshots and
+its masses 0.47. SPAM run with default settings on the old recipe's model and on the new one, with
+the time of each orbit's last close pass beside the track's:
+
+| Target | TNG's track | SPAM, new model | SPAM, old recipe |
+|---|---|---|---|
+| `62000000190717` | 0.18 Gyr ago | 0.08 | 0.05 |
+| `75000000121160` | 0.08 Gyr ago | 0.04 | 0.04 |
+| `75000000317209` | 0.47 Gyr ago | 0.32 | 0.23 |
+
+Correct units bring SPAM's pass nearer the track's for two of the three, and SPAM still "moves too
+fast": its last pass is at 0.4 to 0.7 of the track's time. The units are not the cause of what is
+left.
+
+**What SPAM does with a mass.** SPAM builds both galaxies from one unit galaxy whose size does not
+change with its mass: 85% of the mass is within 1 length (15 kpc) and all of it within 3 (45 kpc)
+(`test_spams_unit_galaxy_is_the_same_size_whatever_its_mass`). A TNG galaxy's total mass is mostly
+dark matter spread over hundreds of kpc. For the primary of `62000000190717` the mass handed to
+SPAM is 17.7 × 10¹¹ M☉, while 1.8 × 10¹¹ M☉ of it lies within its disk radius (17 kpc). SPAM
+therefore puts about ten times TNG's mass between the two nuclei, which shortens every orbital time.
+
 ## Known limits of this project's TNG files
 - **Star particles include wind.** TNG stores wind-phase gas cells with the stars; the documentation:
   "The only differentiation between a real star (>0) and a wind phase gas cell (<=0) is the sign" of
