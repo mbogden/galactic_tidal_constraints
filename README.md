@@ -138,8 +138,9 @@ run `bash examples/spam/check_original_jspam.sh` on the host (Git Bash on Window
 
 ## Acknowledgements
 This project uses data from the [IllustrisTNG](https://www.tng-project.org) project's TNG50 simulation
-(Nelson et al. 2019a, 2019b; Pillepich et al. 2019). No TNG data is in this repository. References:
-[docs/tng_physics.md](docs/tng_physics.md#acknowledgement).
+(Nelson et al. 2019a, 2019b; Pillepich et al. 2019), and its targets were chosen with TNG's
+deep-learning morphology catalog, merger history catalog and SubLink merger trees. No TNG data is in
+this repository. References: [docs/tng_physics.md](docs/tng_physics.md#acknowledgement).
 
 ## License
 Licensed under the Academic Free License version 3.0. See [LICENSE](LICENSE). This project's use of

@@ -20,6 +20,20 @@ introduce TNG50:
 - Nelson et al. 2019b, TNG50: outflows ([arXiv:1902.05554](https://arxiv.org/abs/1902.05554))
 - Pillepich et al. 2019, TNG50: structure and kinematics ([arXiv:1902.05553](https://arxiv.org/abs/1902.05553))
 
+The targets this code reads were chosen and followed through time with three further TNG data
+products. The TNG project asks that "use of any of the supplementary data products should include
+the relevant citation", and lists them on its
+[data specifications page](https://www.tng-project.org/data/docs/specifications/):
+
+- Galaxy morphologies from deep learning, the disk probability used to choose disk galaxies:
+  Huertas-Company et al. 2019 ([arXiv:1903.07625](https://arxiv.org/abs/1903.07625)) and
+  Varma et al. 2021 ([arXiv:2110.11989](https://arxiv.org/abs/2110.11989))
+- The merger history catalog, the snapshot of each galaxy's next major merger:
+  Rodriguez-Gomez et al. 2017 ([2017MNRAS.467.3083R](https://ui.adsabs.harvard.edu/abs/2017MNRAS.467.3083R/abstract)) and
+  Eisert et al. 2022 ([2022MNRAS.tmp.3051E](https://ui.adsabs.harvard.edu/abs/2022MNRAS.tmp.3051E/abstract))
+- The SubLink merger trees, each galaxy's track from snapshot to snapshot:
+  Rodriguez-Gomez et al. 2015 ([arXiv:1502.01339](https://arxiv.org/abs/1502.01339))
+
 The simulations were run by the TNG collaboration on the Hazel Hen supercomputer at HLRS, with
 compute time from the Gauss Centre for Supercomputing, and on machines of the MPCDF. Their full
 citation request, including the acknowledgement text they suggest for papers, is in the
