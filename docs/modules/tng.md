@@ -456,6 +456,37 @@ metrics.orbit_position_error(orbit, model_orbit, weights)
   can't be made for them: they are on first approach, or the pass is too near the orbit's start.
 - How far to trust it: [tng_physics.md](../tng_physics.md#a-curve-through-the-snapshots).
 
+## A target's stars: `target_particles(table, row, archive, target, config=None)`
+The target's stars in the form of SPAM's particles: the same frame, units and row order as
+`simulation.simulate_particles`, so the particle metrics and the image maker take them unchanged.
+
+```python
+archive = tng.read_archive(path, "all")
+target = tng.measure_target(table, row, archive)
+stars = tng.target_particles(table, row, archive, target)
+
+model = tng.spam_model(target)
+metrics.pca_shape(stars["particles"])
+image_creator.create_image(stars["particles"], model, stars["n1"], stars["n2"])
+```
+
+| Key | Shape | Value |
+|---|---|---|
+| `particles` | `(n1 + n2 + 1, 6)` | `x, y, z, vx, vy, vz` in SPAM's units. The primary's stars, then the secondary's, then one row for the secondary's center: the model's `x, y, z, vx, vy, vz` |
+| `masses` | `(n1 + n2,)` | Each star's mass, in SPAM's mass unit (1e11 M☉) |
+| `n1`, `n2` | int | How many stars each galaxy has |
+
+- **Which stars:** those each galaxy owned before the encounter (`historical_galaxy`), all of them,
+  however far out. Tidal features are the outliers, so nothing is cut by radius.
+- **The frame is the target's:** the primary's nucleus at the origin and at rest, the secondary on
+  +x, the orbit in the x-y plane. Velocities include the Hubble flow, as the model's do.
+- **Nothing is thinned or weighted.** A target has about a million stars of differing mass where a
+  SPAM run has a few thousand equal points. `masses` is returned for whoever compares.
+- **`config`** must be the one the target was measured with (it sets how the nuclei's velocities are
+  measured). A config that doesn't give the target's velocity back is an error.
+- Only the stars are read, so an archive read with the default `read_archive(path)` is enough.
+  "stars" includes wind particles ([Known issues](#known-issues)).
+
 ## Checked against the TNG catalog
 The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same
 galaxies: mass, separation, relative velocity (with √a), spin (× a^1.5) and half-mass radius. The

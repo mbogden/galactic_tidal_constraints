@@ -23,6 +23,7 @@ Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
     age_of_universe, track_time             a snapshot's age; a track's times relative to the target
     track_spline                            a smooth curve through a track's rows
     target_orbit                            a target's orbit for SPAM's metrics, sampled from that curve
+    target_particles                        a target's stars as SPAM's particles: its frame, units and row order
 
 The readers and the measuring functions convert nothing; units change only where `physical` or
 `spam_units` is called. What the stored values mean is in each function's docstring.
@@ -1013,3 +1014,86 @@ def target_orbit(table: dict, row: int, target: dict, spacing: float = 0.01, ear
         orbit[:, :3] = track_spline(time, path)(when)
     orbit[-1, :3] = path[rows == row][0]            # exactly the target's row, not the curve's rounding of it
     return orbit
+
+
+def target_particles(table: dict, row: int, archive: dict, target: dict, config: TngTargetConfig | None = None) -> dict:
+    """A target's stars in the form of SPAM's particles: what a model's particles are compared with.
+
+    Args:
+        table: the target table, as `read_table` returns it.
+        row: the target's row.
+        archive: the target's particles, as `read_archive` returns them. Only the stars are used, so
+            the default `read_archive(path)` is enough.
+        target: the target measured at that row, as `measure_target` returns it. Its "primary_side"
+            and "rotation" set the frame.
+        config: the config the target was measured with. `TngTargetConfig()` when None. Its
+            `core_radius` and `hubble_flow` are used; a config that doesn't give the target's own
+            velocity back is an error.
+
+    Returns:
+        A dict:
+
+        particles   (n1 + n2 + 1, 6) float64   x, y, z, vx, vy, vz in SPAM's frame and units, in the
+                                               row order of `simulate_particles`: the primary's stars,
+                                               then the secondary's, then one row for the secondary's
+                                               center, which is the model's x, y, z, vx, vy, vz
+        masses      (n1 + n2,) float64         each star's mass, in SPAM's mass unit (1e11 Msun)
+        n1, n2      int                        how many stars each galaxy has
+
+    How it is made:
+        - A galaxy's stars are those it owned before the encounter (`historical_galaxy`), all of
+          them, however far out. Their order in the archive is kept.
+        - Positions: out of the old frame, whole across the box edge, relative to the primary's
+          nucleus (the catalog's `SubhaloPos`), in kpc, turned by the target's rotation.
+        - Velocities: in km/s, relative to the primary's nucleus (the mean of all stars within
+          `config.core_radius` of it), with the Hubble flow added unless the config turns it off,
+          turned by the same rotation.
+
+    SPAM's particles are equal points; TNG's stars have different masses, and there are many more of
+    them. Nothing is thinned or weighted here: "masses" is there for whoever compares. "stars"
+    includes wind particles (`read_archive`).
+    """
+    config = TngTargetConfig() if config is None else config
+    row = int(row)
+    ids = (int(table["p_SubhaloIDRaw"][row]), int(table["s_SubhaloIDRaw"][row]), int(table["snap"][row]))
+    if ids != (archive["p_id"], archive["s_id"], archive["t_snap"]):
+        raise ValueError(f"Row {row} is target {ids[0]} at snapshot {ids[2]}, but the archive holds "
+                         f"target {archive['p_id']} at snapshot {archive['t_snap']}")
+    if ids[0] != target["target"]:
+        raise ValueError(f"Row {row} is target {ids[0]}, but the measurements are of {target['target']}")
+    stars = np.asarray(archive["particle_type"]) == PARTICLE_TYPES["stars"]
+    owner = np.asarray(archive["historical_galaxy"])[stars]
+    primary = target["primary_side"]
+    secondary = "s" if primary == "p" else "p"
+    of_primary, of_secondary = (np.flatnonzero(owner == GALAXY_LABELS[side]) for side in (primary, secondary))
+    if not (len(of_primary) and len(of_secondary)):
+        raise ValueError("The archive needs star particles in both galaxies")
+
+    scale_factor = float(table["scale_factor"][row])
+    origin = np.asarray(table[f"{primary}_SubhaloPos"][row], dtype=np.float64)
+    positions, velocities = archive_to_box(np.asarray(archive["positions"])[stars], np.asarray(archive["velocities"])[stars],
+                                           table["orbital_frame_pos_transform"][row], table["orbital_frame_vel_transform"][row])
+    positions = physical(nearest_image(positions, origin) - origin, "length", scale_factor)
+    velocities = physical(velocities, "particle_velocity", scale_factor)
+    masses = physical(np.asarray(archive["masses"])[stars], "mass")
+
+    # The two nuclei's velocities, as `measure_target` measures them, and the check that they give the target back.
+    nucleus = physical(nearest_image(np.asarray(table[f"{secondary}_SubhaloPos"][row], dtype=np.float64), origin) - origin,
+                       "length", scale_factor)
+    at_rest = core_velocity(positions, velocities, masses, np.zeros(3), config.core_radius)
+    moving = core_velocity(positions, velocities, masses, nucleus, config.core_radius)
+    rotation = np.asarray(target["rotation"], dtype=np.float64)
+    seen = relative_to(nucleus, moving, np.zeros(3), at_rest, scale_factor, config.hubble_flow)[1] @ rotation.T
+    wanted = np.asarray(target["velocity"], dtype=np.float64)
+    if np.abs(seen - wanted).max() > 1e-6 * max(1.0, np.abs(wanted).max()):
+        raise ValueError(f"This config gives the secondary a velocity of {seen}, but the target was measured "
+                         f"with {wanted}: give the config the target was measured with")
+
+    positions, velocities = relative_to(positions, velocities, np.zeros(3), at_rest, scale_factor, config.hubble_flow)
+    order = np.concatenate([of_primary, of_secondary])
+    particles = np.empty((len(order) + 1, 6))
+    particles[:-1, :3] = spam_units(positions[order] @ rotation.T, "length")
+    particles[:-1, 3:] = spam_units(velocities[order] @ rotation.T, "velocity")
+    particles[-1] = spam_model(target)[:6]
+    return {"particles": particles, "masses": spam_units(masses[order], "mass"),
+            "n1": int(len(of_primary)), "n2": int(len(of_secondary))}

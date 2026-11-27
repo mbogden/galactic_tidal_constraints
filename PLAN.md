@@ -225,6 +225,10 @@ How it works: [docs/modules/tng.md](docs/modules/tng.md). What the TNG values me
   and after the target; no catalog velocities. It is trusted for when a close pass happened, not for
   how close a tight one came. The orbit given to the metrics is that curve sampled from t = -30 (SPAM's
   own limit) to now, with zeros in the velocity columns: the metrics read positions and times only.
+- A target's particles for comparison are its stars (2026-11-26): all the stars each galaxy owned
+  before the encounter, in the target's frame and SPAM's units, in the row order of SPAM's own
+  particles. Not cut by radius and not thinned; their masses are returned alongside. See
+  `docs/modules/tng.md`.
 - Units change in two explicit steps (2026-11-24): stored TNG values to physical (kpc, km/s, M☉),
   then physical to SPAM's units. Each step is one function with its factors in one table.
 

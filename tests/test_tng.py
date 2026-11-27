@@ -787,6 +787,75 @@ def test_a_target_configs_defaults():
     assert (config.mass, config.disk_radius_factor, config.spin_radius_factor) == ("historical", 5.0, 5.0)
 
 
+# --- A target's stars as SPAM's particles ----------------------------------------------------------------
+
+
+def made_up_stars(side):
+    """One galaxy's 24 stars about its own nucleus, as `made_up_target` places them: kpc and km/s."""
+    rings = [tilted_ring(radius, 100.0, normal) for radius, normal in ((0.5, [0, 0, 1]), (2.0, [0, 0, 1]), (4.0, [0.6, 0.8, 0]))]
+    return np.concatenate([where for where, _ in rings]), np.concatenate([moving for _, moving in rings])
+
+
+def test_target_particles_gives_the_stars_in_spams_frame_units_and_order():
+    table, archive = made_up_target()
+    target = tng.measure_target(table, 0, archive)
+    result = tng.target_particles(table, 0, archive, target)
+    particles = result["particles"]
+    assert (result["n1"], result["n2"]) == (24, 24) and particles.shape == (49, 6) and particles.dtype == np.float64
+    rate = float(tng.hubble_rate(A))
+    for first, side, center, orbit in ((0, "p", [0, 0, 0], [0, 0, 0]), (24, "s", [SEPARATION, 0, 0], [0, ORBIT_SPEED, 0])):
+        where, moving = made_up_stars(side)
+        where = where + center
+        assert particles[first:first + 24, :3] == pytest.approx(where / tng.SPAM_LENGTH, abs=1e-9)
+        # relative to the primary's nucleus, plus the Hubble flow: H x the distance from that nucleus
+        assert particles[first:first + 24, 3:] == pytest.approx((moving + orbit + rate * where) / tng.SPAM_VELOCITY, abs=1e-9)
+        assert result["masses"][first:first + 24] == pytest.approx(STAR[side] / tng.SPAM_MASS)
+    assert particles[-1] == pytest.approx(tng.spam_model(target)[:6], abs=1e-12)        # the secondary's center
+    assert result["masses"].shape == (48,)
+
+
+def test_target_particles_needs_only_the_stars_and_follows_the_primary_rule():
+    table, archive = made_up_target(star={"p": 1.0e8, "s": 2.0e8})         # the table's secondary has more stars
+    target = tng.measure_target(table, 0, archive)
+    stars = archive["particle_type"] == 4
+    only_stars = {name: value[stars] if isinstance(value, np.ndarray) else value for name, value in archive.items()}
+    result = tng.target_particles(table, 0, only_stars, target)
+    assert same(result, tng.target_particles(table, 0, archive, target))
+    assert result["masses"][:24] == pytest.approx(2.0e8 / tng.SPAM_MASS)   # the heavier galaxy's stars come first
+    assert result["particles"][:24, :3].mean(axis=0) == pytest.approx([0, 0, 0], abs=1e-9)
+    assert result["particles"][24:48, :3].mean(axis=0) == pytest.approx([SEPARATION / tng.SPAM_LENGTH, 0, 0], abs=1e-9)
+
+
+def test_target_particles_does_not_depend_on_the_old_frame_or_the_box_edge():
+    table, archive = made_up_target()
+    plain = tng.target_particles(table, 0, archive, tng.measure_target(table, 0, archive))
+    turn = tng.orbit_rotation([1.0, 2.0, 3.0], [-2.0, 0.5, 1.0])
+    table, archive = made_up_target(primary_at=(34990.0, 200.0, 300.0), old_frame=(turn, np.array([40.0, -700.0, 3.0])))
+    assert same(tng.target_particles(table, 0, archive, tng.measure_target(table, 0, archive)), plain)
+
+
+def test_target_particles_follows_the_config_the_target_was_measured_with():
+    table, archive = made_up_target()
+    still = tng.TngTargetConfig(hubble_flow=False)
+    result = tng.target_particles(table, 0, archive, tng.measure_target(table, 0, archive, still), still)
+    where, moving = made_up_stars("p")
+    assert result["particles"][:24, 3:] == pytest.approx(moving / tng.SPAM_VELOCITY, abs=1e-9)       # no Hubble flow
+    with pytest.raises(ValueError, match="give the config the target was measured with"):
+        tng.target_particles(table, 0, archive, tng.measure_target(table, 0, archive, still))
+
+
+def test_target_particles_errors():
+    table, archive = made_up_target()
+    target = tng.measure_target(table, 0, archive)
+    with pytest.raises(ValueError, match="the archive holds target 75000000121160"):
+        tng.target_particles(table, 0, {**archive, "p_id": 75000000121160}, target)
+    with pytest.raises(ValueError, match="the measurements are of 5"):
+        tng.target_particles(table, 0, archive, {**target, "target": 5})
+    one_galaxy = {**archive, "historical_galaxy": np.zeros(54, dtype=np.int8)}
+    with pytest.raises(ValueError, match="needs star particles in both galaxies"):
+        tng.target_particles(table, 0, one_galaxy, target)
+
+
 # --- SPAM's 14 parameters --------------------------------------------------------------------------------
 
 
@@ -1123,6 +1192,7 @@ def measured(request):
               "by_table": tng.measure_target(table, row, archive, tng.TngTargetConfig(primary_rule="table")),
               "inner_spin": tng.measure_target(table, row, archive, tng.TngTargetConfig(spin_radius_factor=2.0)),
               "all_spin": tng.measure_target(table, row, archive, tng.TngTargetConfig(spin_radius_factor=None))}
+    as_particles = tng.target_particles(table, row, archive, target["default"])
     row = {name: column[row] for name, column in table.items()}
     box_positions, box_velocities = tng.archive_to_box(
         archive["positions"], archive["velocities"], row["orbital_frame_pos_transform"], row["orbital_frame_vel_transform"])
@@ -1162,6 +1232,7 @@ def measured(request):
     frame["sample"] = (sample - frame["nucleus"]["p"], (sample - frame["nucleus"]["p"]) @ frame["rotation"].T)
     galaxies["frame"] = frame
     galaxies["target"] = target
+    galaxies["particles"] = as_particles
     return row, galaxies
 
 
@@ -1640,3 +1711,36 @@ def test_every_real_targets_last_pass_falls_between_snapshots():
     assert np.median(off_snapshot) == pytest.approx(0.58, abs=0.03)
     assert np.median(deeper) == pytest.approx(0.67, abs=0.03)     # the curve's pass, as a share of the nearest snapshot's distance
     assert min(deeper) < 0.1                                      # and for some the curve dips far inside anything a snapshot saw
+
+
+STARS = {62000000190717: (871840, 647983), 75000000121160: (1619317, 770091), 75000000317209: (1689610, 685381)}   # n1, n2 (pins)
+
+
+def test_a_real_targets_stars_as_spams_particles(measured):
+    """The stars come back in SPAM's frame: each galaxy's stars sit on its center and turn about the model's spin."""
+    pytest.importorskip("galactic_tidal_constraints.simr.simulation")
+    from galactic_tidal_constraints.simr import image_creator, metrics
+
+    row, galaxies = measured
+    target, result = galaxies["target"]["default"], galaxies["particles"]
+    particles, masses, n1, n2 = result["particles"], result["masses"], result["n1"], result["n2"]
+    model = tng.spam_model(target)
+    assert (n1, n2) == STARS[int(row["p_SubhaloIDRaw"])]
+    assert particles.shape == (n1 + n2 + 1, 6) and np.isfinite(particles).all() and masses.shape == (n1 + n2,)
+    assert particles[-1] == pytest.approx(model[:6], abs=1e-12)
+    for role, rows, center in (("primary", slice(0, n1), np.zeros(3)), ("secondary", slice(n1, n1 + n2), model[:3])):
+        galaxy = target[role]
+        assert masses[rows].sum() == pytest.approx(galaxy["stellar_mass"] / tng.SPAM_MASS, rel=1e-6)
+        distance = np.linalg.norm(particles[rows, :3] - center, axis=1)
+        # Half of the galaxy's stellar mass is within its half-mass radius of its center.
+        inside = masses[rows][distance < galaxy["half_mass_radius"] / tng.SPAM_LENGTH].sum() / masses[rows].sum()
+        assert inside == pytest.approx(0.5, abs=0.001)
+        # Its stars within the spin radius turn about the model's disk angles.
+        near = distance < 5.0 * galaxy["half_mass_radius"] / tng.SPAM_LENGTH
+        spin = tng.galaxy_properties(particles[rows, :3][near], particles[rows, 3:][near], masses[rows][near])["spin"]
+        assert tng.disk_angles(spin) == pytest.approx((galaxy["phi"], galaxy["theta"]), abs=0.01)
+    # The particle metrics and the image maker take it as they take SPAM's own particles.
+    shape = metrics.pca_shape(particles)
+    assert np.isfinite(shape["axes"]).all() and 0 < shape["c_a"] <= shape["b_a"] <= 1
+    image = image_creator.create_image(particles, model, n1, n2)
+    assert image.ndim == 2 and image.max() == pytest.approx(1.0)
