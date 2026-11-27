@@ -24,6 +24,10 @@ Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
     track_spline                            a smooth curve through a track's rows
     target_orbit                            a target's orbit for SPAM's metrics, sampled from that curve
     target_particles                        a target's stars as SPAM's particles: its frame, units and row order
+    orbit_notes                             what to know about a target's orbit before comparing with it
+    write_target, write_targets             write one target's files, or every target's, for SIMR runs
+
+    python -m galactic_tidal_constraints.tng --data <legacy folder> --output <targets folder>
 
 The readers and the measuring functions convert nothing; units change only where `physical` or
 `spam_units` is called. What the stored values mean is in each function's docstring.
@@ -31,7 +35,10 @@ The readers and the measuring functions convert nothing; units change only where
 The readers need `h5py` (the `tng` dependency group).
 """
 
-from dataclasses import dataclass
+import argparse
+import json
+import sys
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
@@ -75,6 +82,14 @@ GYR_PER_KPC_PER_KMS = 0.9777922                     # 1 kpc / (km/s), in Gyr
 SPAM_TIME = SPAM_LENGTH / SPAM_VELOCITY * GYR_PER_KPC_PER_KMS  # Gyr, about 0.0866
 
 # SPAM's 14 parameters, in SPAM's order (the same as `simr.simulation.PARAM_NAMES`).
+# The files `write_target` writes into a target's folder, and `write_targets` beside the folders. Every
+# name says where its contents come from: "tng_" is measured from TNG's data; nothing here is made by SPAM.
+TARGET_FILES = {"model": "tng_spam_model.txt", "orbit": "tng_orbit.npy", "particles": "tng_star_particles.npy",
+                "masses": "tng_star_masses.npy", "externals": "simr_externals.json", "target": "tng_target.json"}
+TARGETS_TABLE, TARGETS_MODELS = "tng_targets.h5", "tng_spam_models.txt"
+# The keys a SIMR request uses for a target's arrays: "ext.tng_orbit", "ext.tng_star_particles".
+EXTERNAL_KEYS = {"tng_orbit": "orbit", "tng_star_particles": "particles"}
+
 SPAM_PARAMETERS = ("x", "y", "z", "vx", "vy", "vz", "mass1", "mass2", "rout1", "rout2",
                    "phi1", "phi2", "theta1", "theta2")
 
@@ -1097,3 +1112,230 @@ def target_particles(table: dict, row: int, archive: dict, target: dict, config:
     particles[-1] = spam_model(target)[:6]
     return {"particles": particles, "masses": spam_units(masses[order], "mass"),
             "n1": int(len(of_primary)), "n2": int(len(of_secondary))}
+
+
+def orbit_notes(table: dict, row: int, target: dict, orbit: np.ndarray) -> dict:
+    """What to know about a target's orbit before comparing a model with it.
+
+    Args:
+        table: the target table, as `read_table` returns it.
+        row: the target's row.
+        target: the target measured at that row. Its "primary_side" and "rotation" are used.
+        orbit: the target's orbit, as `target_orbit` returns it.
+
+    Returns:
+        A dict of plain values:
+
+        rows_before, rows_after   int           track rows earlier and later than the target
+        samples                   int           the orbit's rows
+        start                     float         its first time, in SPAM's time unit (-30 at the earliest)
+        velocity_columns          str           "zeros": the orbit's velocities are not measured
+        last_pass                 dict | None   the most recent dip in distance before now: its "time"
+                                                and "distance", in SPAM's units. None: no pass in the orbit
+        recent_approach_window    bool          a window centered on that pass and reaching now (twice as
+                                                far back as the pass) fits inside the orbit
+        track_plane_angle         float | None  the angle, in degrees, between the frame's z and the plane
+                                                the track itself moved in over the last Gyr (the sum of
+                                                r x the next r over those rows). Near 0: the track has
+                                                stayed in the frame's plane. Above 90: it went round the
+                                                other way, as happens on a nearly radial orbit, where the
+                                                sideways velocity that sets the frame's plane is within
+                                                its own noise. None: no earlier row
+        crosses_box_edge          bool          on some row the pair sits across a face of the box
+
+    A pass's distance is the curve's own, not a snapshot's: docs/tng_physics.md, "A curve through the
+    snapshots".
+    """
+    row = int(row)
+    rows = encounter_rows(table, row)
+    time = track_time(table, rows, row)
+    here = int(np.flatnonzero(rows == row)[0])
+    orbit = np.asarray(orbit, dtype=np.float64)
+    distance = np.linalg.norm(orbit[:, :3], axis=1)
+    dips = np.flatnonzero((distance[1:-1] < distance[:-2]) & (distance[1:-1] <= distance[2:])) + 1 if len(orbit) >= 3 else []
+    last_pass = {"time": float(orbit[dips[-1], 6]), "distance": float(distance[dips[-1]])} if len(dips) else None
+
+    track_plane_angle = None
+    if here > 0:
+        first = min(int(np.searchsorted(time, -1.0)), here - 1)         # the rows of the last Gyr; at least one before now
+        path = track_separation(table, rows[first:here + 1], target["primary_side"]) @ np.asarray(target["rotation"]).T
+        turning = np.cross(path[:-1], path[1:]).sum(axis=0)
+        if np.linalg.norm(turning) > 0:
+            track_plane_angle = float(np.degrees(np.arccos(np.clip(turning[2] / np.linalg.norm(turning), -1.0, 1.0))))
+    primary, secondary = (np.asarray(table[f"{side}_SubhaloPos"], dtype=np.float64)[rows] for side in "ps")
+    return {"rows_before": here, "rows_after": int(len(rows) - 1 - here),
+            "samples": int(len(orbit)), "start": float(orbit[0, 6]), "velocity_columns": "zeros",
+            "last_pass": last_pass,
+            "recent_approach_window": bool(last_pass is not None and 2 * last_pass["time"] >= orbit[0, 6] - 1e-9),
+            "track_plane_angle": track_plane_angle,
+            "crosses_box_edge": bool(np.abs(secondary - primary).max() > BOX / 2)}
+
+
+def _plain(value):
+    """A measured value as JSON can hold it: arrays become lists, NumPy numbers become Python's."""
+    if isinstance(value, dict):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def write_target(folder, table: dict, row: int, archive: dict, config: TngTargetConfig | None = None) -> dict:
+    """Measure one target and write its files: what a SIMR run needs to compare models with it.
+
+    Args:
+        folder: the targets folder. The target's own folder, `<folder>/<target>`, is made if needed;
+            files already in it with these names are replaced.
+        table: the target table, as `read_table` returns it.
+        row: the target's row.
+        archive: the target's particles, as `read_archive(path, "all")` returns them.
+        config: the choices to make. `TngTargetConfig()` when None.
+
+    Returns:
+        The record written to `tng_target.json`, a dict of plain values:
+
+        target      everything `measure_target` returned (physical units, SPAM's frame)
+        config      the `TngTargetConfig` used, as a dict
+        model       SPAM's 14 parameters by name (`spam_model`)
+        stars       {"n1", "n2"}: how many stars each galaxy has in the particle file
+        orbit       `orbit_notes`
+        files       the names of the files written, as below
+
+    The files, all in `<folder>/<target>/` (names in `TARGET_FILES`):
+
+        tng_spam_model.txt       the 14 parameters on one line, comma-separated: a models file for SIMR
+        tng_orbit.npy            `target_orbit`: (n, 7) float64
+        tng_star_particles.npy   `target_particles`' particles: (n1 + n2 + 1, 6) float32
+        tng_star_masses.npy      their masses: (n1 + n2,) float32
+        simr_externals.json      {"tng_orbit": ..., "tng_star_particles": ...}: SIMR's --externals file
+        tng_target.json          the record
+
+    Everything is measured from TNG's data; none of it is made by SPAM.
+    """
+    config = TngTargetConfig() if config is None else config
+    target = measure_target(table, row, archive, config)
+    model = spam_model(target)
+    orbit = target_orbit(table, row, target)
+    stars = target_particles(table, row, archive, target, config)
+
+    out = Path(folder) / str(target["target"])
+    out.mkdir(parents=True, exist_ok=True)
+    (out / TARGET_FILES["model"]).write_text(",".join(repr(float(value)) for value in model) + "\n", encoding="utf-8")
+    np.save(out / TARGET_FILES["orbit"], orbit)
+    np.save(out / TARGET_FILES["particles"], stars["particles"].astype(np.float32))
+    np.save(out / TARGET_FILES["masses"], stars["masses"].astype(np.float32))
+    externals = {key: TARGET_FILES[name] for key, name in EXTERNAL_KEYS.items()}
+    (out / TARGET_FILES["externals"]).write_text(json.dumps(externals, indent=2) + "\n", encoding="utf-8")
+    record = _plain({"target": target, "config": asdict(config),
+                     "model": dict(zip(SPAM_PARAMETERS, model)),
+                     "stars": {"n1": stars["n1"], "n2": stars["n2"]},
+                     "orbit": orbit_notes(table, row, target, orbit),
+                     "files": dict(TARGET_FILES)})
+    (out / TARGET_FILES["target"]).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    return record
+
+
+def write_targets(data, folder, config: TngTargetConfig | None = None, targets=None, report=None) -> list[dict]:
+    """Write every target's files, and two files that list them all.
+
+    Args:
+        data: the legacy folder: `moi-4-targets.h5` and the `target-archive-<id>.h5` files.
+        folder: the targets folder to write into (made if needed).
+        config: the choices to make, the same for every target. `TngTargetConfig()` when None.
+        targets: the targets to write, by full `SubhaloIDRaw`. Every archive in `data` when None.
+        report: called with one line of text per target, as it is done. Nothing is reported when None.
+
+    Returns:
+        One record per target, in order of ID: what `write_target` returned, or
+        {"target": id, "error": message} for a target that could not be measured (nothing is written
+        for it, and the others go on).
+
+    Besides each target's folder (`write_target`), in `folder`:
+
+        tng_spam_models.txt   every written target's model, one per line, in order of ID
+        tng_targets.h5        one row per written target: "target" (the ID), "model" (the 14
+                              parameters), "snap", "scale_factor", "separation", "n1", "n2",
+                              "primary_is_table_p", the orbit's notes ("rows_before", "rows_after",
+                              "orbit_samples", "orbit_start", "last_pass_time", "last_pass_distance",
+                              "recent_approach_window", "track_plane_angle", "crosses_box_edge"), and
+                              each galaxy's three masses in Msun ("primary_mass_historical", ...).
+                              Missing values are NaN
+    """
+    import h5py
+
+    data, folder = Path(data), Path(folder)
+    table = read_table(data / "moi-4-targets.h5")
+    if targets is None:
+        targets = [int(path.stem.split("-")[-1]) for path in data.glob("target-archive-*.h5")]
+    records = []
+    for target_id in sorted(int(target) for target in targets):
+        rows = np.flatnonzero(table["p_SubhaloIDRaw"] == target_id)
+        try:
+            if len(rows) != 1:
+                raise ValueError(f"the table has {len(rows)} rows for it")
+            record = write_target(folder, table, int(rows[0]), read_archive(data / f"target-archive-{target_id}.h5", "all"), config)
+            line = f"{target_id}: {record['stars']['n1'] + record['stars']['n2']} stars, {record['orbit']['samples']} orbit samples"
+        except (ValueError, OSError) as error:
+            record = {"target": target_id, "error": str(error)}
+            line = f"{target_id}: NOT WRITTEN: {error}"
+        records.append(record)
+        if report is not None:
+            report(line)
+
+    written = [record for record in records if "error" not in record]
+    folder.mkdir(parents=True, exist_ok=True)
+    models = np.array([[record["model"][name] for name in SPAM_PARAMETERS] for record in written]).reshape(-1, len(SPAM_PARAMETERS))
+    (folder / TARGETS_MODELS).write_text(
+        "".join(",".join(repr(float(value)) for value in model) + "\n" for model in models), encoding="utf-8")
+
+    def number(value):
+        return np.nan if value is None else value
+
+    columns = {
+        "target": np.array([record["target"]["target"] for record in written], dtype=np.int64),
+        "model": models,
+        "snap": np.array([record["target"]["snap"] for record in written], dtype=np.int64),
+        "scale_factor": np.array([record["target"]["scale_factor"] for record in written], dtype=np.float64),
+        "separation": np.array([record["target"]["separation"] for record in written], dtype=np.float64),
+        "primary_is_table_p": np.array([record["target"]["primary_side"] == "p" for record in written], dtype=bool),
+        "n1": np.array([record["stars"]["n1"] for record in written], dtype=np.int64),
+        "n2": np.array([record["stars"]["n2"] for record in written], dtype=np.int64),
+        "rows_before": np.array([record["orbit"]["rows_before"] for record in written], dtype=np.int64),
+        "rows_after": np.array([record["orbit"]["rows_after"] for record in written], dtype=np.int64),
+        "orbit_samples": np.array([record["orbit"]["samples"] for record in written], dtype=np.int64),
+        "orbit_start": np.array([record["orbit"]["start"] for record in written], dtype=np.float64),
+        "last_pass_time": np.array([number((record["orbit"]["last_pass"] or {}).get("time")) for record in written], dtype=np.float64),
+        "last_pass_distance": np.array([number((record["orbit"]["last_pass"] or {}).get("distance")) for record in written], dtype=np.float64),
+        "recent_approach_window": np.array([record["orbit"]["recent_approach_window"] for record in written], dtype=bool),
+        "track_plane_angle": np.array([number(record["orbit"]["track_plane_angle"]) for record in written], dtype=np.float64),
+        "crosses_box_edge": np.array([record["orbit"]["crosses_box_edge"] for record in written], dtype=bool),
+    }
+    for role in ("primary", "secondary"):
+        for mass in MASS_CHOICES:
+            columns[f"{role}_mass_{mass}"] = np.array([record["target"][role]["masses"][mass] for record in written], dtype=np.float64)
+    with h5py.File(folder / TARGETS_TABLE, "w") as file:
+        for name, values in columns.items():
+            file[name] = values
+        file["model"].attrs["parameters"] = list(SPAM_PARAMETERS)
+    return records
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Write the targets' files from the command line. Returns 0, or 1 when a target could not be written."""
+    parser = argparse.ArgumentParser(prog="python -m galactic_tidal_constraints.tng",
+                                     description="Measure TNG targets and write their files for SIMR runs.")
+    parser.add_argument("--data", required=True, help="the legacy folder: moi-4-targets.h5 and the target archives")
+    parser.add_argument("--output", required=True, help="the targets folder to write into")
+    parser.add_argument("--target", type=int, action="append",
+                        help="a target's full SubhaloIDRaw; repeat for several (default: every archive in --data)")
+    args = parser.parse_args(argv)
+    records = write_targets(args.data, args.output, targets=args.target, report=lambda line: print(line, flush=True))
+    failed = [record for record in records if "error" in record]
+    print(f"{len(records) - len(failed)} targets written to {args.output}, {len(failed)} not written")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

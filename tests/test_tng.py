@@ -5,6 +5,7 @@ runs only when the environment variable GTC_DATA_DIR names the workspace's data 
 holding `tng-legacy-data/`).
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -1108,6 +1109,115 @@ def test_target_orbit_errors():
         tng.target_orbit(table, TRACK_NOW, target, earliest=0.0)
 
 
+# --- Notes on an orbit, and a target's files -------------------------------------------------------------
+#
+# A made-up track of five rows on a straight line that passes the primary 20 kpc off: x = 100 kpc/Gyr x the
+# time since the pass, y = 20 (or -20). The closest row is `pass_row`; the target is `now`.
+
+
+def made_up_pass(pass_row, now, y=20.0, primary_at=(10000.0, 200.0, 300.0)):
+    age = tng.age_of_universe(TRACK_A)
+    separation = np.stack([100.0 * (age - age[pass_row]), np.full(5, y), np.zeros(5)], axis=1)       # kpc
+    primary = np.tile(np.asarray(primary_at, dtype=np.float64), (5, 1))
+    table = {"moi_2": np.full(5, 7), "snap": np.arange(40, 45), "scale_factor": TRACK_A,
+             "p_SubhaloIDRaw": 40000000000001 + np.arange(5) * 1000000000000,
+             "p_SubhaloPos": primary, "s_SubhaloPos": (primary + separation * (tng.H / TRACK_A)[:, None]) % tng.BOX}
+    target = {"target": int(table["p_SubhaloIDRaw"][now]), "primary_side": "p", "rotation": np.eye(3)}
+    return table, target, (age - age[now]) / tng.SPAM_TIME
+
+
+def test_orbit_notes_find_the_last_pass_and_whether_a_window_fits():
+    table, target, time = made_up_pass(pass_row=2, now=3)
+    orbit = tng.target_orbit(table, 3, target, earliest=-100.0)
+    notes = tng.orbit_notes(table, 3, target, orbit)
+    assert (notes["rows_before"], notes["rows_after"]) == (3, 1)
+    assert notes["samples"] == len(orbit) and notes["start"] == orbit[0, 6] == pytest.approx(time[0], abs=0.01)
+    assert notes["velocity_columns"] == "zeros"
+    assert notes["last_pass"]["time"] == pytest.approx(time[2], abs=0.011)          # the pass is at row 2
+    assert notes["last_pass"]["distance"] == pytest.approx(20 / 15, abs=1e-4)
+    assert notes["recent_approach_window"] is True                                  # twice as far back is still inside
+    assert notes["crosses_box_edge"] is False
+    assert set(type(value) for value in notes.values()) <= {int, float, str, bool, dict}     # plain values, for JSON
+    assert notes["track_plane_angle"] == pytest.approx(180)                         # see the test of which way round
+
+    table, target, time = made_up_pass(pass_row=1, now=4)                           # the pass is 3 rows back of 4
+    notes = tng.orbit_notes(table, 4, target, tng.target_orbit(table, 4, target, earliest=-100.0))
+    assert notes["last_pass"]["time"] == pytest.approx(time[1], abs=0.011) and 2 * time[1] < time[0]
+    assert notes["recent_approach_window"] is False                                 # the window would start before the orbit
+    assert (notes["rows_before"], notes["rows_after"]) == (4, 0)
+
+
+def test_orbit_notes_without_a_pass_or_without_a_past():
+    table, target, _ = made_up_pass(pass_row=4, now=3)                              # still approaching at the target
+    notes = tng.orbit_notes(table, 3, target, tng.target_orbit(table, 3, target, earliest=-100.0))
+    assert notes["last_pass"] is None and notes["recent_approach_window"] is False
+    table, target, _ = made_up_pass(pass_row=2, now=0)                              # no earlier row: one sample
+    notes = tng.orbit_notes(table, 0, target, tng.target_orbit(table, 0, target))
+    assert (notes["rows_before"], notes["rows_after"], notes["samples"], notes["start"]) == (0, 4, 1, 0.0)
+    assert notes["last_pass"] is None and notes["track_plane_angle"] is None
+
+
+def test_orbit_notes_say_which_way_round_and_whether_the_box_edge_is_crossed():
+    # Moving along +x at y = +20 the secondary goes clockwise seen from +z: against the frame's z. At y = -20, with it.
+    for y, angle in ((20.0, 180.0), (-20.0, 0.0)):
+        table, target, _ = made_up_pass(pass_row=2, now=3, y=y)
+        assert tng.orbit_notes(table, 3, target, tng.target_orbit(table, 3, target))["track_plane_angle"] == pytest.approx(angle)
+    tilted = {**target, "rotation": np.array([[1.0, 0, 0], [0, 0, -1.0], [0, 1.0, 0]])}     # the track's plane is now x-z
+    assert tng.orbit_notes(table, 3, tilted, tng.target_orbit(table, 3, tilted))["track_plane_angle"] == pytest.approx(90)
+    table, target, _ = made_up_pass(pass_row=2, now=3, primary_at=(34995.0, 200.0, 300.0))
+    notes = tng.orbit_notes(table, 3, target, tng.target_orbit(table, 3, target, earliest=-100.0))
+    assert notes["crosses_box_edge"] is True and notes["last_pass"]["distance"] == pytest.approx(20 / 15, abs=1e-4)
+
+
+def made_up_files(tmp_path):
+    table, archive = made_up_target()
+    table["moi_2"] = np.array([7])
+    return table, archive, tng.write_target(tmp_path, table, 0, archive), tmp_path / "62000000000001"
+
+
+def test_write_target_writes_the_files_a_simr_run_needs(tmp_path):
+    table, archive, record, folder = made_up_files(tmp_path)
+    assert sorted(path.name for path in folder.iterdir()) == sorted(tng.TARGET_FILES.values())
+    target = tng.measure_target(table, 0, archive)
+    model = tng.spam_model(target)
+    text = (folder / "tng_spam_model.txt").read_text()
+    assert text.endswith("\n") and np.array(text.split(","), dtype=float) == pytest.approx(model, abs=0)     # exact
+    orbit = np.load(folder / "tng_orbit.npy")
+    assert orbit.dtype == np.float64 and np.array_equal(orbit, tng.target_orbit(table, 0, target))
+    stars = tng.target_particles(table, 0, archive, target)
+    particles, masses = np.load(folder / "tng_star_particles.npy"), np.load(folder / "tng_star_masses.npy")
+    assert particles.dtype == masses.dtype == np.float32
+    assert np.array_equal(particles, stars["particles"].astype(np.float32)) and np.array_equal(masses, stars["masses"].astype(np.float32))
+    assert json.loads((folder / "simr_externals.json").read_text()) == {"tng_orbit": "tng_orbit.npy",
+                                                                        "tng_star_particles": "tng_star_particles.npy"}
+
+
+def test_write_target_records_what_was_measured_and_how(tmp_path):
+    table, archive, record, folder = made_up_files(tmp_path)
+    assert json.loads((folder / "tng_target.json").read_text()) == record               # the record is what was written
+    assert list(record) == ["target", "config", "model", "stars", "orbit", "files"]
+    target = tng.measure_target(table, 0, archive)
+    assert record["target"]["target"] == 62000000000001 and record["target"]["primary_side"] == "p"
+    assert record["target"]["rotation"] == pytest.approx(target["rotation"]) and isinstance(record["target"]["rotation"], list)
+    assert record["target"]["primary"]["masses"] == pytest.approx(target["primary"]["masses"])
+    assert record["config"] == {"primary_rule": "stars", "core_radius": 1.0, "hubble_flow": True, "mass": "historical",
+                                "disk_radius_factor": 5.0, "spin_radius_factor": 5.0}
+    assert list(record["model"]) == list(tng.SPAM_PARAMETERS)
+    assert [record["model"][name] for name in tng.SPAM_PARAMETERS] == pytest.approx(tng.spam_model(target), abs=0)
+    assert record["stars"] == {"n1": 24, "n2": 24}
+    assert record["orbit"]["samples"] == 1 and record["orbit"]["last_pass"] is None      # this made-up target has one row
+    assert record["files"] == tng.TARGET_FILES
+
+
+def test_write_target_follows_its_config_and_replaces_what_was_there(tmp_path):
+    table, archive, record, folder = made_up_files(tmp_path)
+    again = tng.write_target(tmp_path, table, 0, archive, tng.TngTargetConfig(hubble_flow=False, mass="catalog"))
+    assert again["config"]["hubble_flow"] is False and again["model"]["vx"] == pytest.approx(0, abs=1e-12)
+    assert again["model"]["mass1"] == pytest.approx(CATALOG_MASS["p"] * 1e10 / tng.H / 1e11)
+    assert json.loads((folder / "tng_target.json").read_text()) == again
+    assert len(list(folder.iterdir())) == len(tng.TARGET_FILES)
+
+
 # --- The real files (only when GTC_DATA_DIR is set) ------------------------------------------------------
 
 DATA = Path(os.environ["GTC_DATA_DIR"]) / "tng-legacy-data" if os.environ.get("GTC_DATA_DIR") else None
@@ -1744,3 +1854,66 @@ def test_a_real_targets_stars_as_spams_particles(measured):
     assert np.isfinite(shape["axes"]).all() and 0 < shape["c_a"] <= shape["b_a"] <= 1
     image = image_creator.create_image(particles, model, n1, n2)
     assert image.ndim == 2 and image.max() == pytest.approx(1.0)
+
+
+@needs_data
+def test_a_real_targets_files_are_what_simr_takes(tmp_path):
+    """Two real targets written, then given to SIMR as its command line would: the plan accepts them."""
+    simr = pytest.importorskip("galactic_tidal_constraints.simr.simr")
+    from galactic_tidal_constraints.simr import __main__ as cli
+
+    lines = []
+    records = tng.write_targets(DATA, tmp_path, targets=[75000000121160, 62000000190717, 5], report=lines.append)
+    assert [record["target"] if "error" in record else record["target"]["target"] for record in records] == [
+        5, 62000000190717, 75000000121160]                                           # in order of ID
+    assert records[0]["error"] == "the table has 0 rows for it" and "NOT WRITTEN" in lines[0]
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["62000000190717", "75000000121160", "tng_spam_models.txt", "tng_targets.h5"]
+
+    record, folder = records[1], tmp_path / "62000000190717"
+    assert record["stars"] == {"n1": 871840, "n2": 647983}
+    assert record["orbit"]["samples"] == 3001 and record["orbit"]["recent_approach_window"] is True
+    assert record["orbit"]["last_pass"]["time"] == pytest.approx(-2.12, abs=0.01)
+    assert (record["orbit"]["rows_before"], record["orbit"]["rows_after"]) == (23, 2)
+    assert np.load(folder / "tng_star_particles.npy", mmap_mode="r").shape == (871840 + 647983 + 1, 6)
+
+    models = simr.read_models(tmp_path / "tng_spam_models.txt")
+    assert models.shape == (2, 14) and models[0] == pytest.approx(simr.read_models(folder / "tng_spam_model.txt")[0])
+    request = {"derived": [{"name": "window", "method": "recent_approach_cosine_window", "inputs": ["ext.tng_orbit"]}],
+               "sim_metrics": [{"method": "orbit_position_error", "inputs": ["ext.tng_orbit", "sim.search_orbit", "drv.window"]},
+                               {"method": "pca_difference", "inputs": ["ext.tng_star_particles", "sim.particles"]}]}
+    plan = simr.plan(models[:1], request, externals=cli._read_externals(str(folder / "simr_externals.json")))
+    assert {key: tuple(value["shape"]) for key, value in plan["externals"].items()} == {
+        "tng_orbit": (3001, 7), "tng_star_particles": (871840 + 647983 + 1, 6)}
+
+    import h5py
+    with h5py.File(tmp_path / "tng_targets.h5") as file:
+        assert list(file["target"][...]) == [62000000190717, 75000000121160]
+        assert file["model"][...] == pytest.approx(models) and list(file["model"].attrs["parameters"]) == list(tng.SPAM_PARAMETERS)
+        assert list(file["recent_approach_window"][...]) == [True, True] and list(file["rows_after"][...]) == [2, 0]
+        assert file["primary_mass_historical"][0] == pytest.approx(record["target"]["primary"]["masses"]["historical"])
+
+
+@needs_data
+def test_every_real_targets_orbit_notes():
+    """The notes for all 61, against what the orbit surveys found (no particles are read: distances need no frame)."""
+    from galactic_tidal_constraints.simr import derived
+
+    table = tng.read_table(DATA / "moi-4-targets.h5")
+    counts = {"pass": 0, "window": 0, "edge": 0, "free_end": 0}
+    for path in DATA.glob("target-archive-*.h5"):
+        target = {"target": int(path.stem.split("-")[-1]), "primary_side": "p", "rotation": np.eye(3)}
+        row = int(np.flatnonzero(table["p_SubhaloIDRaw"] == target["target"])[0])
+        orbit = tng.target_orbit(table, row, target)
+        notes = tng.orbit_notes(table, row, target, orbit)
+        try:
+            derived.recent_approach_cosine_window(orbit)
+            window = True
+        except ValueError:
+            window = False
+        assert notes["recent_approach_window"] is window, target["target"]     # the note says what the metric's window does
+        counts["pass"] += notes["last_pass"] is not None
+        counts["window"] += window
+        counts["edge"] += notes["crosses_box_edge"]
+        counts["free_end"] += notes["rows_after"] == 0
+    assert counts == {"pass": 49, "window": 48, "edge": counts["edge"], "free_end": 11}
+    assert 3 <= counts["edge"] <= 12                    # three encounters cross the box edge; each holds one or more targets

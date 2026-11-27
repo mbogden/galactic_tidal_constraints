@@ -229,6 +229,11 @@ How it works: [docs/modules/tng.md](docs/modules/tng.md). What the TNG values me
   before the encounter, in the target's frame and SPAM's units, in the row order of SPAM's own
   particles. Not cut by radius and not thinned; their masses are returned alongside. See
   `docs/modules/tng.md`.
+- A target's files for SIMR go in `data/tng-targets/<target>/` (2026-11-27): model, orbit, star
+  particles and masses, SIMR's externals file and a record of what was measured and with which
+  choices. Names start with `tng_`: everything there is measured from TNG, nothing is made by SPAM.
+  The folder is rebuilt by `python -m galactic_tidal_constraints.tng` and never edited; the legacy
+  table and archives stay frozen inputs. No target is dropped: what limits one is in its record.
 - Units change in two explicit steps (2026-11-24): stored TNG values to physical (kpc, km/s, M☉),
   then physical to SPAM's units. Each step is one function with its factors in one table.
 

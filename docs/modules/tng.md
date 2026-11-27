@@ -487,6 +487,57 @@ image_creator.create_image(stars["particles"], model, stars["n1"], stars["n2"])
 - Only the stars are read, so an archive read with the default `read_archive(path)` is enough.
   "stars" includes wind particles ([Known issues](#known-issues)).
 
+## A target's files: `write_target` and `write_targets`
+`write_target(folder, table, row, archive, config=None)` measures one target and writes what a SIMR
+run needs to compare models with it. `write_targets(data, folder, config=None, targets=None)` does
+it for every archive in the legacy folder and adds two files that list them all. From the command
+line:
+
+```bash
+python -m galactic_tidal_constraints.tng --data ../data/tng-legacy-data --output ../data/tng-targets
+python -m galactic_tidal_constraints.tng --data ... --output ... --target 62000000190717   # one target
+```
+
+The targets folder holds only inputs to a comparison, all measured from TNG's data. Every name says
+so: nothing in it is made by SPAM, whose own orbits, particles and images go to each run's `--output`.
+
+| File | Holds |
+|---|---|
+| `<target>/tng_spam_model.txt` | SPAM's 14 parameters on one line (`spam_model`): a models file for SIMR |
+| `<target>/tng_orbit.npy` | `target_orbit`: `(n, 7)` float64 |
+| `<target>/tng_star_particles.npy` | `target_particles`' particles: `(n1 + n2 + 1, 6)` float32 |
+| `<target>/tng_star_masses.npy` | Their masses: `(n1 + n2,)` float32 |
+| `<target>/simr_externals.json` | SIMR's `--externals` file: the keys `tng_orbit` and `tng_star_particles` |
+| `<target>/tng_target.json` | The record: everything `measure_target` returned, the config, the model by name, `n1` and `n2`, and the orbit's notes |
+| `tng_spam_models.txt` | Every written target's model, one per line, in order of ID |
+| `tng_targets.h5` | One row per written target: ID, model, masses, star counts and the orbit's notes |
+
+A run against one target:
+
+```bash
+python -m galactic_tidal_constraints.simr --models tng-targets/62000000190717/tng_spam_model.txt     --externals tng-targets/62000000190717/simr_externals.json --config request.json --output runs/
+```
+
+with a request that names the arrays `ext.tng_orbit` and `ext.tng_star_particles`.
+
+- The folder is rebuilt by the code and never edited by hand. Writing a target again replaces its
+  files. `tng_spam_models.txt` and `tng_targets.h5` list the targets written by that call.
+- A target that can't be measured is reported and skipped; the others go on.
+- The largest target has 5.5 million stars: about 130 MB of particles as float32.
+
+### What to know about an orbit: `orbit_notes(table, row, target, orbit)`
+The record's `orbit` entry, so a comparison can pick its targets:
+
+| Note | Meaning |
+|---|---|
+| `rows_before`, `rows_after` | Track rows earlier and later than the target. With no later row, now is the curve's free end |
+| `samples`, `start` | The orbit's rows and its first time (-30 at the earliest) |
+| `velocity_columns` | `"zeros"`: the orbit's velocities are not measured |
+| `last_pass` | The most recent dip in distance before now, its `time` and `distance`; `None` without one. The distance is the curve's own, not a snapshot's |
+| `recent_approach_window` | A window centered on that pass and reaching now fits in the orbit: the metric's `recent_approach_cosine_window` can be made |
+| `track_plane_angle` | Degrees between the frame's z and the plane the track itself moved in over the last Gyr. Near 0: the track stayed in the frame's plane. Above 90: it went round the other way, as on nearly radial orbits, where the sideways velocity that sets the plane is within its own noise |
+| `crosses_box_edge` | On some row the pair sits across a face of the box (handled; noted for checking) |
+
 ## Checked against the TNG catalog
 The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same
 galaxies: mass, separation, relative velocity (with √a), spin (× a^1.5) and half-mass radius. The
