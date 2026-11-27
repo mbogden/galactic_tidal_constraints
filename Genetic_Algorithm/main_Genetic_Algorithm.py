@@ -36,11 +36,11 @@ def Genetic_Algorithm_Experiment( ga_param, scorerFunc, \
     print("GA.Genetic_Algorithm_Experiment: Beginning Experiment")
     
     # RUN GA
-    pFit = ga_param['parameter_to_fit']
-    pReal = ga_param['parameter_fixed_values']
-    nPhase = ga_param['phase_number']
+    pFit = ga_param['parameter_to_fit'] 
+    pReal = ga_param['parameter_fixed_values'] 
+    nPhase = ga_param['phase_number'] 
     tGen   = ga_param['generation_total_number'] 
-    phaseParams = ga_param['phase_parameter_to_fit']
+    phaseParams = ga_param['phase_parameter_to_fit'] 
     nFits = len( phaseParams )
     
     # Variable for printing progress
@@ -84,9 +84,9 @@ def Genetic_Algorithm_Experiment( ga_param, scorerFunc, \
         pickle.dump( chain,   open( writeLocBase + "models.pkl", "wb" ) )
         pickle.dump( scores,  open( writeLocBase + "scores.pkl", "wb" ) )
 
-    print("********************************************")    
-    print("*  GA.Genetic_Algorithm_Experiment: DONE!  *")   
-    print("********************************************")  
+    print("********************************************")
+    print("*  GA.Genetic_Algorithm_Experiment: DONE!  *")
+    print("********************************************")
 
 def Genetic_Algorithm_Phase( pFit, start, scoreModels, ga_param, \
                             old_chain = None, old_scores = None, \

@@ -397,7 +397,6 @@ def target_test_new_gen_scores_single( cmdArgs, tInfo ):
     if printBase:
         print( "SIMR.target_test_new_gen_scores_single: %d of %d" %(mpi_rank,mpi_size) )
 
-
     # Use function to prepare tInfo and score params
     runArgs = target_prep_cmd_params( tInfo, cmdArgs )
 

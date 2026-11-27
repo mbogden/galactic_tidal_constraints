@@ -243,77 +243,57 @@ def in_jupyter_notebook():
 # - ERROR: A serious problem that occurred but does not stop the program.
 # - CRITICAL: A very serious error suggesting the program might not continue running.
     
-def configure_logging( log_level: int = logging.INFO, logger_name: str = '', class_name: str=None) -> logging.Logger:
-    """
-    Configures the logging for the application.
 
-    Sets up the logging format and level. This configuration is intended to be run once at the 
-    start of the application to ensure consistent logging behavior across different modules. 
-    Allows specifying the logging level to control the verbosity of log messages.
+def configure_logger(log_level: int = logging.INFO, logger_name: str = '') -> logging.Logger:
+    """
+    Configures logging for the application. Ensures all logs print to the same root logger.
 
     Parameters:
-        log_level (int): the logging levels {DEBUG, INFO, WARNING, ERROR, CRITICAL}
-                            Defaults to logging.INFO
-
-        logger_name (str): The name of the logger to configure. 
-                            Defaults to an empty string which is root.
-
-        class_name (str): Since classes have an extra level of hierarchy,
-                          this parameter can be used to include the class name in the log
-                          format. Defaults to None.
+        log_level (int): Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+        logger_name (str): Name of the logger. Default is the root logger ('').
+        class_name (str): If specified, includes the class name in the log format.
 
     Returns:
         logging.Logger: The configured logger.
     """
-    
-    # Default Log format
-    log_format = '[%(asctime)s - %(levelname)s - %(module)s.%(funcName)s]: %(message)s'
+    # Default log format
+    base_format = '[%(asctime)s - %(levelname)s - %(module)s.%(funcName)s]: %(message)s'
 
-    # Add extra information for class name if provided
-    if class_name:
-        log_format = log_format.replace('%(module)s.%(funcName)s', f'%(module)s.{class_name}.%(funcName)s')    
+    if logger_name != '':
+        log_format = base_format.replace('%(module)s.%(funcName)s', f'%(module)s.{logger_name}.%(funcName)s')
+    else:
+        log_format = base_format
 
-    # Try to import mpi4py and get the rank and size
+    # Try to add MPI information
     try:
         from mpi4py import MPI
         comm = MPI.COMM_WORLD
         rank = comm.Get_rank()
         size = comm.Get_size()
         if size > 1:
-            # Update log format to include rank and size
-            log_format = log_format.replace('%(funcName)s', f'%(funcName)s - MPI:{rank}/{size}' )
+            log_format = log_format.replace('%(funcName)s', f'%(funcName)s - MPI:{rank}/{size}')
     except ImportError:
-        # mpi4py is not installed; continue without MPI information
         pass
     except Exception as e:
-        # Handle any other exceptions related to MPI
-        logging.error(f'Error accessing MPI information: \n{e}')
-    
-    # # Create a new logger with the specified name
+        logging.error(f'Error accessing MPI information: {e}')
+
+    # Get the logger (root if empty string)
     logger = logging.getLogger(logger_name)
-
-    # Prevent duplicate hanglers
-    if logger_name == '':
-        if not logger.handlers:
-            # Create a StreamHandler to output logs to the console
-            stream_handler = logging.StreamHandler()
-            formatter = logging.Formatter(log_format)
-            stream_handler.setFormatter(formatter)
-            logger.addHandler(stream_handler)
     
+    # Prevent duplicate handlers
+    if not logger.hasHandlers():  
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter(log_format)
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+
     logger.setLevel(log_level)
-    logger.propagate = True if logger_name else False
+
+    # Propagation logic: Root logger should NOT propagate, named loggers should.
+    logger.propagate = False if logger_name == '' else True
 
     return logger
 
-    # Old method with 1 root logger
-    logging.basicConfig(level=numeric_level, format=log_format)
-
-    logger = logging.getLogger()
-    logger.setLevel(numeric_level)
-    logger.filters = []  # Reset filters
-    
-    return logger
 
 def change_logging_level(log_level):
     """
@@ -391,87 +371,7 @@ def add_jupyter_stream_handler(log_level: str = 'INFO'):
 
     return logger
 
-
-
-# =====   OLD LOGGER FOR JUPYTER NOTEBOOKS   ===== #
-
-# class JupyterNotebookHandler(logging.StreamHandler):
-
-#     def __init__(self):
-#         super().__init__()
-#         self.setFormatter(logging.Formatter('Time:%(asctime)s - Rank:%(rank)s/%(size)s - [%(module)s: %(funcName)s] - %(levelname)s - %(message)s'))
-
-#     def emit(self, record):
-#         from IPython.display import display, HTML
-#         message = self.format(record)
-#         display(HTML(f'<pre>{message}</pre>'))
-
-
-
-# def configure_logging(log_level: str = 'INFO') -> None:
-#     """
-#     Configures the logging for the application.
-
-#     Sets up the logging format and level. This configuration is intended to be run once at the 
-#     start of the application to ensure consistent logging behavior across different modules. 
-#     Allows specifying the logging level to control the verbosity of log messages.
-
-#     Parameters:
-#         log_level (str): The logging level to set for the application as a string 
-#                          (e.g., 'INFO', 'DEBUG', 'WARNING', 'ERROR', 'CRITICAL'). 
-#                          Defaults to 'INFO'.
-
-#     Returns:
-#         None
-#     """
-#     global RANK, SIZE
-
-#     numeric_level = getattr(logging, log_level.upper(), None)
-#     if numeric_level is None:
-#         raise ValueError(f'Invalid log level: {log_level}')
-    
-#     log_format = 'Time:%(asctime)s - Rank:%(rank)s/%(size)s - [%(module)s: %(funcName)s] - %(levelname)s - %(message)s'
-
-#     logging.basicConfig(level=numeric_level, format=log_format)
-
-#     # Add custom filter to include RANK and SIZE
-#     logger = logging.getLogger()
-#     logger.setLevel(numeric_level)
-#     logger.filters = []  # Reset filters
-
-
-#     # Check if in Jupyter notebook
-#     if not in_jupyter_notebook():
-#         # Configure standard logging (console or file as needed)
-#         logging.basicConfig(level=numeric_level, format=log_format)
-    
-
-#     else:
-#         # Clear existing handlers and set up for Jupyter Notebook
-#         logger.handlers = []  # Clear existing handlers
-#         jupyter_handler = JupyterNotebookHandler()
-#         logger.addHandler(jupyter_handler)
-
-#     # Add custom filter to include MPI rank and size
-#     logger.addFilter(RankSizeFilter(RANK, SIZE))
-    
-#     return logger
-
-# def change_logging_level(log_level):
-#     """
-#     Change the logging level dynamically during runtime.
-
-#     Parameters:
-#         log_level (str): The logging level to set (e.g., 'DEBUG', 'WARNING').
-#     """
-#     numeric_level = getattr(logging, log_level.upper(), None)
-#     if numeric_level is None:
-#         raise ValueError(f'Invalid log level: {log_level}')
-#     logger = logging.getLogger()
-#     logger.setLevel(numeric_level)
-#     logging.info(f'Logging level changed to {log_level}')
-
-# =========================== PRETTY/MISC PRINTING ============================ #
+# ================= PRETTY/MISC PRINTING ============================ #
 
 # Pretty Printer Configuration
 PP = PrettyPrinter(width=42, compact=True)
@@ -529,9 +429,8 @@ def initialize_environment( args=None, module_name = None, ):
     Return:
         args (Namespace): The parsed arguments.
     """
-    configure_logging()
     arg_handler = ArgHandler(args=args)
-    x_logger = configure_logging( arg_handler.args.log_level, module_name )
+    x_logger = configure_logger( log_level=arg_handler.args.log_level, logger_name=module_name )
         
     return arg_handler.args, x_logger
 

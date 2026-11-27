@@ -246,7 +246,7 @@ end subroutine perturber_position
     do while (t0 < tcurrent  ) 
       call wrap_rk41(xx0, h, mass1, mass2, eps1, eps2, xxe)
 
-      write(18,*) xx0
+      ! write(18,*) xx0
 
       dist = sqrt(xx0(1)**2+ xx0(2)**2 + xx0(3)**2 )
       xx0 = xxe
@@ -451,7 +451,7 @@ end subroutine perturber_position
     a2 = -mass2 * df_force2
     at = a1 + a2
 
-    write(24,*) r1, ival, df_force1, a1, rrout1
+    ! write(24,*) r1, ival, df_force1, a1, rrout1
 
 
 ! df
@@ -461,7 +461,7 @@ end subroutine perturber_position
 
     xvalue = v1 / df_sigma
     c1 = erf(xvalue) - 2.0d0 * xvalue / SqrtPI * exp(-xvalue*xvalue)
-    write(21,*) r1, c1, xvalue, v1, df_sigma, df_rho
+    ! write(21,*) r1, c1, xvalue, v1, df_sigma, df_rho
 
 
 ! df formula with G=1

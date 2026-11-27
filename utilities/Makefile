@@ -14,7 +14,7 @@ all: $(SCRIPTS)
 
 # Rule to convert a notebook to a script
 %.py: %.ipynb
-	jupyter nbconvert --to script $< --output $(basename $@)
+	jupyter nbconvert --to script --TagRemovePreprocessor.remove_cell_tags='["dev"]' --TagRemovePreprocessor.enabled=True $< --output $(basename $@)
 
 # Clean up all Python scripts
 clean:

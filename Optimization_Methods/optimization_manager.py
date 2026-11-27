@@ -1,3 +1,9 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[1]:
+
+
 #!/usr/bin/env python3
 # coding: utf-8
 
@@ -11,526 +17,794 @@ Created: 2024-Nov-11
 References:  Sections of this code were enhanced with the assistance of ChatGPT made by OpenAI.
 """
 
-# ================================ IMPORTS ================================ #
-# Standard library imports
+# ================================ STANDARD IMPORTS ================================ #
 import logging
 import os
 import sys
 import time
-
 import numpy as np
 import pandas as pd
-from math import floor, ceil
-from mpi4py import MPI
-from skopt import Optimizer
-from skopt.space import Real, Integer
-from skopt.sampler import Lhs
 
+# partial imports
+from mpi4py import MPI
+
+# ================================ PROJECT MODULES ================================ #
 # Add main project directory to import project modules
-SCRIPT_DIRECTORY = os.path.dirname(os.path.realpath(__file__))
-PROJECT_DIRECTORY = os.path.dirname(SCRIPT_DIRECTORY)
-sys.path.append(PROJECT_DIRECTORY)
+try:
+    SCRIPT_DIRECTORY = os.path.dirname(os.path.realpath(__file__))
+    PROJECT_DIRECTORY = os.path.dirname(SCRIPT_DIRECTORY)
+    sys.path.append(PROJECT_DIRECTORY)
+
+except:
+    # Consider we are running from the script directory
+    SCRIPT_DIRECTORY = os.getcwd()
+    PROJECT_DIRECTORY = os.path.dirname(SCRIPT_DIRECTORY)
+    
+    # Also consider you might be in galStuff directory
+    work_dir = os.getcwd()
+    if 'galStuff' == work_dir.split('/')[-1]:
+        PROJECT_DIRECTORY =  work_dir + '/galaxyJSPAM'
+        sys.path.append(PROJECT_DIRECTORY) 
 
 # import project modules
 import utilities.general_utility as gu
-import utilities.mpi_queue_manager as qm
+import utilities.parallel_queue_manager as qm
+import Optimization_Methods.optimization_support as opt_spt
 
 # ================================ GLOBAL VARIABLES ================================ #
-LOGGER = logging.getLogger()
+buildEnv = False
 
-# ================================ FUNCTIONS ================================ #
+# Global logger from main program
+SCRIPTS_ARGUMENTS, logger = gu.initialize_environment(module_name='optimizer') # Testing using multiple loggers for tiered log levels.
+# SCRIPTS_ARGUMENTS, logger = gu.initialize_environment(module_name='') 
 
-# ================================ CLASSES ================================ #
-class Optimization_Manager():
+# Generate random instance
+rng = np.random.default_rng()
+logger.info("Imported Loaded")
 
-    def __init__(self, black_box_function, space_info, save_loc=None ):
 
-        LOGGER.debug('Optimization Manager: Initializing')
+# # Genetic Algorithm
+# 
 
-        if black_box_function is None:
-            LOGGER.error('Optimization Manager: black_box_function is None')
-            raise ValueError('Optimization Manager: black_box_function is None')
+# In[ ]:
+
+
+import pygad
+
+class PYGAD_Manager:
+    """
+    Class to manage the PYGAD optimizer.
+    """
+    """Initialize the PYGAD optimizer with the function to evaluate.
+    ga_config = {
+        "num_generations": 100,  # Number of generations to run the GA.
+        "num_parents_mating": 4,  # Number of solutions to be selected as parents.
+        "sol_per_pop": 10,  # Number of solutions per population.
+
+        "num_genes": 5  # Number of genes in each solution.
+        "gene_space": None,  # Restrict gene values to specific ranges or discrete sets.
+        "gene_type": float,  # Data type of the genes. Can be float, int, or a list of types.
+
+        "fitness_func": None,  # User-defined fitness function to evaluate solutions.
+        "initial_population": None,  # User-defined initial population. If None, GA initializes randomly.
+        "stop_criteria": None,  # Criteria to stop the evolution early (e.g., "reach_40", "saturate_7").
+        "random_seed": None,  # Set random seed for reproducibility.
+        "logger": None  # Logger for capturing outputs.
+        "keep_elitism": 1,  # Number of top solutions to keep in the next generation without mutation.  (overwrites keep_parent below)
+        "keep_parents": 0,  # Number of parents to keep with mutations in next generation.
+        "parent_selection_type": "sus",  # Parent selection strategy 
+            # Balanced:['rank', 'sus', 'tournament']
+            # Fast/Risky:['sss', 'rws']
+            # Exploration: ['random']
+
+        "crossover_type": "single_point",  # Crossover strategy.
+            # Lumps genes together: ['single_point', 'two_points'] 
+            # High diversity/random mixing: ['uniform', 'scattered']
+            # Note, lumping degenerate genes can help.  Consider custom one later
         
-        self.black_box_function = black_box_function
-        self.space_info = space_info
+        "mutation_probability": [0.1, 0.5]  # [Low, High] Probability for best/worst solutions in adaptive mutation.
+        "random_mutation_min_val": -0.1,  # Minimum value for random mutation.
+        "random_mutation_max_val":  0.1,  # Maximum value for random mutation.
+        "mutation_type": "adaptive",  # Mutation strategy.
+            # Simple/Explorative: ['random', 'scramble']
+            # Order-focused: ['swap', 'inversion']
+            # Smart/Adaptive: ['adaptive']
+    }
 
-        # Gen space
-        self.explored_points = None
-        self.explored_values = None
-        self.space = []
-        for var_name, var_info in space_info.items():
-            self.space.append(Real(var_info['bounds'][0], var_info['bounds'][1], prior=var_info.get('prior','uniform'), name=var_name, transform='normalize',))
+    pygad_callbacks = {
+        "on_start": {
+            "description": "Called once before the genetic algorithm starts.",
+            "parameters": ["ga_instance"]  # If method: ["ga_instance", "self"]
+        },
+        "on_fitness": {
+            "description": "Called after calculating the fitness values of all solutions.",
+            "parameters": ["fitness_values", "ga_instance"]  # If method: ["fitness_values", "ga_instance", "self"]
+        },
+        "on_parents": {
+            "description": "Called after selecting parents for mating.",
+            "parameters": ["parents", "ga_instance"]  # If method: ["parents", "ga_instance", "self"]
+        },
+        "on_crossover": {
+            "description": "Called each time the crossover operation is applied.",
+            "parameters": ["ga_instance", "offspring"]
+        },
+        "on_mutation": {
+            "description": "Called each time the mutation operation is applied.",
+            "parameters": ["ga_instance", "mutated_offspring"]
+        },
+        "on_generation": {
+            "description": "Called after each generation. Returning 'stop' halts the run.",
+            "parameters": ["ga_instance"]
+        },
+        "on_stop": {
+            "description": "Called once before the algorithm stops or after the last generation.",
+            "parameters": ["ga_instance", "last_gen_fitness"]
+        }
+    }
 
-        # Get mpi rank and size
-        self.comm = MPI.COMM_WORLD
-        self.rank = self.comm.Get_rank()
-        self.size = self.comm.Get_size()
+    """
+
+    def __init__( self, 
+                 ga_config: dict, 
+                 input_space: list = None,
+                 space_manager: opt_spt.Space_Manager = None, 
+                 black_box_function: callable = None,
+                 execution_manager: opt_spt.Execution_Manager = None,
+                 log_level = logging.INFO
+                 ):
+        
+        # Set logger
+        self.logger = gu.configure_logger( logger_name='pygad_manager', log_level=log_level )
+        self.logger.info(f"Initializing PYGAD Manager")
+        self.logger.debug(f"GA Config: {ga_config}")
+        
+        # Save the GA config, (Must be given)
+        self.ga_config = ga_config
+        self.ga_config['logger'] = self.logger
+        
+        # Save Space manager    
+        if space_manager is not None:
+            self.space_manager = space_manager
+            self.input_space = space_manager.space_info
+        
+        # Generate Space Manager
+        elif input_space is not None:
+            self.space_manager = opt_spt.Space_Manager(input_space)
+            self.input_space = self.space_manager.space_info
+
+        # Else, raise error
+        else:
+            raise ValueError("Either input_space or space_manager must be provided.")
     
-        # Determine work role
-        if self.rank == 0 and self.size == 1:
-            self.work_role = 'solo'
-            LOGGER.debug('Optimization Manager: Running Solo')
+        # Set the number of inputs and outputs
+        self.n_input = len( self.input_space )
+        self.ga_config['num_genes'] = self.n_input
 
-        elif self.rank == 0:
-            self.work_role = 'master'
-            LOGGER.debug('Optimization Manager: Running Master')
+        # hard set bounds based on normalized space
+        self.ga_config['gene_space'] = []
+        for i in range(self.n_input):
+            self.ga_config['gene_space'].append( {'low':self.space_manager.space[i].transformed_bounds_[0], 'high':self.space_manager.space[i].transformed_bounds_[1]} )
 
+        # Log input space
+        self.logger.info(f"Space Input: {self.n_input}")
+        for i, dim in enumerate(self.input_space):
+            self.logger.debug(f"Input {i}: {dim}")
+        
+        # Check if execution manager is provided
+        if execution_manager is not None:
+            self.execution_manager = execution_manager
+        
+        # If given black box function, create default execution manager
+        elif black_box_function is not None:
+            self.execution_manager = opt_spt.Execution_Manager(self.space_manager, black_box_function=black_box_function, normalize_output='original', exec_log_level=log_level)
+
+        # Else, raise error
         else:
-            self.work_role = 'worker'
-            LOGGER.debug('Optimization Manager: Running Worker')
+            raise ValueError("Either execution_manager or black_box_function must be provided.")
         
-        # Open save_loc if given and not worker
-        self.save_loc = None
-        self.queue_manager = None
+        # Set exec variables
+        self.n_output = self.execution_manager.n_out
 
-        if save_loc is not None:
-            self.save_loc = save_loc
-        
-        if self.work_role == 'master':
-            self.queue_manager = qm.Queue_Manager()
-            # MPI.COMM_WORLD.barrier()
+        # Set place holder function
+        def placeholder_function( ga_instance, x, x_idx ):
+            self.logger.critical(f"WRONG FUNCTION")
+            raise RuntimeError("Thus function is a placeholder and should never be called.")
+            return -np.inf
 
-        elif self.work_role == 'worker':
-            self.queue_manager = qm.Queue_Worker( {0:self.black_box_function} )
-            # MPI.COMM_WORLD.barrier()
+        # This class will be in charge of executing the function and evaluating the population fitness
+        self.ga_config['fitness_func'] = placeholder_function
 
-        LOGGER.info('Optimization Manager: Initialized at work role: %s' % self.work_role)
+        # No initial population..? Let's use a known good one for higher dimensions
+        if self.ga_config.get('initial_population',None) is None:
+            self.logger.info(f"Creating Initial Population")
+            self.ga_config['initial_population'] = self.space_manager.get_lhs_samples(self.ga_config['sol_per_pop'], space='normalized')
 
-    # modify how class deletes itself
-    def __del__(self):
-        if self.work_role == 'master':
-            LOGGER.debug('Optimization Manager: Terminating Workers')
-            if self.queue_manager is not None:
-                self.queue_manager.terminate_workers()
-                del self.queue_manager
-        LOGGER.debug('Optimization Manager: Deleted')
+        # Check for settings that will conflict with current setup
+        if self.ga_config.get('mutation_type', None) == 'adaptive':
+            self.logger.warning(f"Adaptive Mutation is not yet supported.  Setting to random")
+            self.ga_config['mutation_type'] = 'random'
+            self.ga_config['mutation_probability'] = 0.25
+
+        ##### pyGAD Initialization #####s
+        setattr(pygad.GA, "cal_pop_fitness", _custom_cal_pop_fitness)  # Override pyGAD's calculate population fitness for custom fitness evaluation
+        setattr(pygad.GA, "custom_parallel_evaluation_function", self.execution_manager.evaluate_function)  # Add access to my parallel evaluation queue
+        self.gad = pygad.GA( **self.ga_config )
+        self.logger.info( f"Optimization Manager Initialized" )
+
+    # end __init__
+
+    def _custom_crossover_mask(self, parents, offspring_size):
+        """Placeholder: custom crossover function to mask certain genes together """
+        pass
     
-    def _generate_grid_points(self, space, num=10):
-        grids = []
-        for dim in space:
-            if dim.prior == 'uniform':
-                grids.append(np.linspace(dim.low, dim.high, num=num))
-            elif dim.prior == 'log-uniform':
-                grids.append(np.logspace(np.log10(dim.low), np.log10(dim.high), num=num))
+# The following is copied from the pygad github: https://github.com/ahmedfgad/GeneticAlgorithmPython/blob/master/pygad/pygad.py
+# I will modify it to use my execution manager for fitness evaluations of the population
+import numpy
+from pygad import GA
+def _custom_cal_pop_fitness( self, ):
+    
+    """
+    Calculating the fitness values of batches of solutions in the current population. 
+    It returns:
+        -fitness: An array of the calculated fitness values.
+    """
+    try:
+        if self.valid_parameters == False:
+            raise Exception("ERROR calling the cal_pop_fitness() method: \nPlease check the parameters passed while creating an instance of the GA class.\n")
+
+        # 'last_generation_parents_as_list' is the list version of 'self.last_generation_parents'
+        # It is used to return the parent index using the 'in' membership operator of Python lists. This is much faster than using 'numpy.where()'.
+        if self.last_generation_parents is not None:
+            last_generation_parents_as_list = self.last_generation_parents.tolist()
+
+        # 'last_generation_elitism_as_list' is the list version of 'self.last_generation_elitism'
+        # It is used to return the elitism index using the 'in' membership operator of Python lists. This is much faster than using 'numpy.where()'.
+        if self.last_generation_elitism is not None:
+            last_generation_elitism_as_list = self.last_generation_elitism.tolist()
+
+        pop_fitness = ["undefined"] * len(self.population)
+        pop_to_eval = []
+        idx_to_eval = []
+
+        # Calculating the fitness value of each solution in the current population.
+        for sol_idx, sol in enumerate(self.population):
+            # Check if the `save_solutions` parameter is `True` and whether the solution already exists in the `solutions` list. If so, use its fitness rather than calculating it again.
+            # The functions numpy.any()/numpy.all()/numpy.where()/numpy.equal() are very slow.
+            # So, list membership operator 'in' is used to check if the solution exists in the 'self.solutions' list.
+            # Make sure that both the solution and 'self.solutions' are of type 'list' not 'numpy.ndarray'.
+            # if (self.save_solutions) and (len(self.solutions) > 0) and (numpy.any(numpy.all(self.solutions == numpy.array(sol), axis=1)))
+            # if (self.save_solutions) and (len(self.solutions) > 0) and (numpy.any(numpy.all(numpy.equal(self.solutions, numpy.array(sol)), axis=1)))
+
+            # Make sure self.best_solutions is a list of lists before proceeding.
+            # Because the second condition expects that best_solutions is a list of lists.
+            if type(self.best_solutions) is numpy.ndarray:
+                self.best_solutions = self.best_solutions.tolist()
+
+            if (self.save_solutions) and (len(self.solutions) > 0) and (list(sol) in self.solutions):
+                solution_idx = self.solutions.index(list(sol))
+                fitness = self.solutions_fitness[solution_idx]
+
+            elif (self.save_best_solutions) and (len(self.best_solutions) > 0) and (list(sol) in self.best_solutions):
+                solution_idx = self.best_solutions.index(list(sol))
+                fitness = self.best_solutions_fitness[solution_idx]
+
+            elif (self.keep_elitism > 0) and (self.last_generation_elitism is not None) and (len(self.last_generation_elitism) > 0) and (list(sol) in last_generation_elitism_as_list):
+                # Return the index of the elitism from the elitism array 'self.last_generation_elitism'.
+                # This is not its index within the population. It is just its index in the 'self.last_generation_elitism' array.
+                elitism_idx = last_generation_elitism_as_list.index(list(sol))
+                # Use the returned elitism index to return its index in the last population.
+                elitism_idx = self.last_generation_elitism_indices[elitism_idx]
+                # Use the elitism's index to return its pre-calculated fitness value.
+                fitness = self.previous_generation_fitness[elitism_idx]
+
+            # If the solutions are not saved (i.e. `save_solutions=False`), check if this solution is a parent from the previous generation and its fitness value is already calculated. If so, use the fitness value instead of calling the fitness function.
+            # We cannot use the `numpy.where()` function directly because it does not support the `axis` parameter. This is why the `numpy.all()` function is used to match the solutions on axis=1.
+            # elif (self.last_generation_parents is not None) and len(numpy.where(numpy.all(self.last_generation_parents == sol, axis=1))[0] > 0):
+            elif ((self.keep_parents == -1) or (self.keep_parents > 0)) and (self.last_generation_parents is not None) and (len(self.last_generation_parents) > 0) and (list(sol) in last_generation_parents_as_list):
+                # Index of the parent in the 'self.last_generation_parents' array.
+                # This is not its index within the population. It is just its index in the 'self.last_generation_parents' array.
+                # parent_idx = numpy.where(numpy.all(self.last_generation_parents == sol, axis=1))[0][0]
+                parent_idx = last_generation_parents_as_list.index(list(sol))
+                # Use the returned parent index to return its index in the last population.
+                parent_idx = self.last_generation_parents_indices[parent_idx]
+                # Use the parent's index to return its pre-calculated fitness value.
+                fitness = self.previous_generation_fitness[parent_idx]
             else:
-                grids.append(np.linspace(dim.low, dim.high, num=num))  # Default to uniform
-                
-        grid_points = np.array(np.meshgrid(*grids)).T.reshape(-1, len(space))
-        return grid_points
+                # Place holder before evaluation
+                fitness = None
 
-    def _evaluate(self, inputs):
+                # Add solution to list for later evaluation
+                pop_to_eval.append( sol )
+                idx_to_eval.append( sol_idx )
 
-        new_pts = []
-        new_val = []
+            # This is only executed if the fitness value was already calculated.
+            pop_fitness[sol_idx] = fitness
+
+        # End acculating existing fitness and seperating new evaluations
         
-        # Assuming only master or solo will call this function
-        if self.work_role == 'solo':
-            for x in inputs:
-                y = self.black_box_function(x)
-                new_pts.append( x )
-                new_val.append( y )
+        # Evaluate the population that needs evaluating
+        if len(pop_to_eval) > 0:
+            self.logger.debug(f"Population to evaluate: {len(pop_to_eval)}\n{pop_to_eval[:2]}\n...\n{pop_to_eval[-2:]}")
 
-        # If manager, use parallel processing queue
-        elif self.work_role == 'master':
+            new_fitness_scores = self.custom_parallel_evaluation_function(pop_to_eval)
 
-            # Wrap task to workers and get reults
-            queue_list = [ (0, x) for x in inputs ]
-            results = self.queue_manager.run(queue_list)
+            self.logger.debug(f"Returned Fitness Scores: {len(new_fitness_scores)}\n{new_fitness_scores[:2]}\n...\n{new_fitness_scores[-2:]}")
 
-            # Add to explored points
-            for i, x in enumerate( inputs ):
-                new_pts.append( x )
-                new_val.append( results[i] )                               
-        
-        new_pts = np.array(new_pts).reshape(-1, len(self.space))
-        new_val = np.array(new_val)
+            # Verify they're the same size 
+            if len(new_fitness_scores) != len(pop_to_eval):
 
-        # Add new points to explored points
-        if self.explored_points is None:
-            self.explored_points = new_pts
-            self.explored_values = new_val
-        else:
-            self.explored_points = np.concatenate( (self.explored_points, new_pts) )
-            self.explored_values = np.concatenate( (self.explored_values, new_val) )
-
-        return new_pts, new_val
-
-    def save_pts(self):
-        # save explored points as csv with headers from space_info
-        pts_df = pd.DataFrame(self.explored_values, columns=['final_value'])
-
-        # Loop through space_info and add columns to df
-        for i, (var_name, var_info) in enumerate(self.space_info.items()):
-            pts_df[var_name] = self.explored_points[:,i]
-
-        LOGGER.debug('Points: ', self.explored_points.shape )
-        print('Values: ', self.explored_values.shape )
-        print('DF: ', pts_df.shape )
-
-        if self.save_loc is not None:
-            print("Saving to: ", self.save_loc)
-            pts_df.to_csv(self.save_loc, index=False)
-        else:
-            print("Not")
-
-
-
-    def initial_exploration(self, time_cutoff_sec=60, timing_points=4):
-        
-        # Assuming only master or solo will call this function
-        if self.work_role == 'worker':
-            LOGGER.error('Optimization Manager: Only master or solo can call initial_exploration')
-            raise ValueError('Optimization Manager: Only master or solo can call initial_exploration')
-
-        LOGGER.info('Optimization Manager: Estimating Time per Task for Exploration')
-        start_time = time.time()
-        num_dimensions = len(self.space)
-
-        grid_points = self._generate_grid_points(self.space, num=5)
-
-        # Do n timing points (per processer) to estimate time per execution
-        if self.work_role == 'solo':
-            selected_indices = np.random.choice(len(grid_points), size=timing_points, replace=False)  
-
-        elif self.work_role == 'master':
-            if timing_points * (self.size-1) > len( grid_points ):
-                selected_indices = np.arange(len(grid_points))
-            else:
-                selected_indices = np.random.choice(len(grid_points), size=timing_points * (self.size-1), replace=False)
-        
-        # Package selected grid points for executions
-        x_list = [ grid_points[i] for i in selected_indices ]
-        self._evaluate(x_list)
-
-        # Get sense of time per execution
-        self.time_per_task = (time.time() - start_time) / (len(x_list) )
-        LOGGER.info('Optimization Manager: Time per execution: %.2f s' % self.time_per_task)
-
-        # Estimate number of tasks that can be done in time cutoff
-        potential_num_tasks = time_cutoff_sec / self.time_per_task
-
-        # Get rough idea of spacing between points needed for grid search
-        num_points_per_dim = floor( potential_num_tasks ** (1 / num_dimensions) )
-
-        # Create points to explore
-        if num_points_per_dim >= 7:
-            grid_points = self._generate_grid_points(self.space, num=num_points_per_dim)
-            x_list = grid_points
-            np.random.shuffle(x_list)
-            LOGGER.info('Optimization Manager: Doing Grid Exploration: %d'% len(x_list))
-
-        else:
-            # Do LHS exploration
-            lhs = Lhs(lhs_type="classic", criterion="maximin")
-            x_list = lhs.generate(self.space, n_samples=int(potential_num_tasks))
-            np.random.shuffle(x_list)
-            LOGGER.info('Optimization Manager: Doing LHS exploration: %d'% len(x_list))
-
-        # Explore points, but save results n seconds
-        save_n_sec = 300
-        n_pts_per_minute = ceil(save_n_sec / self.time_per_task)
-
-        for i in range(1, ceil(len(x_list) / n_pts_per_minute) + 1):
-            start = (i-1) * n_pts_per_minute
-            end = min(i * n_pts_per_minute, len(x_list))
-            new_pts, new_val = self._evaluate(x_list[start:end])
-
-            # Save points every minute
-            self.save_pts()
-
-            # If time is up, break
-            if time.time() - start_time > time_cutoff_sec:
-                break
+                raise ValueError("All Functions Evaluations Failed")
             
-        return new_pts, new_val
+            # Store the new fitness scores
+            for i, idx in enumerate(idx_to_eval):
 
-    def pick_init_points(self, n_points):
+                fitness = new_fitness_scores[i]
 
-        n_explored = len(self.explored_points)
-        init_pts = []
+                if type(fitness) in GA.supported_int_float_types:
+                    # The fitness function returns a single numeric value.
+                    # This is a single-objective optimization problem.
+                    pass
+                elif type(fitness) in [list, tuple, numpy.ndarray]:
+                    # The fitness function returns a list/tuple/numpy.ndarray.
+                    # This is a multi-objective optimization problem.
+                    pass
+                else:
+                    raise ValueError(f"The fitness function should return a number or an iterable (list, tuple, or numpy.ndarray) but the value {fitness} of type {type(fitness)} found.")
 
-        if n_explored < n_points:
-            return self.explored_points
+                pop_fitness[idx] = fitness
 
-        # Get half as the most recent points
-        init_pts = self.explored_points[int(-n_points/2):]
+        pop_fitness = numpy.array(pop_fitness)
 
-        # Randomly pick the other half
-        random_indices = np.random.choice(n_explored, size=int(n_points/2), replace=False)
-        init_pts.extend( self.explored_points[random_indices] )
+    except Exception as ex:
+        self.logger.exception(ex)
+        # sys.exit(-1)
+        raise ex
+    return pop_fitness
 
-        # prepare points and values
-        initial_points = [ k for k in init_pts ]
-        initial_values = [ v for v in init_pts.values() ]
+if buildEnv:
 
-        return (initial_points, initial_values)
+    # logger.setLevel(logging.DEBUG)
+    logger.info(f"Testing GA")
 
-    def setup_optimizer( self, time_cutoff_sec=10, timing_calls=4):
+    #####   SPACE   ######
+    test_space = [
+        {'name':'uni-orig', 'type': 'float', 'bounds': [-4, 4], 'prior':'uniform', 'transform':'identity'  },
+        {'name':'log-orig', 'type': 'float', 'bounds': [.01, 4], 'prior':'log-uniform', 'transform':'identity' },
+        {'name':'uni-norm', 'type': 'float', 'bounds': [-4, 4], 'prior':'uniform', 'transform':'normalize' },
+        {'name':'log-norm', 'type': 'float', 'bounds': [.01, 4], 'prior':'log-uniform', 'transform':'normalize' },
+    ]
+
+    #####   Function   ######
+    def good_function(x):
+        # logger.critical(f"GOOD FUNCTION")
+        return 1 / ( 1+ np.sum(x**2))
+
+    #####   GA MANAGER   ######
+    ga_config = {
+        "num_generations": 4,      # Number of generations to run the GA.
+        "num_parents_mating": 100,  # Number of solutions to be selected as parents.
+        "sol_per_pop": 200,        # Number of solutions per population.
+        "gene_type": float,        # Data type of the genes. Can be float, int, or a list of types.
+        "random_seed": 0,       # Set random seed for reproducibility.
+        # "keep_elitism": 1,         # Number of top solutions to keep in the next generation.
+        "keep_parents": 50,         # Number of top solutions to keep in the next generation.
+        "parent_selection_type": "sus",   # Parent selection strategy 
+        "crossover_type": "uniform", # Crossover strategy.        
+        "mutation_probability": 0.5,      # Probability of mutating a gene.
+        "random_mutation_min_val": -0.1,  # Minimum value for random mutation.
+        "random_mutation_max_val":  0.1,  # Maximum value for random mutation.
+    }
+
+    my_ga = PYGAD_Manager( ga_config, input_space=test_space, black_box_function=good_function, log_level=logging.INFO )
+
+    my_ga.gad.run()
+    print("Done")
+
+
+# In[6]:
+
+
+if buildEnv:
+
+    import matplotlib.pyplot as plt
+    
+    # Create subplot for each dimension
+    fig, axs = plt.subplots(3, figsize=(8, 8))
+
+    # Set main title
+    fig.suptitle("Evaluation Manager Random Results")
+
+    # Histogram of inputs and outputs
+    for i, dim_info in enumerate(space_manager.space_info):
+        # inputs
+        exec_manager.scatter_input(dim_index=i, space='original', external_ax=axs[i], title=f"Orig In vs Out: {dim_info['name']}", reverse_color=True, 
+                                   output_log_scale=True)
+    
+    
+    import Simulator.new_simulator as sim
+
+    x, y = test_ga_manager.execution_manager.get_results(space='original')
+    print( f"X: {x.shape} Y: {y.shape}" )
+
+    # Get smallest y and x
+    min_idx = np.argmin(y)
+    min_x = x[min_idx]
+    min_y = y[min_idx]
+
+    print( f"Min Y: {min_y} Min X: {min_x}" )
+
+    # Plot orbit of best
+    npts = 4000
+    best_hparam = { 'lnl': min_x[0], 'm_halo': min_x[1], 'r_scale': min_x[2] }
+    best_orbit, _ = t1.simulate_orbit( orbit_data=best_hparam, save_dir=spam_loc )
+    _, best_pts = sim.basic_run( t1.spam_ar, npts1=npts, npts2=npts, spam_setup_params=best_hparam )
+
+    print( f"Best Orbit: {best_orbit.shape}" )
+    print( f"Best Particles: {best_pts.shape}" )
+
+
+# In[7]:
+
+
+if buildEnv:
+
+    plt.clf()
+    # Create three side by side plots
+    fig, axs = plt.subplots(1, 2, figsize=(24, 12))
+
+    t1.graph_target(
+        ax=axs[0],
+        limits = None,
+        add_spam_orbits= (best_orbit, 'Test GA Best Orbit'),
+        # std_dev = 3,
+    )
+
+    t1.graph_target(
+        ax=axs[1],
+        overwrite_hist=best_pts,
+        limits = None,
+        add_spam_orbits= (best_orbit, 'Test GA Best Orbit'),
+        # std_dev = 3,
+    )
+
+
+# In[8]:
+
+
+if buildEnv and False:
+
+    
+    # import IllustrisTNG.tng_functions as tf
+    # import IllustrisTNG.convert_tng_to_spam as cts
+    # reload( cts )
+    reload( spam_tuner.cts )
+    reload( spam_tuner )
+
+    print( f"Best Orbit: {best_orbit.shape}" )
+    print( f"Best Particles: {best_pts.shape}" )
+
+    # Create three side by side plots
+    fig, axs = plt.subplots(1, 2, figsize=(24, 12))
+
+
+    t1.graph_target(
+        ax=axs[0],
+        limits = None,
+        add_spam_orbits= (best_orbit, 'Test GA Best Orbit'),
+        # std_dev = 3,
+    )
+
+    t1.graph_target(
+        ax=axs[1],
+        overwrite_hist=best_pts,
+        limits = None,
+        add_spam_orbits= (best_orbit, 'Test GA Best Orbit'),
+        # std_dev = 3,
+    )
+
+
+# In[16]:
+
+
+class Tuner_Target_Setup:
+
+    def __init__( self, target_id, ga_config=None ):
+
+        self.logger = gu.configure_logger( logger_name='tuner_target_setup', log_level=logging.INFO )
+        self.logger.info(f"Initializing Tuner Target Setup")
+
+        self.target_id = target_id
+        self.spam_loc = "/home/mbo2d/galStuff/data/misc_spam_orbits"
+        self.target = spam_tuner.DEV_SPAM_TNG_Tuner( target_id, use_spline_type='hermite' )
+        self.wf = self.target.gen_orbit_weights( boundary_value=0.1, scale_past=0.5 )
+
+        self.spam_hyper_param = [
+            {'name':'lnl', 'type': 'float', 'bounds': [1e-3, 2e-2], 'prior':'log-uniform', 'transform':'normalize',  },
+            {'name':'m_halo', 'type': 'float', 'bounds': [1, 18], 'prior':'uniform', 'transform':'normalize', },
+            {'name':'r_scale', 'type': 'float', 'bounds': [10, 30], 'prior':'uniform', 'transform':'normalize', },
+        ]
+
+        self.space_manager = opt_spt.Space_Manager( self.spam_hyper_param )
+        self.logger.debug(f"Space Input: {self.space_manager.space_info}")
+
+        self.exec_manager = opt_spt.Execution_Manager( self.space_manager,
+                                                black_box_function=self.orbit_score_wrapper,
+                                                normalize_output='reciprocal',
+                                                func_logger='spam_tuner',
+                                                )
+
+        if ga_config is None:
+            
+            self.ga_config = {  
+                "num_generations": 2,      # Number of generations to run the GA.
+                "num_parents_mating": 20,  # Number of solutions to be selected as parents.
+                "sol_per_pop": 64,        # Number of solutions per population.
+                "gene_type": float,        # Data type of the genes. Can be float, int, or a list of types.
+                "keep_parents": 10,         # Number of top solutions to keep in the next generation.
+                "parent_selection_type": "sus",   # Parent selection strategy 
+                "crossover_type": "uniform", # Crossover strategy.        
+                "mutation_probability": 0.5,      # Probability of mutating a gene.
+                "random_mutation_min_val": -0.1,  # Minimum value for random mutation.
+                "random_mutation_max_val":  0.1,  # Maximum value for random mutation.
+                "random_seed": 0,       # Set random seed for reproducibility.
+            }
+        else:
+            self.ga_config = ga_config
         
-        """
-        Start the optimization process using Gaussian Process Minimization.
+
+        self.ga_manager = PYGAD_Manager( self.ga_config,
+                                        space_manager = self.space_manager,
+                                        execution_manager = self.exec_manager,
+                                        )
+
+    def orbit_score_wrapper( self, x ):
+        spam_hparam = { 'lnl': x[0], 'm_halo': x[1], 'r_scale': x[2] }
+        orbit = self.target.simulate_orbit( orbit_data=spam_hparam, save_dir=self.spam_loc )
+        orbit_error = self.target.weighted_avg_error_sq_over_by_time( orbit[0], self.wf )
+        return orbit_error
+    
+    def run( self, ):
+        self.ga_manager.gad.run()
+    
+    def get_best( self, npts=400, npts2=None ):
+        x, y = self.exec_manager.get_results(space='original')
+        # Get smallest y and x
+        min_idx = np.argmin(y)
+        min_x = x[min_idx]
+        min_y = y[min_idx][0]
+
+        best_hparam = { 'lnl': min_x[0], 'm_halo': min_x[1], 'r_scale': min_x[2] }
+        best_orbit = self.target.simulate_orbit( orbit_data=best_hparam, save_dir=self.spam_loc )[0]
+
+
+        if npts2 is None:
+            npts2 = npts
+
+        _, best_pts = sim.basic_run( self.target.spam_ar, npts1=npts, npts2=npts, spam_setup_params=best_hparam )
+
+        best_dict = {
+            'hparam': best_hparam,
+            'orbit': best_orbit,
+            'pts': best_pts,
+            'score': min_y,
+        }
+
+        return best_dict
+
+    def plot_best(self, npts=400):
         
-        Parameters:
-        - n_calls: Total number of calls to the objective function.
-        - n_random_starts: Number of random starts before using the surrogate model.
-        """
+        best_info = self.get_best(npts=npts)
+        self.target.simulate_orbit( orbit_data=best_info['hparam'], save_dir=self.spam_loc, add_plot=True )
 
-        LOGGER.info('Optimization Manager: Setting up Optimization')
+        print("Best Info:")
+        print(f"\t- Hparam: {best_info['hparam']}")
+        print(f"\t- Score: {best_info['score']}")
+        print(f"\t- Orbit: {best_info['orbit'].shape}")
+        print(f"\t- Particles: {best_info['pts'].shape}")
+        
+        fig, axs = plt.subplots(1, 2, figsize=(24, 12))
 
-        # If n_calls is not set, estimate number of calls based on time_running and self.time_per_task
-        if n_calls is None:
-            n_calls = floor(time_running / self.time_per_task)
-            LOGGER.info('Optimization Manager: Estimated n_calls: %d' % n_calls)
+        fig.suptitle(f"Best Orbit: {best_info['score']:.3e}")
 
-        # Use built in function to get initial points for function
-        if self.explored_points == {}:
-            self.initial_exploration(time_running/10)
-
-        # Collect initial points and their corresponding function values
-        initial_points = list(self.explored_points.keys())
-        initial_values = list(self.explored_points.values())
-
-        # Get idea for how long optimization will take        
-        self.pts_per_prediction = 100
-
-        # Get some points to start with
-        initial_points, initial_values = self.pick_init_points( self.pts_per_prediction )
-
-        start_time = time.time()
-
-        result = gp_minimize(
-            func=self.black_box_function,
-            dimensions=self.space,
-            n_calls=4,
-            n_random_starts=0,
-            x0=initial_points,
-            y0=initial_values,
-            verbose=False
+        self.target.graph_target(
+            ax=axs[0],
+            add_spam_orbits = (best_info['orbit'], "Best SPAM Orbit"),
         )
 
-        # Get time for prediction, by taking prediction time + time per task and subtracting time per task
-        self.time_per_prediction = (time.time() - start_time) / timing_calls - self.time_per_task*timing_calls
-
-        # Keep time to prediction under 10% of time per task
-        while time_per_prediction < self.time_per_task * 0.1:
-            self.pts_per_prediction *= 1.5
-
-            # Get some points to start with
-            initial_points, initial_values = self.pick_init_points( self.pts_per_prediction )
-
-            start_time = time.time()
-
-            result = gp_minimize(
-                func=self.black_box_function,
-                dimensions=self.space,
-                n_calls=timing_calls,
-                n_random_starts=0,
-                x0=initial_points,
-                y0=initial_values,
-                verbose=False
-            )
-
-        if self.work_role == 'master':
-            LOGGER.info('Optimization Manager: Starting Optimization')
-            # Perform the optimization
-            result = gp_minimize(
-                func=self.black_box_function,
-                dimensions=self.space,
-                n_calls=n_calls,
-                n_random_starts=10,
-                x0=initial_points,
-                y0=initial_values,
-                verbose=True
-            )
-
-            return result
-
-    def timing_bayesian_optimization(self, starting_points=10, time_cutoff_sec=10):
-
-        # First, estimate time per task
-        start_time = time.time()
-
-        # get random points in space to calc execution time
-        n_pts = starting_points
-        if self.work_role == 'master':
-            n_pts *= self.size - 1
-
-        random_points = []
-        for i in range(n_pts):
-            x = []
-            for dim in self.space:
-                x.append( dim.rvs() )
-            random_points.append(x)
-
-        # Evaluate the random points
-        new_pts, new_val = self._evaluate(random_points)
-
-        # Get time per task
-        time_per_task = (time.time() - start_time) / n_pts
+        self.target.graph_target(
+            ax=axs[1],
+            overwrite_hist=best_info['pts'],
+            # add_spam_orbits = (best_info['orbit'], "Best SPAM Orbit"),
+        )
 
 
-        # Use random points with arbitrary values to predict time per prediction and time per model training
+if buildEnv:
 
-        # Initialize the optimizer
-        self.optimizer = Optimizer(dimensions=self.space, base_estimator='GP', random_state=42)
+    p2 = 75000000121160
+    
+    #####   GA MANAGER   ######
+    test_ga_config = {
+        "num_generations": 5,      # Number of generations to run the GA.
+        "sol_per_pop": 32*2,        # Number of solutions per population.
+        "num_parents_mating": int(32/2),  # Number of solutions to be selected as parents.
+        "keep_parents": int(32/4),         # Number of top solutions to keep in the next generation.
+        "gene_type": float,        # Data type of the genes. Can be float, int, or a list of types.
+        "parent_selection_type": "sus",   # Parent selection strategy 
+        "crossover_type": "uniform", # Crossover strategy.        
+        "mutation_probability": 0.5,      # Probability of mutating a gene.
+        "random_mutation_min_val": -0.1,  # Minimum value for random mutation.
+        "random_mutation_max_val":  0.1,  # Maximum value for random mutation.
+        "random_seed": 0,       # Set random seed for reproducibility.
+    }
 
-        # Generate initial points from what's in the explored points
-        initial_points = self.explored_points.tolist()
-        initial_values = self.explored_values.tolist()
+    # test_tuner = Tuner_Target_Setup( target_id = p2, ga_config=test_ga_config )
+    test_tuner = Tuner_Target_Setup( target_id = p1, ga_config=test_ga_config )
+    
+    test_tuner.run()
 
-        # Provide initial data to the optimizer
-        self.optimizer.tell(initial_points, initial_values)
+    test_tuner.plot_best(npts=6000)    
 
-        # Lists to store timing data
-        predict_times = []
-        train_times = []
 
-        current_num_points = int(n_pts)
+# In[17]:
 
-        # Loop while the prediction step is below the cutoff time
-        c=0
-        time_tell = True
-        time_ask = True
-        while True:
 
-            LOGGER.info(f"Timing Bayesian Optimization: Iteration {c} - Num Points: {current_num_points}")
+if buildEnv:
 
-            new_points = np.array([[dim.rvs() for dim in self.space] for _ in range(current_num_points)]).reshape(-1, len(self.space)).tolist()
-            new_values = [ np.random.rand() for _ in range(current_num_points)]
+    p2 = 75000000121160
+    
+    #####   GA MANAGER   ######
+    test_ga_config = {
+        "num_generations": 5,      # Number of generations to run the GA.
+        "sol_per_pop": 32*2,        # Number of solutions per population.
+        "num_parents_mating": int(32/2),  # Number of solutions to be selected as parents.
+        "keep_parents": int(32/4),         # Number of top solutions to keep in the next generation.
+        "gene_type": float,        # Data type of the genes. Can be float, int, or a list of types.
+        "parent_selection_type": "sus",   # Parent selection strategy 
+        "crossover_type": "uniform", # Crossover strategy.        
+        "mutation_probability": 0.5,      # Probability of mutating a gene.
+        "random_mutation_min_val": -0.1,  # Minimum value for random mutation.
+        "random_mutation_max_val":  0.1,  # Maximum value for random mutation.
+        "random_seed": 0,       # Set random seed for reproducibility.
+    }
 
-            # Set condition for breaking timing if too large
-            if time_tell:
-                start_time = time.time()
-                self.optimizer.tell(new_points, new_values)
-                train_time = time.time() - start_time
-                train_times.append((current_num_points, train_time))
-                LOGGER.info(f"Training Time {c}: {train_time}")
-                if train_time > time_cutoff_sec:
-                    time_tell = False
+    test_tuner = Tuner_Target_Setup( target_id = p2, ga_config=test_ga_config )
+    # test_tuner = Tuner_Target_Setup( target_id = p1, ga_config=test_ga_config )
+    
+    test_tuner.run()
 
-            # Step 2: Predict (Ask) step
-            if time_ask:
-                start_time = time.time()
-                predict_n_pts = 1
-                _ = self.optimizer.ask(n_points=predict_n_pts)
-                predict_time = (time.time() - start_time) # To get time for a single prediction
-                predict_times.append((current_num_points, predict_time))
-                LOGGER.info(f"Prediction Time {c}: {predict_time}")
-                if predict_time > time_cutoff_sec:
-                    time_ask = False
+    test_tuner.plot_best(npts=6000)    
 
-            # Break if either time step exceeds the cutoff time
-            if train_time > time_cutoff_sec or predict_time > time_cutoff_sec:
-                break
 
-            # Double the number of points for the next iteration
-            current_num_points = int( 2.0 * current_num_points )
-            c += 1
+# In[ ]:
+
+
+if buildEnv:
+    p3 = 51000000255938
+
+    test_tuner = Tuner_Target_Setup( target_id = p3, ga_config=test_ga_config )
+    
+    test_tuner.run()
+
+    test_tuner.plot_best(npts=3000)    
+
+    
+
+
+# In[11]:
+
+
+def _on_parents(self, ga_instance, parents):
+        """Custom on_parents function for the GA."""
+        self.logger.info("On Parents")
+        self.logger.debug(f"Parents: {type(parents)}")
+        # self.logger.debug(f"Parents: \n{parents[:2]}\n...\n{parents[-2:]}")
+        self.logger.info("On Parents Complete")
+    # end of _on_parents
+
+def custom_run(self, generations=None):
+        """Custom run method for the GA."""
+        self.logger.info("Custom Run")
         
-        # Assuming quadratic and cubic models for time complexity of prediction and training, get coefficients for models
-        predict_times = np.array(predict_times)
-        predict_c = np.polyfit(predict_times[:, 0], predict_times[:, 1], deg=2)
+        if generations is None:
+            generations = self.ga_config['num_generations']
+        
+        self.logger.info(f"Running GA for {generations} generations")
+        self._custom_fitness()
 
-        train_times = np.array(train_times)
-        train_c = np.polyfit(train_times[:, 0], train_times[:, 1], deg=3)
+        self.gad.on_parents( self.gad, self.gad.last_generation_parents )
+    
 
-        self.p_c = predict_c
-        self.t_c = train_c
+if buildEnv:
 
-        # print the models and cooefficients
-        LOGGER.info(f"Training Time Model: {train_c}")
-        LOGGER.info(f"Training Points: \n{train_times}")
+    ga_config['sol_per_pop'] = 10
 
-        LOGGER.info(f"Prediction Time Model (per {predict_n_pts} pts): {predict_c}")
-        LOGGER.info(f"Prediction Points (per {predict_n_pts} pts): \n{predict_times}")
+    # Create new GA
+    my_ga = PYGAD_Manager( ga_config, input_space=test_space, black_box_function=good_function, logger=debug_logger )
+
+    # my_ga.custom_run()
+    my_ga.gad.run()
         
 
-        # Create plot showing these times
-        import matplotlib.pyplot as plt
-        plt.figure(figsize=(12, 6))
-        plt.scatter(predict_times[:, 0], predict_times[:, 1], label='Prediction Time (s/{predict_n_pts} pts)', marker='o')
-        plt.scatter(train_times[:, 0], train_times[:, 1], label='Training Time (s)', marker='o')
-        plt.xlabel('# of PTS in Surrogate Model')
 
-        # Plot the prediction and training time models
-        x = np.linspace(int(n_pts), max(predict_times[-1, 0], train_times[-1, 0]), 100)
-        plt.plot(x, np.polyval(predict_c, x), label='Prediction Time Model (s/{predict_n_pts} pts)', linestyle='--')
-        plt.plot(x, np.polyval(train_c, x), label='Training Time Model', linestyle='--')
+# # Matt's MISC Notes:
+# 
+# 1) Considering a live heat scatter plot
+#     - Use PCA to lower dimensions to 2.  (maybe 3)
+#     - Have code generate a frame to add to gif every generation.
+#     - increase speed of plot as frames increase
+# 
+# 2) Use timestamps in a folder to create unique folders/files over time.
+# 
+# 3) Have a table of the input dimensions
+#     - color code convergience versus sensitivety.
+#     - Color code degeneracies with other parameters??
+#     - Find color-blind approved color sprectrum. 
+# 
 
-        plt.legend()
-        plt.title('Timing Analysis of Bayesian Optimization')
-        plt.show()
-
-        # Save the plot
-        plt.savefig('timing_analysis.png')
-
-        return [ predict_times, predict_c, train_times, train_c ]
-
-def rastrigin(x):
-    A = 10
-    return A * len(x) + sum([(xi**2 - A * np.cos(2 * np.pi * xi)) for xi in x])
-
-def gen_x_bounds( n_dim = 2, x_range = [-5.12, 5.12] ):
-    x = {}
-    for i in range(n_dim):
-        x[f'x_{i}'] = {'bounds': x_range}
-    return x
-
-def test_optimization_manager():
-    print("\nTESTING OPTIMIZATION MANAGER\n")
-
-    comm = MPI.COMM_WORLD
-    size = comm.Get_size()
-    rank = comm.Get_rank()
-
-    save_loc = 'test_pts.csv'
-
-    # NOTE: Workers will remain here until manager terminates workers
-    if rank != 0:
-        worker = Optimization_Manager( rastrigin, gen_x_bounds(2), save_loc=save_loc )
-        # worker.run_worker()
-
-    if rank == 0:
-        manager = Optimization_Manager( rastrigin, gen_x_bounds(2), save_loc=save_loc )
-        # Test gridsearch/exploration
-
-        explored_ar = manager.initial_exploration( time_cutoff_sec=10, timing_points=4 )
-        print( "Explored Points: \n", explored_ar )
+# In[ ]:
 
 
-        # Get timing data for Bayesian Optimization
-        # timing_data = opt_manager.timing_bayesian_optimization( time_cutoff_sec=300 )
+def _on_start(self, ga_instance):
+    """Called once before the genetic algorithm starts."""
+    self.logger.info("On Start")
+    pass
 
-# If script is called main
-if __name__ == '__main__':
+def _on_fitness(self, ga_instance, fitness_values):
+    """Called after calculating the fitness values of all solutions."""
+    self.logger.info("GA: On Fitness")
+    pass
 
-    # Initialize MPI
-    comm = MPI.COMM_WORLD
-    size = comm.Get_size()
-    rank = comm.Get_rank()
+def _on_parents(self, ga_instance, parents):
+    """Called after selecting parents for mating."""
+    self.logger.info("GA: On Parents")
+    pass
 
-    if rank == 0:
-        print("\OPTIMIZATION MANAGER\n")
-        gu.tabprint("This module is intended to be imported and used in other scripts.")
-        gu.tabprint("Calling as main will run tests and examples.")
-        print("\nInitializing Arguments, and Logger\n")
+def _on_crossover(self, ga_instance, offspring):
+    """Called each time the crossover operation is applied."""
+    self.logger.info("GA: On Crossover")
+    pass
 
-    try:
-        args, LOGGER = gu.initialize_environment()
-        # gu.change_logging_level('DEBUG')
+def _on_mutation(self, ga_instance, mutated_offspring):
+    """Called each time the mutation operation is applied."""
+    self.logger.info("GA: On Mutation")
+    pass
 
-        # mpi_logger = logging.getLogger('qm')
-        # mpi_logger.setLevel(logging.INFO)
+def _on_generation(self, ga_instance):
+    """ Callback for each generation """
+    self.logger.info(f"Generation: {ga_instance.generations_completed} Best Fitness: {ga_instance.best_solution()[1]}") 
 
-        if rank == 0:
-            print( f"\nArgs: \n{args}")
-            print( f"\nLogger: \n{LOGGER}")
-        
-            print("\nChanging LOGGER to Debug")
+def _on_stop(self, ga_instance, last_gen_fitness):
+    """Called once before the algorithm stops or after the last generation."""
+    self.logger.info("GA: On Stop")
+    pass
 
-    except:
-        print("Failed to Initalize Arguments and Logger")
-        sys.exit(1)
+def _custom_crossover_mask(self, parents, offspring_size):
+    """ TODO custom crossover function for scattered crossover """
+    pass
 
-    test_optimization_manager()
+
+# In[ ]:
+
+
+import numpy as np
+
+def simulated_annealing_mutation(ga_instance):
+    # Calculate progress through generations
+    progress = ga_instance.generations_completed / ga_instance.num_generations
+
+    # Exponential decay for temperature (annealing schedule)
+    initial_temp = 1.0
+    final_temp = 0.01
+    temperature = initial_temp * (final_temp / initial_temp) ** progress
+
+    # Adjust mutation range based on temperature
+    mutation_range = temperature * 0.3  # Starting range scaled by temperature
+    ga_instance.random_mutation_min_val = -mutation_range
+    ga_instance.random_mutation_max_val = mutation_range
+
+    # Adjust mutation probability (optional)
+    ga_instance.mutation_probability = temperature * 0.5 + 0.05  # Keeps a baseline probability
+
+    # (Optional) Print progress for monitoring
+    print(f"Generation {ga_instance.generations_completed} | Temp: {temperature:.4f} | Mutation Range: ±{mutation_range:.4f} | Mutation Prob: {ga_instance.mutation_probability:.4f}")
 

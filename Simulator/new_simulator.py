@@ -32,9 +32,9 @@ import utilities.model_manager as mm
 from Simulator.custom_runs import custom_runs_module as spam_module
 spam_module.simr_init()
 
+# ================================= GLOBALS ================================= #
 # Global logger from main program
 LOGGER = gu.configure_logger(logger_name='')
-# ================================= GLOBALS ================================= #
 
 # An example collision model
 test_param = [-9.93853,-4.5805,3.27377,-0.50008,-2.45565,-1.07799,23.33004,24.69427,3.49825,5.32056,309.6923,36.8125,41.78471,51.42857,0.3,0.3,0.0,0.0,0.0,0.0,0.0,0.0,0.94594,0,0,0.18901,-22.47999,9.02372,0.0,1.0,0.0,0.0,0.0,0.0][0:22]
@@ -69,7 +69,7 @@ spam_param_description = '''
 # ================================= CORE FUNCTIONS ================================= #
 def set_spam_parameters( lnl = 0.1, r_scale = 10.0, m_halo = 5.8, m_bulge = 0.3333, h_bulge = 2.0, h_disk = 1.0 ):
     """
-    This fuunction defines the base mass distribution of the galaxy.   Custom collisions scale this distribution.
+    This function defines the base mass distribution of the galaxy.   Custom collisions scale this distribution.
     The default values are derived from empirical data of the Milky Way and M31.  
     See https://ui.adsabs.harvard.edu/abs/1993ApJS...86..389H/abstract
     
@@ -156,8 +156,9 @@ def initialize_setup( collision_param, spam_setup_params = None ):
     # Setup the simulation paramaters if given
     if spam_setup_params is not None:
         # Create new dict with only valid keys
+        spam_setup_params = dict(spam_setup_params) # Ensure it's a dict
         valid_keys = ['lnl', 'r_scale', 'm_halo', 'm_bulge', 'h_bulge', 'h_disk']
-        valid_setup_params = {k:spam_setup_params[k] for k in valid_keys if k in spam_setup_params}
+        valid_setup_params = {k:float(spam_setup_params[k]) for k in valid_keys if k in spam_setup_params}
         set_spam_parameters( **valid_setup_params ) # Missing keys will use default value from function
     
     return fortran_ar
@@ -184,7 +185,7 @@ def spam_orbit( collision_param, spam_setup_params = None, current_time = 0.0 ):
     try:
         fortran_ar = initialize_setup( collision_param, spam_setup_params )
     except Exception as e:
-        LOGGER.error("Failed to initialize setup")
+        LOGGER.error(f"Failed to initialize setup:\n{e}\n")
         LOGGER.error(f"Collision Param: {collision_param}")
         LOGGER.error("Setup Params: {spam_setup_params}")
         LOGGER.error(f"Current_time:{current_time}")
@@ -226,8 +227,10 @@ def spam_orbit( collision_param, spam_setup_params = None, current_time = 0.0 ):
     return orbit_path
 
 def basic_run( collision_param, spam_setup_params = None,
-                      npts1 = 100, npts2 = 50, heat1 = 0.0, heat2 = 0.0, 
-                      save_dir = '/home/mbo2d/galStuff/data/spam_runs/' ):
+              npts1 = 100, npts2 = 50, heat1 = 0.0, heat2 = 0.0, 
+              save_dir = None,
+            #   save_dir = '/home/mbo2d/galStuff/data/spam_runs/',
+            ):
     """
     This function is a wrapper for the spam_module.basic_disk function.
 

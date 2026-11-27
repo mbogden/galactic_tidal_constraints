@@ -36,10 +36,8 @@ sys.path.append(PROJECT_DIRECTORY)
 # import project modules
 import utilities.general_utility as gu
 
-
 # ================================ GLOBAL VARIABLES ================================ #
-LOGGER = logging.getLogger()
-logger = LOGGER
+logger = logging.getLogger()
 
 # Define MPI tags
 TAG_TASK = 1
@@ -54,16 +52,6 @@ def _local_worker_initializer(serialized_func):
     global _local_eval_function
     _local_eval_function = dill.loads(serialized_func)
 
-# @staticmethod
-# def _local_run_task(serialized_args):
-#     global _local_eval_function
-#     args = dill.loads(serialized_args)
-#     try:
-#         return _local_eval_function(args)
-#     except Exception as e:
-#         LOGGER.error(f"Local task failed: {e}")
-#         return None
-
 # ================================ CLASSES ================================ 
 
 class Queue_Manager():
@@ -77,9 +65,8 @@ class Queue_Manager():
         self.batch_size = batch_size
 
         # Initialize a custom queue logger with class name in formatting
-        self.logger = gu.configure_logging( logger_name='Queue_Manager',
-                                            log_level=queue_log_level,
-                                            class_name='Queue_Manager',
+        self.logger = gu.configure_logger( logger_name='Queue_Manager',
+                                        log_level=queue_log_level,
                                             )
 
         # if None, assume Root logger, otherwise use provided Logger 
@@ -267,7 +254,7 @@ class Queue_Manager():
             try:
                 compiled_results[i] = self.eval_function(t)
             except Exception as e:
-                LOGGER.warning(f"Queue Task {i} Failed: '{e}'")
+                self.logger.warning(f"Queue Task {i} Failed: '{e}'")
                 compiled_results[i] = e
 
             if time.time() - curr_time > 1:
@@ -374,9 +361,8 @@ class Queue_Worker(Slave):
         self.rank = MPI.COMM_WORLD.Get_rank()
 
         # Create logger
-        self.logger = gu.configure_logging( logger_name=f'Queue_Worker_{self.rank}',
+        self.logger = gu.configure_logger( logger_name=f'Queue_Worker_{self.rank}',
                                             log_level=worker_log_level,
-                                            class_name='Queue_Worker',
                                             )
 
         # Save dictionary of possible functions to run
@@ -430,7 +416,6 @@ def func_wrapper( w_input ):
 
 # ================================ TESTING ================================ #
 def test_queue( ):
-    global LOGGER
 
     # Example function calls
     comm = MPI.COMM_WORLD
@@ -506,7 +491,7 @@ def test_queue( ):
             time.sleep(1)       
             del manager
         except Exception as e:
-            LOGGER.critical("Error in test_queue: %s" % e)
+            logger.critical("Error in test_queue: %s" % e)
 
 # ================================ MAIN ================================ #
 # If script is called main
@@ -524,7 +509,7 @@ if __name__ == '__main__':
         print("\nInitializing Arguments, and Logger\n")
 
     try:
-        args, LOGGER = gu.initialize_environment()
+        args, logger = gu.initialize_environment()
         # gu.change_logging_level('DEBUG')
 
     except:

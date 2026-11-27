@@ -1,21 +1,20 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[12]:
+# In[5]:
 
 
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 """
-File: convert_tng_to_spam.py
+File: review_tng_target_images.py
 Author: Matthew Ogden
 Email: ogdenm12@gmail.com
 Github: mbogden
 Created: 2024-Apr-11
 
-Description: This script is designed to take the dynamic kinematic data from the IllustrisTNG subhalo data, 
-    and convert it into a format that can be used by the SPAM simulator. 
+Description:
 
 References:  Sections of this code were written with the assistance of ChatGPT made by OpenAI.
 
@@ -26,8 +25,13 @@ import math, os
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+import h5py
 
-buildEnv = False
+import galaxyJSPAM.IllustrisTNG.tng_functions as tf
+# import galaxyJSPAM.IllustrisTNG.convert_tng_to_spam as cts
+# !pip install illustris-python
+# import IllustrisTNG.tng_images as ti
+
 
 # Set NumPy print options to reduce the precision to 3 decimal places
 np.set_printoptions(precision=2)
@@ -35,1395 +39,818 @@ np.set_printoptions(precision=2)
 print("Import Done")
 
 
-# # CORE FUNCTIONS
-# The following are the core functions needed to convert from TNG to SPAM.
-
-# In[13]:
+# In[6]:
 
 
-# ================================ CONSTANTS ================================ #
+#Let's load some target data
 
-# Constants from Java code
-G = 6.673e-11  # m^3 kg^-1 s^-2
-solarMassToKg = 1.98892e30  # kg
-metersPerMpc = 3.08568025e22  # meters per Megaparsec
-kmPerMpc = 3.08568025e19  # kilometers per Megaparsec
-
-# Derived units for calculations
-MU_kg = 1.0e11 * solarMassToKg  # 1e11 solar masses in kg
-DU_m = 15.0 * kmPerMpc  # 15 kpc in meters
-TU_s = math.sqrt(DU_m * DU_m * DU_m / (G * MU_kg))  # Time unit in seconds (Based on Kepler's third law...?)
-
-# Additional units for output purposes
-MU_sm = 1.0e11  # 1e11 solar masses
-DU_mpc = 15.0 / 1000.0  # 15 kpc in Mpc
-
-# Velocity and acceleration
-VEL_KMS = DU_m / 1000.0 / TU_s  # Velocity in km/s
-A_MSS = DU_m / TU_s / TU_s  # Acceleration in m/s^2
-A0_MKS = 1e-10  # m/s^2
-A0 = A0_MKS / A_MSS  # Dimensionless
-
-spam_units = {
-
-    # JAVA Base Units
-    "MU_kg": MU_kg,  # Mass unit in kg
-    "DU_m": DU_m,  # Distance unit in meters
-    "TU_s": TU_s,  # Time unit in seconds
-
-    "MU_sm": MU_sm,  # Mass unit in solar masses
-    "DU_mpc": DU_mpc,  # Distance unit in Megaparsecs
-
-    "VEL_KMS": VEL_KMS,  # Velocity in km/s
-    "A_MSS": A_MSS,  # Acceleration in m/s^2
-    "A0_MKS": A0_MKS,  # m/s^2
-    "A0": A0,  # Dimensionless
-
-    # Units from Fortran Version of SPAM
-    "mass_gm": 1.98892e44,  # grams  (SPAM's mass unit, 10^11 M_⊙ )
-    "distance_cm": 4.6285203749999994e22,  # cm  (SPAM's distance unit, roughly 15 kpc)
-    "time_s": 2.733342473337471e15,  # s
-    "velocity_cm_s": None,  # cm/s, to be calculated dynamically  (SPAM's velocity unit, roughly 170 km/s)
-    "vel_km_s": None,  # velocity in km/s, to be calculated dynamically
-    "km" : 1e5 # cm
-}
-
-# Calculating dynamic values based on other constants
-spam_units["velocity_cm_s"] = spam_units["distance_cm"] / spam_units["time_s"]
-spam_units["vel_km_s"] = spam_units["velocity_cm_s"] / spam_units["km"]
-
-# Print comparing JAVA to Fortran units
-print("Mass Comparison: ")
-print("\t - Fortran (gram):", spam_units['mass_gm'])
-print("\t - JAVA (kg):", spam_units["MU_kg"] ) 
-
-print("Distance Comparison: ")
-print("\t - Fortran (cm):", spam_units['distance_cm'])
-print("\t - JAVA (m):", spam_units["DU_m"] )
-
-print("Time Comparison: ")
-print("\t - Fortran (s): %e" % spam_units['time_s'])
-print("\t - JAVA (s): %e" % spam_units["TU_s"] )
-
-print("\nValues are the same but in different units. \n")
-
-# Dictionary of units for specific fields in the IllustrisTNG data
-tng_units = {
-    'mass_gm': 1.98892e+43,   # Mass unit equivalent to 10^10 solar masses in grams.
-    'distance_cm': 3.08568025e+21, # Comoving length unit equivalent to 1 kpc in cm per hubble parameter.
-    'velocity_cm_s': 100000.0,   # Velocity unit equivalent to 1 km/s in cm/s.
-    'time_s' : 3.15576e16,   # Time equivalent to 1 Gyr in seconds.
-}
-
-#   Standardized parameter array for SPAM model:
-'''
-    [0]: X-coordinate of the secondary galaxy's position
-    [1]: Y-coordinate of the secondary galaxy's position
-    [2]: Z-coordinate of the secondary galaxy's position
-    [3]: X-component of the secondary galaxy's velocity
-    [4]: Y-component of the secondary galaxy's velocity
-    [5]: Z-component of the secondary galaxy's velocity
-    [6]: Mass of the primary galaxy
-    [7]: Mass of the secondary galaxy
-    [8]: Outer radius of the primary galaxy
-    [9]: Outer radius of the secondary galaxy
-    [10]: Azimuthal angle for the primary galaxy
-    [11]: Azimuthal angle for the secondary galaxy
-    [12]: Inclination angle for the primary galaxy
-    [13]: Inclination angle for the secondary galaxy
-    [14]: Softening length for the primary galaxy
-    [15]: Softening length for the secondary galaxy
-    [16-19]: Particle distribution of the primary galaxy. (Unused)
-    [19-21]: Particle distribution of the secondary galaxy. (Unused)
-'''
+all_targets_df = pd.read_pickle('/home/mbo2d/galStuff/galaxyJSPAM/IllustrisTNG/tng-targets/moi-3-dynamics-dict-orbital-frame.pkl')
+print( all_targets_df.shape)
 
 
-# In[14]:
+# In[7]:
 
 
-def convert_numpy_arrays( df ):
+def get_all_targets_meta(hdf_file):
     """
-    Convert strings of arrays into numpy arrays in a pandas DataFrame.
+    Retrieves metadata and image names for all targets found in the HDF5 file.
+
+    Args:
+    -----
+    hdf_file (str): Path to the HDF5 file.
+
+    Returns:
+    --------
+    all_targets_meta (dict): A dictionary where the keys are target IDs (pids) and the values are dictionaries
+                             containing the target metadata and a list of image names.
     """
-
-    # Function to convert a string representation of a numpy array back to a numpy array
-    def convert_to_numpy_array(array_str):
-        # Remove the brackets and split the string by whitespace
-        array_str = array_str.strip('[]')
-        # Convert to a numpy array of integers (or float if needed)
-        return np.array(array_str.split(), dtype=float)
+    all_targets_meta = {}
     
-    # Iterate over each column and convert strings to numpy arrays if necessary
-    for column in df.columns:
-        # Check if the column contains array-like strings
-        if df[column].dtype == object and df[column].str.startswith('[').all():
-            df[column] = df[column].apply(convert_to_numpy_array)
+    if not os.path.exists( hdf_file ):
+        return {}
 
-    return df
+    with h5py.File(hdf_file, 'r') as hdf:
+        # Iterate through all groups in the HDF5 file
+        for group_name in hdf.keys():
+            if group_name.startswith('Target_'):
+                # Extract the target ID (pid) from the group name
+                pid = group_name
 
-if buildEnv and True:
-    
-    # Specify the file path to illustrisTNG Target info
-    file_path = '/home/mbo2d/galStuff/galaxyJSPAM/IllustrisTNG/tng-targets/moi-3-dynamics-dict-orbital-frame.pkl'
+                # Access the target group
+                target_group = hdf[group_name]
 
-    # Read the CSV file into a Pandas DataFrame
-    tng_targets = pd.read_pickle(file_path, )
+                # Retrieve the target metadata
+                t_meta = {key: target_group.attrs[key] for key in target_group.attrs}
 
+                # Get the list of image names (keys starting with 'Image_')
+                image_names = [key for key in target_group.keys() if key.startswith('Image_')]
 
-    # Print special note of pre-fixes in file
-    print("#####   SPECIAL NOTE   #####")
-    print("1st character 'p' vs 's' indicates 'primary' vs 'secondary' galaxy.")
-    print("If 2nd character is absent, data is from illustrisTNG Subhalo Catalog Data.")
-    print("If 2nd character is present, data is dynamically calculated after doing historical particle re-attribution.")
-    print("2nd characters 'a' and 's' stand for 'all particles' and 'star particles' respectively.")
-    print("")
-    
+                # Store metadata and image names in the dictionary with pid as the key
+                all_targets_meta[pid] = {
+                    'metadata': t_meta,
+                    'target_name': pid,
+                    'image_names': image_names
+                }
 
-    print( tng_targets.columns )
-    # for i, k in enumerate(tng_targets.columns):
-    #     print(i, k)
+    return all_targets_meta
 
-    # tng_targets = convert_numpy_arrays(tng_targets_raw)
-    print( tng_targets.iloc[0])
-    
+if False:
+    test_img_file = '/home/mbo2d/galStuff/galaxyJSPAM/IllustrisTNG/tng-images/moi-3-dynamics-dict-std-images.h5'
+    all_meta = get_all_targets_meta( test_img_file )
+    print('Target Images:', len( all_meta.keys() ))
 
 
 # In[8]:
 
 
-# ================================ FUNCTIONS ================================ #
-def calculate_orientation_angles( spin ):
-    """
-    Calculate the azimuthal and inclination angles from the spin components.
+if False:
+    print( list(all_meta.keys())[0] )
+    print( type( list(all_meta.keys())[0] ) )
 
-    Parameters:
-    spin (float array): [ x, y, z ] components of the spin.
+    sr_list = []
+    for i, pid in enumerate(all_meta.keys()):
+        print( i, pid, end='\r' )
+        t_row = pd.Series( all_meta[pid]['metadata'] )
+        t_row['target_name'] = all_meta[pid]['target_name']
+        t_row['img_names'] = all_meta[pid]['image_names']
+        sr_list.append( t_row )
 
-    Returns:
-    tuple: (phi, theta) where phi is the azimuthal angle and theta is the inclination angle,
-            both in radians.
-    """
-    x, y, z = spin
-    # Calculate the magnitude of the vector
-    r = np.sqrt(x**2 + y**2 + z**2)
+    img_df = pd.DataFrame( sr_list )
+    img_df = img_df.sort_values(by=['moi_2','snap'], ascending=[True, True])
 
-    # Calculate the azimuthal angle in radians
-    phi = np.arctan2(y, x)  # This returns the angle in the range [-pi, pi]
-
-    # Calculate the inclination angle in radians
-    if r == 0:
-        theta = 0  # Undefined direction for a zero vector, set arbitrarily to 0
-    else:
-        theta = np.arccos(z / r)
-
-    return np.degrees(phi), np.degrees(theta)
+    print( img_df.shape )
+    print( img_df.columns )
 
 
 
-# In[17]:
+# In[9]:
 
 
-def standardize_tng_parameters_v1( subhalo_kinematics, ):
-    """
-    Construct the standardized parameter array for kinematic data from the IllustrisTNG subhalo catalog.
-    Uses a mix of the catalog data, and calculated dynamics of all particles or star particles. 
+if False:
 
-    Args:
-        subhalo_kinematics (pd.Series): The dynamic kinematic data calculated elsewhere.
+    pid_list = img_df['moi_2'].unique()
+    t_row = img_df[img_df['moi_2'] == pid_list[3]].iloc[-3]
 
-    Returns:
-        param_array (np.array): A standardized parameter array based on the SPAM simulator.
-    """
-    # Initialize the parameter array
-    tng_ar = np.zeros(22)
+    print( t_row.shape )
 
-    # position and velocity. 
-    # Primary is always at origin, secondary is in reference to primary's location
-    for i in range(3):
-        # tng_ar[i] = subhalo_kinematics['ss_SubhaloCM'][i] - subhalo_kinematics['ps_SubhaloCM'][i]  # position
-        tng_ar[i] = subhalo_kinematics['s_SubhaloPos_orbital_frame'][i] - subhalo_kinematics['p_SubhaloPos_orbital_frame'][i]  # position
-        tng_ar[i+3] = subhalo_kinematics['ss_SubhaloVel_orbital_frame'][i] - subhalo_kinematics['ps_SubhaloVel_orbital_frame'][i]  # velocity
+    t_df = img_df[img_df['moi_2'] == t_row['moi_2']]
 
-    # masses, using total mass
-    tng_ar[6] = subhalo_kinematics['pa_SubhaloMass']
-    tng_ar[7] = subhalo_kinematics['sa_SubhaloMass']
+    print( t_df.shape )
+
+    tp_path = np.stack(t_df['pa_SubhaloPos'].values)
+    ts_path = np.stack(t_df['sa_SubhaloPos'].values)
+
+    def plot_path( tp_path, ts_path, title='' ):
+        plt.plot( tp_path[:,0], tp_path[:,1], label='p')
+        plt.plot( ts_path[:,0], ts_path[:,1], label='s')
+        plt.legend()
+        plt.title( title )
+        plt.show()
+        
+    plot_path( tp_path, ts_path, title='Raw Pts' )
+
+
+    for i in range( tp_path.shape[0] ):
+        tp_path[i] = tf.pt_apply_transformation( tp_path[i], t_df.iloc[i]['mod1_pos_transform'] )
+        ts_path[i] = tf.pt_apply_transformation( ts_path[i], t_df.iloc[i]['mod1_pos_transform'] )
+
+    plot_path( tp_path, ts_path, 'Mod 1' )
+        
+    for i in range( tp_path.shape[0] ):
+        tp_path[i] = tf.pt_apply_transformation( tp_path[i], t_row['mod2_pos_transform'] )
+        ts_path[i] = tf.pt_apply_transformation( ts_path[i], t_row['mod2_pos_transform'] )
+
+    plot_path( tp_path, ts_path, 'Mod 2' )
+        
+    for i in range( tp_path.shape[0] ):
+        tp_path[i] = tf.pt_apply_transformation( tp_path[i], t_row['mod3_pos_transform'] )
+        ts_path[i] = tf.pt_apply_transformation( ts_path[i], t_row['mod3_pos_transform'] )
+
+    plot_path( tp_path, ts_path, title='Mod 3' )
+        
+    for i in range( tp_path.shape[0] ):
+        tp_path[i] = tf.pt_apply_transformation( tp_path[i], t_row['mod4_pos_transform'] )
+        ts_path[i] = tf.pt_apply_transformation( ts_path[i], t_row['mod4_pos_transform'] )
+
+    plot_path( tp_path, ts_path, title='Mod 4' )
     
-    # Radii, using stars to disk radii
-    # Use scale of half mass radius
-    s = 2.5
-    tng_ar[8] = s * subhalo_kinematics['ps_SubhaloHalfmassRad']
-    tng_ar[9] = s * subhalo_kinematics['ss_SubhaloHalfmassRad']
+    # tp_path = tf.pt_apply_transformation( tp_path, t_row['orbital_frame_pos_transform'] )
+    # ts_path = tf.pt_apply_transformation( ts_path, t_row['orbital_frame_pos_transform'] )
 
-    # orientation angles, using stars to orient disk
-    tng_ar[10], tng_ar[12] = calculate_orientation_angles( subhalo_kinematics['ps_SubhaloSpin_orbital_frame'] )
-    tng_ar[11], tng_ar[13] = calculate_orientation_angles( subhalo_kinematics['ss_SubhaloSpin_orbital_frame'] )
-
-    # Just use a scale of previously radius value
-    s = 0.1
-    tng_ar[14] = s * tng_ar[8]
-    tng_ar[15] = s * tng_ar[9]
-
-    # Use 0 for bulge, disk, and halo.  
-    # # SPAM might be able to estimate these values....? 
-    tng_ar[16:22] = np.zeros(6)    
-
-    return tng_ar
-
-if buildEnv:
-    test_target = tng_targets.iloc[0]
-    #print( test_target )
-    test_tng_ar = standardize_tng_parameters_v1( test_target )
-    print( test_tng_ar )
-
-
-# In[19]:
-
-
-# Conversion function for distances/positions
-def convert_distance_tng_to_spam(tng_dist, h=0.7):
-    # Convert ckpc/h to kpc
-    dist_kpc = tng_dist * h
-    # Convert kpc to cm
-    dist_cm = dist_kpc * tng_units["distance_cm"]
-    # Convert cm to SPAM distance units
-    spam_dist = dist_cm / spam_units["distance_cm"]
-    
-    return spam_dist
-
-# Conversion function for velocities
-def convert_velocity_tng_to_spam(tng_vel):
-    # Convert km/s to cm/s
-    vel_cm_per_s = tng_vel * tng_units['velocity_cm_s']
-    # Convert cm/s to SPAM velocity units
-    spam_vel = vel_cm_per_s / spam_units["velocity_cm_s"]
-    
-    return spam_vel
-
-# Conversion function for masses
-def convert_mass_tng_to_spam(tng_mass, h=0.7):
-    # Convert 10^10 M⊙/h to 10^10 M⊙
-    mass_10e10_Msolar = tng_mass * h
-    # Convert 10^10 M⊙ to grams
-    mass_gm = mass_10e10_Msolar * tng_units['mass_gm']
-    # Convert grams to SPAM mass units
-    spam_mass = mass_gm / spam_units["mass_gm"]
-    
-    return spam_mass
-
-# Conversion function for time in Gyrs
-def convert_time_tng_to_spam(tng_time, h=0.7):
-    # Convert Gyrs to seconds
-    time_s = tng_time * tng_units['time_s']
-    # Convert seconds to SPAM time units
-    spam_time = time_s / spam_units["time_s"]
-    
-    return spam_time
-
-# Function to convert the entire IllustrisTNG array to SPAM units
-def convert_units_tng_to_spam_v1(tng_ar, h=0.7):
-    """
-    Convert IllustrisTNG data to SPAM units.   
-
-    Parameters:
-    - tng_ar: numpy array, array of targets in IllustrisTNG units.
-    - h: float, the Hubble constant used in the IllustrisTNG simulation (dimensionless, usually ~0.7).
-
-    Returns:
-    - spam_data: numpy array, target converted to SPAM units.
-    """
-    
-    # Initialize spam data array
-    spam_data = np.zeros(22)
-
-    # Convert Positions
-    spam_data[0:3] = convert_distance_tng_to_spam(tng_ar[0:3], h)
-    
-    # Convert Velocities
-    spam_data[3:6] = convert_velocity_tng_to_spam(tng_ar[3:6])
-    
-    # Convert Masses
-    spam_data[6:8] = convert_mass_tng_to_spam(tng_ar[6:8], h)
-    
-    # Convert Radii
-    spam_data[8:10] = convert_distance_tng_to_spam(tng_ar[8:10], h)
-    spam_data[14:16] = convert_distance_tng_to_spam(tng_ar[14:16], h)
-
-    # Use same orientation angles
-    spam_data[10:14] = tng_ar[10:14]
-
-    # Scaling factors are not used in SPAM anymore.  Keep as 0. 
-
-    return spam_data
-
-# Example usage
-if buildEnv:
-    test_spam_ar = convert_units_tng_to_spam_v1(test_tng_ar)
-    for i in range( len( test_spam_ar ) ):
-        print( i, '\t', test_spam_ar[i] )
-
-
-# In[20]:
-
-
-# Conversion function for distances/positions from SPAM to TNG units
-def convert_distance_spam_to_tng(spam_dist, h=0.7):
-    # Convert SPAM distance units to cm
-    dist_cm = spam_dist * spam_units["distance_cm"]
-    # Convert cm to kpc
-    dist_kpc = dist_cm / tng_units["distance_cm"]
-    # Convert kpc to ckpc/h
-    tng_dist = dist_kpc / h
-    
-    return tng_dist
-
-# Conversion function for velocities from SPAM to TNG units
-def convert_velocity_spam_to_tng(spam_vel):
-    # Convert SPAM velocity units to cm/s
-    vel_cm_per_s = spam_vel * spam_units["velocity_cm_s"]
-    # Convert cm/s to km/s
-    tng_vel = vel_cm_per_s / tng_units["velocity_cm_s"]
-    
-    return tng_vel
-
-# Conversion function for masses from SPAM to TNG units
-def convert_mass_spam_to_tng(spam_mass, h=0.7):
-    # Convert SPAM mass units to grams
-    mass_gm = spam_mass * spam_units["mass_gm"]
-    # Convert grams to 10^10 M⊙
-    mass_10e10_Msolar = mass_gm / tng_units['mass_gm']
-    # Convert 10^10 M⊙ to 10^10 M⊙/h
-    tng_mass = mass_10e10_Msolar / h
-    
-    return tng_mass
-
-# Conversion function for time in Gyrs from SPAM to Gyr
-def convert_time_spam_to_tng(spam_time):
-    # Convert SPAM time units to seconds
-    time_s = spam_time * spam_units["time_s"]
-    # Convert seconds to Gyrs
-    tng_time = time_s / tng_units['time_s']
-    
-    return tng_time
-
-# Function to convert the entire SPAM array to IllustrisTNG units
-def convert_units_spam_to_illustris(spam_ar, h=0.7):
-    """
-    Convert SPAM data to IllustrisTNG units.   
-
-    Parameters:
-    - spam_ar: numpy array, array of targets in SPAM units.
-    - primary_pos: numpy array, position of the primary galaxy in IllustrisTNG units (ckpc/h).
-    - h: float, the Hubble constant used in the IllustrisTNG simulation (dimensionless, usually ~0.7).
-
-    Returns:
-    - tng_data: numpy array, target converted to IllustrisTNG units.
-    """
-    
-    # Initialize tng data array
-    tng_data = np.zeros(22)
-
-    # Convert Positions (assuming secondary galaxy)
-    tng_data[0:3] = convert_distance_spam_to_tng(spam_ar[0:3], h)
-    
-    # Convert Velocities
-    tng_data[3:6] = convert_velocity_spam_to_tng(spam_ar[3:6])
-    
-    # Convert Masses
-    tng_data[6:8] = convert_mass_spam_to_tng(spam_ar[6:8], h)
-    
-    # Convert Radii
-    tng_data[8:10] = convert_distance_spam_to_tng(spam_ar[8:10], h)
-    tng_data[14:16] = convert_distance_spam_to_tng(spam_ar[14:16], h)
-    
-    # Use same orientation angles
-    tng_data[10:14] = spam_ar[10:14]
-    
-    # Sscales are not needed in TNG.
-
-    return tng_data
-
-# Example usage
-if buildEnv:
-    test_tng_ar_back = convert_units_spam_to_illustris(test_spam_ar)
-    for i in range( len( test_tng_ar_back ) ):
-        print( test_tng_ar[i], test_tng_ar_back[i] )
-
-
-# In[21]:
-
-
-if True:
-    tmpTime = convert_time_spam_to_tng( 50000 )
-    print( tmpTime )
-
-
-# # TESTING TNG TO SPAM CONVERSION
-# 
-# Assuming SPAM can accurately simulate colliding galaxies, let us see if we can use TNG orbital and particles for a particular interaction and try to recreate it.  
-
-# In[24]:
-
-
-#==================================== Prep Comparisons ====================================#
-if buildEnv:
-    import gzip, os, sys
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from scipy.interpolate import CubicHermiteSpline
-
-    sys.path.append( '/home/mbo2d/galStuff/galaxyJSPAM' )
-    sys.path.append( '/home/mbo2d/galStuff/galaxyJSPAM/Simulator' )
-    import Simulator.new_simulator as sim
-    import IllustrisTNG.tng_functions as tf
-    # import IllustrisTNG.convert_tng_to_spam as cts
-
-
-# ## Let's make some plots of the TNG sim data
-
-# In[ ]:
-
-
-if buildEnv:
-    # Load TNG particle data I saved previously.
-    def load_compressed_array(fLoc):
-        with gzip.open(fLoc, 'rt') as f:
-            # Read the first line (header)
-            header = f.readline().strip()
-
-            # Load the array data, skipping the header line
-            loaded_array = np.loadtxt(f)
-        return loaded_array
-
-    files = [ '/home/mbo2d/galStuff/data/star-pts-66-67000000350284.npz']
-    files += ['/home/mbo2d/galStuff/data/star-pts-67-67000000350284.npz']
-    files += ['/home/mbo2d/galStuff/data/star-pts-68-67000000350284.npz']
-    orbitLoc = '/home/mbo2d/galStuff/data/star-orbits-67000000350284.txt'
-    header = "x y z vx vy vz mass particle_type particle_id subhalo_id"
-
-    tng_data = {}
-    tng_data['orbit'] = np.loadtxt(orbitLoc)
-    print("TNG Orbit Data: ", tng_data['orbit'].shape)
-
-    for i in range(3):
-        tng_data[i] = {}
-        tng_data[i]['pts'] = load_compressed_array( files[i]) 
-        tng_data[i]['snapnum'] = int(files[i].split('-')[2])
-        print("TNG Particle Data for Snapshot:", tng_data[i]['snapnum'], tng_data[i]['pts'].shape)
 
 
 # In[10]:
 
 
-if buildEnv and True:  # 2D plot of TNG orbit and particles
-    # Seperate orbit data
+def read_img_data(img_file, pid, img_name_list):
+    """
+    Reads the image data and metadata from the HDF5 file.
 
-    # 1st three columns are primary galaxy path
-    # 2nd three columns are secondary galaxy path
-    # 7th column is a snapshot label
+    Args:
+    -----
+    img_file (str): Path to the HDF5 file.
+    pid (str): Target ID.
+    img_name_list (list): List of image names to read.
 
-    # Narrow orbit paths to encounter of interest
-    t_start = 8
-    t_stop = 17
-    ts = slice(t_start, t_stop)
-    p_orbit = tng_data['orbit'][ts,0:6]
-    s_orbit = tng_data['orbit'][ts,6:12]
-    p_orbit_full = tng_data['orbit'][:,0:6]
-    s_orbit_full = tng_data['orbit'][:,6:12]
-    snaps = tng_data['orbit'][ts,12]
-    snaps_full = tng_data['orbit'][:,12]
-    times = np.array([ tf.snap_to_time(snap) for snap in snaps ])
-    times_full = np.array([ tf.snap_to_time(snap) for snap in snaps_full ])
+    Returns:
+    --------
+    img_data (dict): A dictionary where the keys are image names and the values are dictionaries containing
+                     the image data ('data') and the associated metadata ('metadata').
+    """
+    img_data = {}
+    with h5py.File(img_file, 'r') as hdf:
+        for img_name in img_name_list:
+            path_name = f'{pid}/{img_name}'
 
-    # Plot orbit
-    fig, ax = plt.subplots(1,1)
-    ax.plot(p_orbit[:,0], p_orbit[:,1], label='Primary')
-    ax.plot(s_orbit[:,0], s_orbit[:,1], label='Secondary')
+            # Check if the path corresponds to a dataset or a group
+            if isinstance(hdf[path_name], h5py.Dataset):
+                # Retrieve image data and metadata (if it's directly a dataset)
+                image_dataset = hdf[path_name]
+                img_data[img_name] = {
+                    'data': image_dataset[()],  # Image data
+                    'metadata': {key: image_dataset.attrs[key] for key in image_dataset.attrs}  # Metadata
+                }
 
+            elif isinstance(hdf[path_name], h5py.Group):
+                # If it's a group, look inside for datasets (assuming 'histogram_matrix' is the dataset)
+                dataset_name = list(hdf[path_name].keys())[0]  # Assuming the first dataset
+                image_dataset = hdf[f'{path_name}/{dataset_name}']
 
-    # Add timesteps label to secondary galaxy
-    for i in range(0, len(snaps)):
-        ax.text(s_orbit[i,0], s_orbit[i,1], f"{i} - {str(int(snaps[i]))}", fontsize=8)
+                # Retrieve image data and metadata
+                img_data[img_name] = {
+                    'data': image_dataset[()],  # Image data
+                    'metadata': {key: image_dataset.attrs[key] for key in image_dataset.attrs}  # Metadata
+                }
 
-    # plot particles
-    n_plot = 2000
+            else:
+                print(f"Warning: {path_name} is not a valid dataset or group.")
 
-    for i in range(3):
-        # Get size of simulation points
-        n = tng_data[i]['pts'].shape[0]
-        # Choose n_plot random points
-        idx = np.random.choice(n, n_plot, replace=False)
-        # scatter plot points
-        ax.scatter(tng_data[i]['pts'][idx,0], tng_data[i]['pts'][idx,1], s=1, label=f"Snap {tng_data[i]['snapnum']}")
-        
-    # Set range of plot
-    ax.set_xlim(12250, 12350)
-    ax.set_ylim(21120, 21300)
+    return img_data
 
-    # Set square aspect ratio
-    ax.set_aspect('equal', 'box')
+if False:
+    print( 'Img Names:', type(t_row['img_names']),  t_row['img_names'] )
+    print( 'Target Name:', type( t_row['target_name'] ), t_row['target_name'] )
 
-    # Set figure size
-    fig.set_size_inches(4,6)
+    img_data = read_img_data( test_img_file, t_row['target_name'], t_row['img_names'] )
+
+    print( 'Img Data:', type(img_data), len(img_data.keys()) )
+    print( 'Img Data Keys:', img_data.keys() )
+    print( 'First Img:', img_data[t_row['img_names'][0]]['data'].shape )
+    print("Meta names:", img_data[t_row['img_names'][0]]['metadata'].keys() )
+
+    # plt.imshow( img_data[t_row['img_names'][0]] )
 
 
 # In[ ]:
 
 
-if buildEnv and False: # 3D Plot of above
+def visualize_image(img_in, ax_in = None, pixel_centers=None, log_scale=True, cmap='gray', title='', fig_size=None):
+    """
+    Visualizes the histogram matrix with optional log scaling.
 
-    pt_labels = []
-    pt_all = []
+    Args:
+    -----
+    img_in (np.ndarray): The histogram matrix to display.
+    ax_in (matplotlib.axes.Axes): The axis to plot the image on.
+    pixel_centers (list): List of pixel centers to plot on the image.
+    log_scale (bool): Whether to apply logarithmic scaling for visualization.
+    cmap (str): Colormap for rendering the image.
+
+    Returns:
+    --------
+    None
+    """
     
-    for i in range(3):
-        # grab 1000 random points to plot
-        n_plot = 1000
-        n = tng_data[i]['pts'].shape[0]
-        idx = np.random.choice(n, n_plot, replace=False)
-        pt_all.append(tng_data[i]['pts'][idx])
-        pt_labels += [i] * n_plot
-
-    pt_all = np.vstack(pt_all)
-    pt_labels = np.array(pt_labels)
-
-    tf.interactive_3d_scatter_plot( xyz_pts = pt_all, pt_labels=pt_labels, \
-                                   plot_lines = [p_orbit, s_orbit], plot_labels = ['Primary', 'Secondary'], \
-                                    sig_pts = s_orbit, sig_labels = snaps, \
-                                    title="Orbit of Primary and Secondary Galaxies")
-
-
-# ## Misc Functions
-
-# In[9]:
-
-
-def generate_spline_points(times, orbit, s_type = 'quadratic'):
-    """
-    Perform quadratic spline interpolation for given positions.
-
-    Args:
-    - times (np.ndarray): Array of times.
-    - orbit (np.ndarray): Array of positions and velocites. [x, y, z, vx, vy, vz]
-    - s_type (str): Type of spline interpolation ('quadratic' or 'cubic').
-
-
-    Returns:
-    - spline orbit (np.ndarray): Array of positions along spline of orbit . [x, y, z]
-    """
-    from scipy.interpolate import interp1d, CubicHermiteSpline
-
-    # Validate the kind parameter
-    if kind not in ['quadratic', 'cubic']:
-        raise ValueError("Parameter 'kind' must be either 'quadratic' or 'cubic'.")
-
-    if s_type == 'quadratic':
-        interp = interp1d
-    elif s_type == 'cubic':
-        interp = CubicHermiteSpline
-
-    # Ensure inputs are numpy arrays
-    times = np.asarray(times)
-    positions = np.asarray(orbit[:, :3])
-    velocities = np.asarray( orbit[:, 3:6] )
-
-    if s_type == 'quadratic':
-        # Create a quadratic spline for each dimension
-        splines = [interp1d(times, positions[:, i], kind='quadratic') for i in range(3)]
-
-    elif s_type == 'cubic':
-        # Create a cubic spline for each dimension
-        splines = [CubicHermiteSpline(times, positions[:, i], velocities[:, i]) for i in range(3)]
-
-    # Evaluate n pts along splines
-    n_pts = 1000
-    s_times = np.linspace(times[0], times[-1], n_pts)
-    spline_orbit = np.zeros((n_pts, 3))
-    for i in range(3):
-        spline_orbit[:, i] = splines[i](s_times)
+    img = img_in.copy()
+    # Apply log scaling if desired
+    if log_scale:
+        # Avoid taking log of zero
+        img = np.log1p(img)
     
-    return spline_orbit
+    # Normalize the data to [0, 1]
+    h_min = np.min(img)
+    h_max = np.max(img)
+    img_normalized = (img - h_min) / (h_max - h_min) 
 
+    if ax_in is None:
+        if fig_size is not None:
+            plt.figure(figsize=fig_size)
+        else:
+            plt.figure()
+        ax = plt.gca()
+    else:
+        ax = ax_in
 
-if buildEnv:
-    p_spline = generate_spline_points( times, p_orbit )
-    s_spline = generate_spline_points( times, s_orbit )
-
-    fig, ax = plt.subplots(1,1)
-    ax.plot(p_spline[:,0], p_spline[:,1], label='Primary Spline')
-    ax.scatter(p_orbit[:,0], p_orbit[:,1], label='Primary Orbit')
-
-    ax.plot(s_spline[:,0], s_spline[:,1], label='Secondary Spline')
-    ax.scatter(s_orbit[:,0], s_orbit[:,1], label='Secondary Orbit')
-
-
-# In[14]:
-
-
-def convert_to_fixed_frame(primary, secondary):
-    """
-    Convert the orbital paths and velocities to a frame where the primary galaxy is fixed at the origin.
-
-    Args:
-    - primary (np.ndarray): Nx6 array of primary galaxy positions and velocities [ x y z vy vy vz ].
-    - secondary (np.ndarray): Nx6 array of secondary galaxy positions and velocities [ x y z vy vy vz ].
-
-    Returns:
-    - fixed_secondary (np.ndarray): Nx6 array of secondary galaxy positions and velocities in the fixed frame.
-    """
-    # Ensure the input arrays have the correct shape
-    assert primary.shape == secondary.shape
-
-    # Convert to fixed frame
-    fixed_secondary = secondary - primary
-
-    return fixed_secondary
-
-
-def convert_to_moving_frame(primary_moving, secondary_fixed):
-    """
-    Convert the paths and velocities from a fixed primary frame back to the original moving frame.
-
-    Args:
-    - primary_moving (np.ndarray): Nx6 array of primary galaxy positions and velocities [x, y, z, vx, vy, vz].
-    - secondary_fixed (np.ndarray): Nx6 array of secondary galaxy positions and velocities in the fixed frame.
-
-    Returns:
-    - secondary_moving (np.ndarray): Nx6 array of secondary galaxy positions and velocities in the moving frame.
-    """
-    # Ensure the input arrays have the correct shape
-    assert primary_moving.shape == secondary_fixed.shape, "Primary and fixed secondary arrays must have the same shape"
-    assert primary_moving.shape[1] == 6, "Each row should contain 6 elements: [x, y, z, vx, vy, vz]"
-
-    # Convert to moving frame
-    secondary_moving = secondary_fixed + primary_moving
-
-    return secondary_moving
-
-def convert_pts_to_fixed_frame( primary_pos, pts ):
-    """
-    Convert the points to a frame where the primary galaxy center is fixed at the origin.
-
-    Args:
-    - primary_pos (np.ndarray): 3 array of primary galaxy positions and velocities [ x y z ].
-    - pts (np.ndarray): Nx3 array of secondary galaxy positions and velocities [ x y z].
-
-    Returns:
-    - fixed_pts (np.ndarray): Nx6 array of secondary galaxy positions and velocities in the fixed frame.
-    """
-    # Ensure the input arrays have the correct shape
-    assert primary_pos.shape[0] == 3, "Primary position array should contain 3 elements: [x, y, z]"
-    assert pts.shape[1] == 3, "Each row should contain 3 elements: [x, y, z]"
-
-    # Convert to fixed frame
-    fixed_pts = pts - primary_pos
-
-    return fixed_pts
-
-if True:
     
-    # Narrow orbit paths to encounter of interest
-    t_start = 9
-    t_stop = -3
-    ts = slice(t_start, t_stop)
-    p_orbit = tng_data['orbit'][ts, 0:6]
-    s_orbit = tng_data['orbit'][ts, 6:12]
-    snaps = tng_data['orbit'][ts, 12]
-    times = np.array([tf.snap_to_time(snap) for snap in snaps])
+    # If pixel_center is provided, plot it on the image
+    if pixel_centers is not None:
+        for center in pixel_centers:
+            # plt.scatter(center[1], center[0], c='white', s=50, edgecolors='black', label='Center')
+            ax.scatter(center[1], center[0], c='white', s=50, edgecolors='black', label='Center')
+    
+    # plt.imshow(img_normalized.T, cmap=cmap, origin='lower')
+    ax.imshow(img_normalized.T, cmap=cmap, origin='lower')
+ 
+    # plt.axis('off')
+    ax.axis('off')
+    ax.set_title(title)
+   
 
-    # Convert to fixed frame
-    s_orbit_fixed = convert_to_fixed_frame(p_orbit, s_orbit)
+    # plt.show()
+if False:
+    print( img_data[t_row['img_names'][0]]['data'].shape )
+    visualize_image( img_data[t_row['img_names'][0]]['data'], 
+                    title=img_data[t_row['img_names'][0]]['metadata']['name'],
+                    fig_size=(8, 8) )   
 
-    # Create spline of fixes orbit 
-    s_spline_pts_fixed = generate_quad_spline_points(times, s_orbit_fixed)
 
-    # Add some pts 
-    n_plot = 5000
-    n = tng_data[1]['pts'].shape[0]
-    idx = np.random.choice(n, n_plot, replace=False)
-    pts = tng_data[1]['pts'][idx,0:3]
-    pts_fixed = convert_pts_to_fixed_frame(p_orbit[3, 0:3], pts)
+# In[22]:
 
-    # Add origin to sig_pts
-    sig_pts = s_orbit_fixed[:,0:3]
-    sig_pts = np.vstack( (sig_pts, np.zeros((1,3)) ) )
 
-    # print( sig_pts )
+# Plot the orbit and all the images together
+def plot_orbit_and_images(tp_path, ts_path, img_data, img_names, \
+                          title='', fig_size = 8, save_path=None,\
+                            show_plot=True):
+    """
+    Plots the orbit path and the images side by side.
 
-    sig_labels = snaps.tolist()
-    sig_labels.append( 'Primary')
+    Args:
+    -----
+    tp_path (np.ndarray): The path of the target galaxy.
+    ts_path (np.ndarray): The path of the satellite galaxy.
+    img_data (dict): A dictionary containing the image data.
+    img_names (list): A list of image names to plot.
+    title (str): Title for the plot.
 
-    # print( sig_labels )
+    Returns:
+    --------
+    None
+    """
+    num_images = len(img_names)
 
-    # Plot the fixed and moving secondary galaxy orbits
-    tf.xy_scatter_plot( \
-        xy_pts = pts_fixed,  \
-        plot_lines = s_spline_pts_fixed, plot_labels = ['Fixed Secondary Spline',], \
-        sig_pts=sig_pts, sig_labels=sig_labels, title='Spline of Fixed TNG Targets', figsize=(12,8))
+    # Plot vertically
+    # fig, axs = plt.subplots(1, num_images + 1, figsize=(5 * (num_images + 1), 5))
+    # fig, axs = plt.subplots( num_images + 1, 1, figsize=(fig_size, fig_size * (num_images + 1)))
+
+    # Should always be a 2x3 grid
+
+    fig, axs = plt.subplots(2, 3, figsize=(fig_size * 3, fig_size * 2))
+
+    plt.title(title)
+
+    #['Image_orbital_frame', 
+    # 'Image_tidal_primary_all', 'Image_tidal_primary_solo', 
+    # 'Image_tidal_secondary_all', 'Image_tidal_secondary_solo']
+
+    # Plot the orbit path
+    axs[0,0].plot(tp_path[:, 0], tp_path[:, 1], label='Primary')
+    axs[0,0].plot(ts_path[:, 0], ts_path[:, 1], label='Secondary')
+    axs[0,0].set_title('Orbit Path')
+
+    # Turn labels off
+    axs[0,0].set_xticks([])
+    axs[0,0].set_yticks([])
+
+    # Set square aspect ratio
+    # axs[0,0].set_aspect('equal', adjustable = 'datalim')
+    axs[0,0].legend()
+
+    name = 'Image_orbital_frame'
+    visualize_image( img_data[name]['data'], 
+                    ax_in=axs[1,0], 
+                    title=name )
+
+    name = 'Image_tidal_primary_solo'
+    visualize_image( img_data[name]['data'], 
+                    ax_in=axs[0,1], 
+                    title=name )
+
+    name = 'Image_tidal_primary_all'
+    visualize_image( img_data[name]['data'], 
+                    ax_in=axs[1,1], 
+                    title=name )
+
+    name = 'Image_tidal_secondary_solo'
+    visualize_image( img_data[name]['data'], 
+                    ax_in=axs[0,2], 
+                    title=name )
+
+    name = 'Image_tidal_secondary_all'
+    visualize_image( img_data[name]['data'], 
+                    ax_in=axs[1,2], 
+                    title=name )
+
+
+
+    # # Plot the images
+    # for i, img_name in enumerate(img_names):
+    #     img = img_data[img_name]['data']
+    #     img_title = img_data[img_name]['metadata']['name']
+    #     visualize_image(img, ax_in=axs[i+1], title=img_title,)
+
+    fig.suptitle(title)
+    plt.tight_layout()
+
+    if save_path is not None:
+        plt.savefig(save_path)
+        
+    if show_plot:
+        plt.show()
+if False:
+
+    plot_orbit_and_images(tp_path, ts_path, img_data, t_row['img_names'], 
+                        title=f'Orbit Path and Images\n{pid}', fig_size=7, 
+                        save_path=f'test_plot_{pid}.png')
+
+    plot_orbit_and_images(tp_path, ts_path, img_data, t_row['img_names'], 
+                        title=f'Orbit Path and Images\n{pid}', fig_size=7, 
+                        save_path=f'test_plot_{pid}.png', show_plot=False)
+
+
+# In[13]:
+
+
+def gen_img_df_and_path( img_loc ):
+
+    print("Reading HDF5 Image File: ", img_loc)
+    all_meta = get_all_targets_meta( img_loc )
+    print('Target Images:', len( all_meta.keys() ))
+
+    # Create a DataFrame with the metadata
+    sr_list = []
+    for i, pid in enumerate(all_meta.keys()):
+        print( i, pid, end='\r' )
+        t_row = pd.Series( all_meta[pid]['metadata'] )
+        t_row['target_name'] = pid
+        t_row['img_names'] = all_meta[pid]['image_names']
+        sr_list.append( t_row )
+
+    print('\n')
+    raw_img_df = pd.DataFrame( sr_list )
+    raw_img_df = raw_img_df.sort_values(by=['moi_2','snap'], ascending=[True, True])
+
+    print( 'Image DF:', raw_img_df.shape )
+
+    new_rows = []
+    for i, t_row in raw_img_df.iterrows():
+
+        t_df = raw_img_df[raw_img_df['moi_2'] == t_row['moi_2']]
+        tp_path = np.stack(t_df['pa_SubhaloPos'].values)
+        ts_path = np.stack(t_df['sa_SubhaloPos'].values)
+
+        for i in range( tp_path.shape[0] ):
+            tp_path[i] = tf.pt_apply_transformation( tp_path[i], t_df.iloc[i]['mod1_pos_transform'] )
+            ts_path[i] = tf.pt_apply_transformation( ts_path[i], t_df.iloc[i]['mod1_pos_transform'] )
+
+        for i in range( tp_path.shape[0] ):
+            tp_path[i] = tf.pt_apply_transformation( tp_path[i], t_row['mod2_pos_transform'] )
+            ts_path[i] = tf.pt_apply_transformation( ts_path[i], t_row['mod2_pos_transform'] )
+
+        for i in range( tp_path.shape[0] ):
+            tp_path[i] = tf.pt_apply_transformation( tp_path[i], t_row['mod3_pos_transform'] )
+            ts_path[i] = tf.pt_apply_transformation( ts_path[i], t_row['mod3_pos_transform'] )
+
+        for i in range( tp_path.shape[0] ):
+            tp_path[i] = tf.pt_apply_transformation( tp_path[i], t_row['mod4_pos_transform'] )
+            ts_path[i] = tf.pt_apply_transformation( ts_path[i], t_row['mod4_pos_transform'] )
+
+        new_row = t_row.copy()
+        new_row['tp_path'] = tp_path
+        new_row['ts_path'] = ts_path
+        new_rows.append( new_row )
+    
+    img_df = pd.DataFrame( new_rows )
+
+    # Read image data for each target and save as png
+    c = 0
+    for i, t_row in img_df.iterrows():
+        print( i, t_row['target_name'], end='\r' )
+        img_data = read_img_data( img_loc, t_row['target_name'], t_row['img_names'] )
+
+        img_path = f'/home/mbo2d/galStuff/galaxyJSPAM/IllustrisTNG/tng-images/moi_4_search/{t_row["target_name"]}.png'
+
+
+        plot_orbit_and_images(t_row['tp_path'], t_row['ts_path'], img_data, t_row['img_names'], 
+                      title=f'Orbit Path and Images\n{t_row["target_name"]}', fig_size=8, 
+                      save_path=img_path)
+        c += 1
+        # if c > 5:
+        #     break
+
+
+
+
+
+    
+if False:
+
+    gen_img_df_and_path( test_img_file )
 
 
 # In[15]:
 
 
-# reload tf
-if buildEnv:
-    import importlib
-    tf = importlib.reload(tf)
-    sim = importlib.reload(sim)
+def get_target_images( img_file, pid, img_names ):
+    """
+    Retrieves target images from the HDF5 file.
+
+    Args:
+    -----
+    img_file (str): Path to the HDF5 file.
+    pid (str): Target ID.
+    img_names (list): List of image names.
+
+    Returns:
+    --------
+    images (dict): A dictionary where the keys are image names and the values are the corresponding images.
+    """
+    images = {}
+
+    with h5py.File(img_file, 'r') as hdf:
+        target_group = hdf[pid]
+
+        for img_name in img_names:
+            images[img_name] = target_group[img_name][()]
+
+    return images
+
+if False:
+    pid = path_df['moi_2'].unique()[0]
+
+    t_row = path_df[path_df['moi_2'] == pid].iloc[0]
+
+    img_dict = get_target_images( test_img_file, t_row['img_target_name'], t_row['img_names'] )
+
+    print( img_dict.keys() )
+
+def plot_images( img_dict, n_cols=2 ):
+    """
+    Plots the images in the dictionary.
+
+    Args:
+    -----
+    img_dict (dict): A dictionary where the keys are image names and the values are the corresponding images.
+    """
+    n_images = len(img_dict)
+
+    n_rows = int(math.ceil(n_images / n_cols))
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
+
+    for i, (img_name, img) in enumerate(img_dict.items()):
+        ax = axes[i // n_cols, i % n_cols]
+        ax.imshow(img, cmap='gray')
+        ax.set_title(img_name)
+        ax.axis('off')
+
+    plt.tight_layout()
+    plt.show()
 
 
 # ---
-# ## Let's run the TNG parameters through SPAM
-
-# ### Plot Orbits and Location of closest approach
+# ---
+# ---
+# # Rating Images
+# 
+# At this point I used a seperate script named "rate_tng_target_images.py" to review all 1200+ target images and gave them a 0-5 rating depending on how promenent the tidal features were for the primary and secondary galaxies.  It created a csv file I will now load and review. 
 
 # In[16]:
 
 
-def plot_spam_orbit( test_spam_ar, df_val=0.001 ):  # Plot orbits
+if True:
+    m3_df = pd.read_pickle('/home/mbo2d/galStuff/galaxyJSPAM/IllustrisTNG/tng-targets/moi-3-dynamics-dict-orbital-frame.pkl')
+    print( m3_df.shape )
 
-    spam_orbit_raw = sim.orbit_run_wrapper( test_spam_ar, dynamic_friction_lnl=df_val )
-    spam_orbit_tng_pos = convert_distance_spam_to_tng(spam_orbit_raw[:,0:3])
+    # Assume csv file has no headers
+    m4_ratings_raw = pd.read_csv('/home/mbo2d/galStuff/galaxyJSPAM/IllustrisTNG/tng-targets/moi-4-ratings.csv', header=None)
+    print( m4_ratings_raw.shape )
 
-    print(f"SPAM orbit: {spam_orbit_tng_pos.shape}")
-
-    # Find point along orbit closest to origin
-    origin = np.zeros(3)
-    dists = np.linalg.norm(spam_orbit_tng_pos - origin, axis=1)
-    idx = np.argmin(dists)
-
-    # create 2x3 vector of starting and stopping point between origiin and closest point
-    spam_closest = np.vstack((origin, spam_orbit_tng_pos[idx]))
-    
-    # Narrow orbit paths to time of interest
-    t_start = 10
-    t_stop = -3
-    ts = slice(t_start, t_stop)
-    p_orbit = tng_data['orbit'][ts, 0:6]
-    s_orbit = tng_data['orbit'][ts, 6:12]
-    snaps = tng_data['orbit'][ts, 12]
-    times = np.array([tf.snap_to_time(snap) for snap in snaps])
-
-    # Create list of strings for snap + time
-    snap_times = [f"{int(snaps[i])}: {times[i]:.2f}" for i in range(len(snaps))]
-
-    # Convert to fixed frame
-    s_orbit_fixed = convert_to_fixed_frame(p_orbit, s_orbit)
-
-    # Create spline of fixes orbit 
-    s_spline_pts_fixed = generate_quad_spline_points(times, s_orbit_fixed)
-
-    # Find vector of closest point to origin along orbit 
-    dists = np.linalg.norm(s_spline_pts_fixed[:500,0:3] - origin, axis=1)
-    idx = np.argmin(dists)
-
-    # create 2x3 vector of starting and stopping point
-    tng_closest = np.vstack((origin, s_spline_pts_fixed[idx]))
-
-    # Find index that matches current snapnum
-    current_snapnum = 67
-    idx = np.where( snaps == current_snapnum )[0][0]
-
-    # Get snaps earlier than current snap
-    snaps_i = np.where( snaps <= current_snapnum )[0]
-
-    # Get times from SPAM orbit
-    spam_times = spam_orbit_raw[:,-1]
-
-    # Set final time as 0
-    spam_times -= spam_times[-1]
-
-    # Convert to TNG times
-    spam_times = convert_time_spam_to_tng(spam_times)
-
-    # Add TNG offset 
-    spam_times += times[idx]
-
-    # Get locations in spam_times that most closely matches times[snaps_i]
-    spam_i = np.zeros(len(snaps_i), dtype=int)
-    for i in range(len(snaps_i)):
-        spam_i[i] = np.argmin( np.abs( spam_times - times[snaps_i[i]] ) )
-    
-    # Add plots of interest
-    plot_list = []
-    plot_titles = []
-
-    plot_list.append( spam_orbit_tng_pos )
-    plot_titles.append( 'SPAM Orbit' )
-
-    plot_list.append( s_spline_pts_fixed )
-    plot_titles.append( 'TNG Orbit' )
-
-    # Add Points of interest
-
-    # Add TNG snap points
-    sig_pts = s_orbit_fixed[:,0:3]
-    sig_labels = snap_times
-
-    # Add primary galaxy as origin
-    sig_pts = np.vstack( (sig_pts, np.zeros((1,3)) ) )
-    sig_labels.append( 'Primary')
-
-    # Add spam_i in orbit to significant points
-    sig_pts = np.vstack( (sig_pts, spam_orbit_tng_pos[spam_i]) )
-    sig_labels += ["Gyr: %.2f" % spam_times[i] for i in spam_i]
-
-    # Add vectors of interest,  create n x 2 x 3 array
-    vectors = np.array([ spam_closest, tng_closest ])
-    vector_labels = ['SPAM Closest %.2f'%np.linalg.norm(spam_closest[1]), 'TNG Closest %.1f'%np.linalg.norm(tng_closest[1])]
-
-    # Plot the fixed and moving secondary galaxy orbits
-    tf.xy_scatter_plot( plot_lines = plot_list, plot_labels = plot_titles, \
-                        sig_pts=sig_pts, sig_labels=sig_labels, \
-                        vector_list = vectors, vector_labels = vector_labels, \
-                        title='Spline of Fixed TNG Targets', figsize=(12,8))
-
-if buildEnv:
-    
-    # Grab target for particle data
-    uidRaw = 67000000350284
-    test_target = tng_targets[tng_targets['moi_SubhaloIDRaw'] == uidRaw].iloc[0]
-
-    test_tng_ar1 = standardize_tng_parameters_v1( test_target )
-    test_spam_ar1 = convert_units_tng_to_spam_v1( test_tng_ar1 )
-
-    # test_spam_ar[3:6] *= 2.5 # Increase vel
-    # test_spam_ar[8:10] *= 40.0  # Increase radius
-    #print(test_spam_ar)
-    
-    plot_spam_orbit( test_spam_ar1 )
-
-
-# ### Let's plot some particles!
 
 # In[17]:
 
 
-def plot_spam_pts( test_spam_ar, df_val=0.001 ):  # Plot particles
+if True:
 
-    ###### Perform SPAM simulation   #####
+    # Loop through the rows of the ratings and expand on data
+    new_rows = []
 
-    spam_orbit_raw = sim.orbit_run_wrapper( test_spam_ar, dynamic_friction_lnl=df_val )
-    spam_orbit_tng_pos = convert_distance_spam_to_tng(spam_orbit_raw[:,0:3])
+    for i, row in m4_ratings_raw.iterrows():
+        # print( row[0], row[1], end='\n' )
 
-    spam_ipts, spam_fpts = sim.basic_run_wrapper( test_spam_ar, 4000, 1000, dynamic_friction_lnl=df_val)
-    spam_fpts = convert_distance_spam_to_tng(spam_fpts[:,0:3])
+        new_row = {}
+        new_row['img_name_1'] = row[0]
+        new_row['moi_4_rating'] = row[1]
+        p_SubhaloIDRaw = int( row[0].split('_')[1].split('.')[0])
+        new_row['p_SubhaloIDRaw'] = p_SubhaloIDRaw
 
-    print(f"SPAM Orbit: {spam_orbit_tng_pos.shape}")
-    print(f"SPAM Pts: {spam_fpts.shape}")
+        new_rows.append( new_row )
 
-    # Find point of closest approach to origin
-    origin = np.zeros(3)
-    dists = np.linalg.norm(spam_orbit_tng_pos - origin, axis=1)
-    idx = np.argmin(dists)
+        print( i, m4_ratings_raw.shape, end='\r' )
 
-    # create 2x3 vector of starting and stopping point between origiin and closest point
-    spam_closest = np.vstack((origin, spam_orbit_tng_pos[idx]))
-    
-    #####   Grab TNG Data   #####
+    m4_ratings = pd.DataFrame( new_rows )
 
-    # Narrow orbit paths to time of interest
-    t_start = 10
-    t_stop = -3
-    ts = slice(t_start, t_stop)
-    p_orbit = tng_data['orbit'][ts, 0:6]
-    s_orbit = tng_data['orbit'][ts, 6:12]
-    snaps = tng_data['orbit'][ts, 12]
-    times = np.array([tf.snap_to_time(snap) for snap in snaps])
-
-    # Create list of strings for snap + time
-    snap_times = [f"{int(snaps[i])}: {times[i]:.2f}" for i in range(len(snaps))]
-
-    # Convert to fixed frame
-    s_orbit_fixed = convert_to_fixed_frame(p_orbit, s_orbit)
-
-    # Create spline of fixes orbit 
-    s_spline_pts_fixed = generate_quad_spline_points(times, s_orbit_fixed)
-
-    # Find vector of closest point to origin along orbit 
-    dists = np.linalg.norm(s_spline_pts_fixed[:500,0:3] - origin, axis=1)
-    idx = np.argmin(dists)
-
-    # create 2x3 vector of starting and stopping point
-    tng_closest = np.vstack((origin, s_spline_pts_fixed[idx]))
-
-    # define N pts for plotting
-    n_pts = 4000
-    # Get size of simulation points
-    n = tng_data[1]['pts'].shape[0]
-    # Choose n_pts random points
-    idx = np.random.choice(n, n_pts, replace=False)
-    tng_pts = tng_data[1]['pts'][idx,0:3]
-    tng_pts = convert_pts_to_fixed_frame( p_orbit[2, 0:3], tng_pts)
-
-    #####   MATCH TIMES BETWEEN SIMULATIONS   #####
-
-    # Find index that matches current snapnum
-    current_snapnum = 67
-    idx = np.where( snaps == current_snapnum )[0][0]
-
-    # Get snaps earlier than current snap
-    snaps_i = np.where( snaps <= current_snapnum )[0]
-
-    # Get times from SPAM orbit
-    spam_times = spam_orbit_raw[:,-1]
-
-    # Set final time as 0
-    spam_times -= spam_times[-1]
-
-    # Convert to TNG times
-    spam_times = convert_time_spam_to_tng(spam_times)
-
-    # Add TNG offset 
-    spam_times += times[idx]
-
-    # Get locations in spam_times that most closely matches times[snaps_i]
-    spam_i = np.zeros(len(snaps_i), dtype=int)
-    for i in range(len(snaps_i)):
-        spam_i[i] = np.argmin( np.abs( spam_times - times[snaps_i[i]] ) )
-    
-    #####  Gather Data for PLOTTING   #####
-
-    # Add scatter pts of interest
-    pts_list = np.vstack( ( spam_fpts, tng_pts ) )
-
-    # Create an array of strings of the same length
-    spam_labels = np.array(['SPAM'] * len(spam_fpts))
-    tng_labels = np.array(['TNG'] * len(tng_pts))
-    pt_labels = np.hstack( (spam_labels, tng_labels) )
-
-    # Add plots(lines) of interest
-    plot_list = []
-    plot_titles = []
-
-    plot_list.append( spam_orbit_tng_pos )
-    plot_titles.append( 'SPAM Orbit' )
-
-    plot_list.append( s_spline_pts_fixed )
-    plot_titles.append( 'TNG Orbit' )
-
-    # Add Significant Points of interest
-
-    # Add TNG snap points
-    sig_pts = s_orbit_fixed[:,0:3]
-    sig_labels = snap_times
-
-    # Add primary galaxy as origin
-    sig_pts = np.vstack( (sig_pts, np.zeros((1,3)) ) )
-    sig_labels.append( 'Primary')
-
-    # Add spam_i in orbit to significant points
-    sig_pts = np.vstack( (sig_pts, spam_orbit_tng_pos[spam_i]) )
-    sig_labels += ["Gyr: %.2f" % spam_times[i] for i in spam_i]
-
-    # Add vectors of interest,  create n x 2 x 3 array
-    vectors = np.array([ spam_closest, tng_closest ])
-    vector_labels = ['SPAM Closest %.2f'%np.linalg.norm(spam_closest[1]), 'TNG Closest %.1f'%np.linalg.norm(tng_closest[1])]
-
-    tf.interactive_3d_scatter_plot( 
-        xyz_pts = spam_fpts, pt_labels = spam_labels, \
-        plot_lines = plot_list, plot_labels = plot_titles, \
-        sig_pts=sig_pts, sig_labels=sig_labels, \
-        vector_list = vectors, vector_labels = vector_labels, \
-        title='SPAM vs TNG Particles')
-
-    # # Plot the fixed and moving secondary galaxy orbits
-    # tf.xy_scatter_plot( \
-    #     xy_pts = tng_pts, pt_labels = tng_labels, \
-    #     plot_lines = plot_list, plot_labels = plot_titles, \
-    #     sig_pts=sig_pts, sig_labels=sig_labels, \
-    #     vector_list = vectors, vector_labels = vector_labels, \
-    #     title='TNG Particles', figsize=(12,8))
-    
-    # # Plot the fixed and moving secondary galaxy orbits
-    # tf.xy_scatter_plot( \
-    #     xy_pts = spam_fpts, pt_labels = spam_labels, \
-    #     plot_lines = plot_list, plot_labels = plot_titles, \
-    #     sig_pts=sig_pts, sig_labels=sig_labels, \
-    #     vector_list = vectors, vector_labels = vector_labels, \
-    #     title='SPAM Particles', figsize=(12,8))
-
-if buildEnv:
-
-    # Grab target for particle data
-    uidRaw = 67000000350284
-    test_target = tng_targets[tng_targets['moi_SubhaloIDRaw'] == uidRaw].iloc[0]
-
-    test_tng_ar2 = standardize_tng_parameters_v1( test_target )
-    test_spam_ar2 = convert_units_tng_to_spam_v1( test_tng_ar2 )
-
-    # test_spam_ar2[3:6] *= 2.5 # Increase vel
-    test_spam_ar2[8] *= 2.2  # Increase radius of primary
-    test_spam_ar2[6] *= 2.9  # Increase mass of primary
-    test_spam_ar2[7] *= 2.2  # Increase mass of secondary
-    # test_spam_ar2[]
-    # print(test_spam_ar)
-
-    # Using lnl that looked good to me above.
-    lnl = 0.2
-
-    plot_spam_pts( test_spam_ar2, lnl )
-
-
-# ![image-2.png](attachment:image-2.png)
-
-# ## Mismatch between Orbits and Particles.
-# 
-# The orbits (and velocities) are not matching up.  
-# - NOTE: SPAM "orbits" around primary multiple times without falling towards it much.  TNG should be a more realistic simulation, and it shows the secondary falling towards the primary almost immediately after the 2st fly by event. 
-# 
-# - [x] Modify the "strength" of Dynamic Friction.  TNG appears to have MUCH stronger dynamic friction.
-#   - [x] Find lnl in SPAM code.
-#     - RESULTS: Turns out I wasn't using DF (dynamical friction) as expected, I hardcoded the wrong variable in custom runs
-#   - [x] Write variable to change lnl in SPAM code.
-#   - [x] Do grid search to find best lnl value.
-#     - RESULTS: Found a lnl values that allows SPAM to overlap the TNG orbit increibly well.  But... 
-#       - Now Velocity is now extremely off....  SPAM is going faster than it should be
-#       - Particles are forming correct tidal features, but haven't had enough time to form them...  
-# 
-# - [x] Vary velocity: Grid search
-#   - RESULTS:  Varying the velocity also produced an orbit that causing good overlap.  But...
-#     - Same problems as above.  Vel is too fast and particles need more time to form tidal features.  
-# 
-# - [x] Verify correct velocity/unit coversion between TNG and SPAM
-#   - [x] Create custom module of just velocity over time for 2nd gal.
-#   - RESULTS: Velocity (unit conversion) looks correct.  TNG is slightly faster (in the past), meaning DF is slowing it down as expected.
-# 
-# - [x] Identify purpose of rscale.  This could affect mass distribution around galaxy and affect particle tidal distortions
-#   - [x] FOUND: They only affect how particles are originally placed.  We want it hardcoded at 1/r which doesn't use rscales.
-#   
-# - [ ] Vary mass: grid search
-# 
-
-# ### Plot Velocity/Position Test
 
 # In[18]:
 
 
-def plot_spam_orbit( test_spam_ar,  ):
-    pass
+if True:
 
-if buildEnv:
+    # Search for duplicate rows with the same SubhaloIDRaw
 
-    import importlib
+    # Use the row with the highest rating
 
-    importlib.reload(sim)
-    
-    # Grab target for particle data
-    uidRaw = 67000000350284
-    test_target = tng_targets[tng_targets['moi_SubhaloIDRaw'] == uidRaw].iloc[0]
+    m4_ratings = m4_ratings.sort_values(by=['moi_4_rating'], ascending=False)
+    m4_ratings = m4_ratings.drop_duplicates(subset='p_SubhaloIDRaw', keep='first')
 
-    test_tng_ar1 = standardize_tng_parameters_v1( test_target )
-    test_spam_ar1 = convert_units_tng_to_spam_v1( test_tng_ar1 )
-
-    # test_spam_ar[3:6] *= 2.5 # Increase vel
-    # test_spam_ar[8:10] *= 40.0  # Increase radius
-    #print(test_spam_ar)
-        
-    df_val=0.001
-    spam_orbit_raw = sim.testing_pos_vel_wrapper( test_spam_ar1, 5000 )
-    spam_orbit_tng_pos = convert_distance_spam_to_tng(spam_orbit_raw[:,0:3])
-
-    print(f"SPAM orbit: {spam_orbit_tng_pos.shape}")
-
-    # Find point along orbit closest to origin
-    origin = np.zeros(3)
-    dists = np.linalg.norm(spam_orbit_tng_pos - origin, axis=1)
-    idx = np.argmin(dists)
-
-    # create 2x3 vector of starting and stopping point between origiin and closest point
-    spam_closest = np.vstack((origin, spam_orbit_tng_pos[idx]))
-    
-    # Narrow orbit paths to time of interest
-    t_start = 10
-    t_stop = -3
-    ts = slice(t_start, t_stop)
-    p_orbit = tng_data['orbit'][ts, 0:6]
-    s_orbit = tng_data['orbit'][ts, 6:12]
-    snaps = tng_data['orbit'][ts, 12]
-    times = np.array([tf.snap_to_time(snap) for snap in snaps])
-
-    # Create list of strings for snap + time
-    snap_times = [f"{int(snaps[i])}: {times[i]:.2f}" for i in range(len(snaps))]
-
-    # Convert to fixed frame
-    s_orbit_fixed = convert_to_fixed_frame(p_orbit, s_orbit)
-
-    # Create spline of fixes orbit 
-    s_spline_pts_fixed = generate_quad_spline_points(times, s_orbit_fixed)
-
-    # Find vector of closest point to origin along orbit 
-    dists = np.linalg.norm(s_spline_pts_fixed[:500,0:3] - origin, axis=1)
-    idx = np.argmin(dists)
-
-    # create 2x3 vector of starting and stopping point
-    tng_closest = np.vstack((origin, s_spline_pts_fixed[idx]))
-
-    # Find index that matches current snapnum
-    current_snapnum = 67
-    idx = np.where( snaps == current_snapnum )[0][0]
-
-    # Get snaps earlier than current snap
-    snaps_i = np.where( snaps <= current_snapnum )[0]
-
-    # Get times from SPAM orbit
-    spam_times = spam_orbit_raw[:,-1]
-
-    # Set final time as 0
-    spam_times -= spam_times[-1]
-
-    # Convert to TNG times
-    spam_times = convert_time_spam_to_tng(spam_times)
-
-    # Add TNG offset 
-    spam_times += times[idx]
-
-    # Get locations in spam_times that most closely matches times[snaps_i]
-    spam_i = np.zeros(len(snaps_i), dtype=int)
-    for i in range(len(snaps_i)):
-        spam_i[i] = np.argmin( np.abs( spam_times - times[snaps_i[i]] ) )
-    
-    # Add plots of interest
-    plot_list = []
-    plot_titles = []
-
-    plot_list.append( spam_orbit_tng_pos )
-    plot_titles.append( 'SPAM Orbit' )
-
-    plot_list.append( s_spline_pts_fixed )
-    plot_titles.append( 'TNG Orbit' )
-
-    # Add Points of interest
-
-    # Add TNG snap points
-    sig_pts = s_orbit_fixed[:,0:3]
-    sig_labels = snap_times
-
-    # Add primary galaxy as origin
-    sig_pts = np.vstack( (sig_pts, np.zeros((1,3)) ) )
-    sig_labels.append( 'Primary')
-
-    # Add spam_i in orbit to significant points
-    sig_pts = np.vstack( (sig_pts, spam_orbit_tng_pos[spam_i]) )
-    sig_labels += ["Gyr: %.2f" % spam_times[i] for i in spam_i]
-
-    # Add vectors of interest,  create n x 2 x 3 array
-    vectors = np.array([ spam_closest, tng_closest ])
-    vector_labels = ['SPAM Closest %.2f'%np.linalg.norm(spam_closest[1]), 'TNG Closest %.1f'%np.linalg.norm(tng_closest[1])]
-
-    # Plot the fixed and moving secondary galaxy orbits
-    tf.xy_scatter_plot( plot_lines = plot_list, plot_labels = plot_titles, \
-                        sig_pts=sig_pts, sig_labels=sig_labels, \
-                        vector_list = vectors, vector_labels = vector_labels, \
-                        title='Spline of Fixed TNG Targets', figsize=(12,8))
+    print( m4_ratings.shape )
 
 
 # In[19]:
 
 
-if buildEnv and False:  # DF (lnl) Grid search
+if True:
+    # Merge with m3_df on p_SubhaloIDRaw
+
+    m4_df = m3_df.merge(m4_ratings, left_on='p_SubhaloIDRaw', right_on='p_SubhaloIDRaw', how='inner')
+    print( 'M4_DF: ', m4_df.shape )
+
+
+# In[24]:
+
+
+if True:
+
+    def plot_ratings( ratings, title = 'Ratings', legend_loc = 'upper right' ):
+
+        # Remove/clear any existing plot
+        plt.clf()
+
+        # Create histogram
+        plt.figure(figsize=(8, 5))
+        counts, bins, bars = plt.hist(ratings, bins=np.arange(0, 7) - 0.5, edgecolor='black', rwidth=0.8)
+
+        # Label each bar with its count
+        for bar, count in zip(bars, counts):
+            plt.text(bar.get_x() + bar.get_width() / 2, count, int(count), ha='center', va='bottom')
+
+        # Center x-ticks under each bin
+        plt.xticks(range(6), range(6))
+
+        # Labels and title
+        plt.xlabel('Rating')
+        plt.ylabel('Frequency')
+        plt.title(title)
+
+        # Manual Legend description at top and right corner
+        if legend_loc == 'upper right':
+            plt.text( 0.9, 0.8, 'Tidal Features\n0-1: None\n2: Slight\n3: Some\n4: Good\n5: Great', 
+                horizontalalignment='center', verticalalignment='center',
+               transform=plt.gca().transAxes,
+                bbox=dict(facecolor='white', alpha=0.5))
+        elif legend_loc == 'upper left':
+            plt.text( 0.1, 0.8, 'Tidal Features\n0-1: None\n2: Slight\n3: Some\n4: Good\n5: Great', 
+                horizontalalignment='center', verticalalignment='center',
+               transform=plt.gca().transAxes,
+                bbox=dict(facecolor='white', alpha=0.5))
+
+        # Display plot
+        plt.show()
+
+    # histogram all ratings
+    plot_ratings( m4_ratings['moi_4_rating'], f'All Ratings\nTotal: {m4_ratings.shape[0]}' )
+
+
+
+# In[25]:
+
+
+if True:
     
-    # Perform grid search between 0.001 and 100
-    # lnl_vals = np.logspace(-3, 2, 5)
-    # Perform grid search between 0.1 and 1
-    lnl_vals = np.linspace(0.1, 1, 5 )
-    # Perform grid search between 0.1 and 0.2
-    # lnl_vals = np.linspace(0.1, 0.2, 5)
-    for i, lnl in enumerate(lnl_vals):
-        print(f"#####   LNL: {lnl}   #####")
-        print( i, lnl )
-        test_orbit_param = test_spam_ar1.copy()
-        # test_orbit_param[3:6] *= 0.02     
-        plot_spam_orbit( test_orbit_param, df_val=lnl )
+    # Get unique values in 'moi_2' field
+    moi_2_list = m4_df['moi_2'].unique()
+    m2_ratings = []
+
+    # Loop through the unique values and get all rows with that value
+    for moi_2 in moi_2_list:
+        t_df = m4_df[m4_df['moi_2'] == moi_2]
+
+        # Get the value of the highest rating in moi_4_rating
+        max_rating = t_df['moi_4_rating'].max()
+        m2_ratings.append( [ moi_2, max_rating ] )
+
+    m2_ratings = np.array(m2_ratings)
+    print ( 'Moi_2 List:', m2_ratings.shape )
+
+    # Histogram of the max ratings
+    plot_ratings( m2_ratings[:,1], f'Max Rating per Collision\nTotal: {len(m2_ratings)}', legend_loc='upper left' )
 
 
-# ### Optimization!
-# 
-# Because I don't want to do manual grid searches anymore, let's optimize!  I believe the orbit is primarily affected by three things, velocity, mass, and dynamical friction.  So let's vary lnl and add two new mass and velocity scaling constants. 
 
-# In[20]:
+# In[31]:
 
 
-from scipy.optimize import minimize
+def plot_random_rating_grid(m4_df, img_dir, n_samples=4, rating_col='moi_4_rating',
+                            figsize_per_panel=3.0, random_state=None,
+                            crop_bottom_left_frac=(0.45, 0.3)):
+    """
+    For each rating, grab up to n_samples random images and plot them in a grid:
+    columns = ratings (low -> high), rows = examples.
 
-def percentage_difference(value1, value2):
-    return np.abs(value1 - value2) / np.abs(value2)
+    If crop_bottom_left_frac is not None, only show a fixed bottom-left region
+    of each composite image.
 
-def run_spam_simulation(c_mass, c_vel, lnl, spam_ar):
+    Parameters
+    ----------
+    m4_df : pandas.DataFrame
+        DataFrame containing at least [rating_col, image-name column].
+    img_dir : str
+        Directory containing the PNG images.
+    n_samples : int
+        Number of random images per rating (max).
+    rating_col : str
+        Name of the column with rating values (default: 'moi_4_rating').
+    figsize_per_panel : float
+        Size multiplier per subplot (in inches).
+    random_state : int or None
+        Optional random seed for reproducibility.
+    crop_bottom_left_frac : tuple or None
+        (h_frac, w_frac). If given, crop to the bottom h_frac of height and
+        left w_frac of width, e.g. (0.5, 0.5) = bottom-left quarter.
+    """
 
-    # Modify variables based on scales
-    mod_spam_ar = spam_ar.copy()
-    mod_spam_ar[3:6] *= c_vel
-    mod_spam_ar[6:7] *= c_mass
-    # test_spam_ar[8:10] *= 40.0  # Increase radius
-    
-    spam_orbit_raw = sim.orbit_run_wrapper( mod_spam_ar, dynamic_friction_lnl=lnl )
-    
-    return spam_orbit_raw
+    # Choose which column has the image filenames
+    if 'img_name' in m4_df.columns:
+        img_col = 'img_name'
+    elif 'img_name_1' in m4_df.columns:
+        img_col = 'img_name_1'
+    else:
+        raise ValueError("Could not find 'img_name' or 'img_name_1' in m4_df columns.")
 
-def objective_function( params, tng_cmp, spam_ar ):
+    # Sorted unique ratings, low -> high
+    ratings = np.sort(m4_df[rating_col].unique())
+    n_ratings = len(ratings)
 
-    # Scales for importance of each metric
-    time_s = 5.0
-    pos_s = 1.0
-    vel_s = 0.5
-    
-    c_mass, c_vel, lnl = params
-    tng_orbit, tng_snaps, tng_times, tng_time_offset = tng_cmp
-    spam_orbit_raw = run_spam_simulation(c_mass, c_vel, lnl, spam_ar)
-    spam_orbit_tng_pos = convert_distance_spam_to_tng(spam_orbit_raw[:,0:3])
-    spam_orbit_tng_vel = convert_velocity_spam_to_tng(spam_orbit_raw[:,3:6])
+    # Grid: rows = examples, cols = ratings
+    n_rows = n_samples
+    fig, axes = plt.subplots(
+        n_rows, n_ratings,
+        figsize=(figsize_per_panel * n_ratings, figsize_per_panel * n_rows)
+    )
 
-    # Get times from orbit simulation
-    spam_orbit_times = spam_orbit_raw[:,-1]
-    # Set final time as 0
-    spam_orbit_times -= spam_orbit_times[-1]
-    # Convert to TNG times
-    spam_orbit_times = convert_time_spam_to_tng(spam_orbit_times)
-    # Add time offset
-    spam_orbit_times += tng_time_offset
+    # Ensure axes is 2D
+    if n_rows == 1 and n_ratings == 1:
+        axes = np.array([[axes]])
+    elif n_rows == 1:
+        axes = axes[np.newaxis, :]
+    elif n_ratings == 1:
+        axes = axes[:, np.newaxis]
 
-    # print( spam_orbit_times)
+    rng = np.random.default_rng(random_state)
 
-    # Get locations in spam_times that most closely matches tng times
-    spam_i = np.zeros(len(tng_snaps), dtype=int)
-    for i in range(len(tng_snaps)):
-        spam_i[i] = np.argmin( np.abs( spam_orbit_times - tng_times[i] ) )
+    for col_idx, rating in enumerate(ratings):
+        sub_df = m4_df[m4_df[rating_col] == rating]
+        if sub_df.empty:
+            for row_idx in range(n_rows):
+                axes[row_idx, col_idx].axis('off')
+            continue
 
-    # print(spam_i)
+        k = min(n_samples, len(sub_df))
+        sample_indices = rng.choice(sub_df.index, size=k, replace=False)
+        samples = sub_df.loc[sample_indices]
 
-    # Loop through each snap and score the difference
+        axes[0, col_idx].set_title(f'Rating {rating}')
 
-    score = 0.0
+        for row_idx in range(n_rows):
+            ax = axes[row_idx, col_idx]
+            ax.axis('off')
 
-    for i in range(len(tng_snaps)):
-        
-        snap = tng_snaps[i]
-        time = tng_times[i]
-        spam_time = spam_orbit_times[spam_i[i]]
+            if row_idx >= k:
+                continue
 
-        tng_loc = tng_orbit[i,0:3]
-        spam_loc = spam_orbit_tng_pos[spam_i[i],0:3]
+            img_name = samples.iloc[row_idx][img_col]
+            img_path = os.path.join(img_dir, img_name)
 
-        tng_vel = tng_orbit[i,3:6]
-        spam_vel = spam_orbit_tng_vel[spam_i[i],0:3]
+            try:
+                img = plt.imread(img_path)
+
+                # --- CROP BOTTOM-LEFT IF REQUESTED ---
+                if crop_bottom_left_frac is not None:
+                    h_frac, w_frac = crop_bottom_left_frac
+                    h, w = img.shape[:2]
+                    ch = int(h * h_frac)
+                    cw = int(w * w_frac)
+                    # bottom h_frac of height, left w_frac of width
+                    img = img[h - ch:h, 0:cw]
+                # --------------------------------------
+
+                ax.imshow(img)
+            except FileNotFoundError:
+                ax.text(0.5, 0.5, 'Missing\nimage',
+                        ha='center', va='center', transform=ax.transAxes)
+
+    fig.suptitle(f'Random Examples per Rating (n={n_samples})')
+    plt.tight_layout()
+    plt.show()
 
 
-        # print( f"Snap: {snap}, TNG Time: {time:.2f}, SPAM Time: {spam_time}" )
-
-        # We want to minimize this funciton.  Therefore 0 is good, anything above is bad
-        # Let's do percent difference!
-        # Comparing position and time for snapshot before moment of interest
-        pos_diff = percentage_difference(tng_loc, spam_loc)
-        time_diff = percentage_difference(time, spam_time)
-        vel_diff = percentage_difference(tng_vel, spam_vel)
-
-
-        score += time_s * np.mean(time_diff) + pos_s * np.mean(pos_diff) + vel_s * np.mean(vel_diff)
-
-        # print(f"Time Diff: {time_diff}, Pos Diff: {pos_diff}, Vel Diff: {vel_diff}")
-        print(f"Score: {score} - Param {params}")
-
-    return score
-
-if buildEnv:
-    
-    # Grab target from TNG targets
-    uidRaw = 67000000350284
-    test_target = tng_targets[tng_targets['moi_SubhaloIDRaw'] == uidRaw].iloc[0]
-
-    test_tng_ar2 = standardize_tng_parameters_v1( test_target )
-    test_spam_ar2 = convert_units_tng_to_spam_v1( test_tng_ar2 )
-    
-
-    
-    # TNG moments to compare to SPAM
-    t_start = 11
-    t_stop = 12
-    ts = slice(t_start, t_stop)
-    p_orbit = tng_data['orbit'][ts, 0:6]
-    s_orbit = tng_data['orbit'][ts, 6:12]
-    tng_snaps = tng_data['orbit'][ts, 12]
-    tng_times = np.array([tf.snap_to_time(snap) for snap in snaps])
-    tng_time_offset = tf.snap_to_time(tng_data['orbit'][12,12])
-    print( tng_time_offset)
-
-    # Create list of strings for snap + time
-    snap_times = [f"{int(snaps[i])}: {times[i]:.2f}" for i in range(len(tng_snaps))]
-
-    print( snap_times)
-
-    # Convert to fixed frame
-    tng_orbit = convert_to_fixed_frame(p_orbit, s_orbit)
-
-    # Prepare for optimization
-    init_guess = [1.0, 1.0, 0.1]
-    tng_cmp = [tng_orbit, tng_snaps, tng_times, tng_time_offset]
-
-    # Test objective_function
-    # objective_function( init_guess, tng_cmp, test_spam_ar2 )
-
-    # Run optimization
-    result = minimize(objective_function, init_guess, args=(tng_cmp, test_spam_ar2), tol=1e-4)
-
-    # Optimal parameters
-    optimal_params = result.x
-    c_mass_opt, c_vel_opt, lnl_opt = optimal_params
-
-    print("Optimal parameters:")
-    print("c_mass:", c_mass_opt)
-    print("c_vel:", c_vel_opt)
-    print("lnl:", lnl_opt)
-    
+if True:
+    img_dir = '/home/mbo2d/galStuff/galaxyJSPAM/IllustrisTNG/tng-images/moi_4_search/'
+    plot_random_rating_grid(m4_df, img_dir, n_samples=3, random_state=42)
 
 
 # In[ ]:
 
 
-if buildEnv:
-    
-    # Grab target for particle data
-    uidRaw = 67000000350284
-    test_target = tng_targets[tng_targets['moi_SubhaloIDRaw'] == uidRaw].iloc[0]
+# Save the m4_df to a pickle file
 
-    tng_ar = standardize_tng_parameters_v1( test_target )
-    spam_ar3 = convert_units_tng_to_spam_v1( tng_ar )
+if True:
 
-    c_mass = 1.4845669539404365
-    c_vel = 1.4672694515413447
-    lnl = 0.8770470898172315
+    m4_df.to_pickle('/home/mbo2d/galStuff/galaxyJSPAM/IllustrisTNG/tng-targets/moi-4-targets.pkl')
 
-    spam_ar3[3:6] *= c_vel
-    spam_ar3[6:7] *= c_mass
-    # test_spam_ar[8:10] *= 40.0  # Increase radius
-    #print(test_spam_ar)
-    
-    plot_spam_orbit( spam_ar3, df_val= lnl )
-
+    # and csv for a human readable version
+    m4_df.to_csv('/home/mbo2d/galStuff/galaxyJSPAM/IllustrisTNG/tng-targets/moi-4-targets.csv')
 
 
 # In[ ]:
 
 
-if buildEnv:
-    
-    # Grab target for particle data
-    uidRaw = 67000000350284
-    test_target = tng_targets[tng_targets['moi_SubhaloIDRaw'] == uidRaw].iloc[0]
+if True:
 
-    tng_ar = standardize_tng_parameters_v1( test_target )
-    spam_ar3 = convert_units_tng_to_spam_v1( tng_ar )
+    # Let's filter the top ratings (4 or 5) and save those p_SubhaloIDRaw to a txt file
 
-    c_mass = 1.4845669539404365
-    c_vel = 1.4672694515413447
-    lnl = 0.8770470898172315
-    lnl = 0.15
+    top_ratings = m4_df[m4_df['moi_4_rating'] >= 4]
+    p_id_list = top_ratings['p_SubhaloIDRaw'].values
 
-    # spam_ar3[3:6] *= c_vel
-    # spam_ar3[6:7] *= c_mass
-    # test_spam_ar[8:10] *= 40.0  # Increase radius
-    #print(test_spam_ar)
-    
-    plot_spam_orbit( spam_ar3, df_val= lnl )
+    with open('/home/mbo2d/galStuff/galaxyJSPAM/IllustrisTNG/tng-targets/moi-4-top-ratings.txt', 'w') as f:
+        for p_id in p_id_list:
+            f.write(f'{int(p_id)}\n')
 
+
+# In[33]:
+
+
+if True:
+
+    # Loop through ALL rows with 5 or 4, print the p_SubhaloIDRaw and plot the image
+    img_dir = '/home/mbo2d/galStuff/galaxyJSPAM/IllustrisTNG/tng-images/moi_4_search/'
+
+    for rating in [5, 4]:
+        tmp_df = m4_df[m4_df['moi_4_rating'] == rating]
+        print( rating, tmp_df.shape )
+
+        for i, row in tmp_df.iterrows():
+            print( row['p_SubhaloIDRaw'] )
+
+            img_path = img_dir + row['img_name_1']
+            img = plt.imread( img_path )
+
+            plt.figure(figsize=(8, 8))
+            plt.imshow(img)
+            plt.axis('off')
+            plt.title(f'Rating: {rating}\nSubhaloIDRaw: {row["p_SubhaloIDRaw"]}')
+            plt.show()
+
+            # break
 
 
 # In[ ]:

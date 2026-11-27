@@ -415,14 +415,14 @@ module custom_runs_module
 
         integer :: nparticles1, nparticles2
         
-        print *, "FR: SIMR_INIT!"
+        ! print *, "FR: SIMR_INIT!"
 
         ! Setup default parameters for a quick test
         nparticles1 = 100
         nparticles2 = 50
         call RANDOM_SEED()
-        call STANDARD_GALAXY1(mass1, epsilon1, rin1, rout1, rscale1, theta1, phi1, opt1, heat1 )
-        call STANDARD_GALAXY2(mass2, epsilon2, rin2, rout2, rscale2, theta2, phi2, opt2, heat2)
+        call STANDARD_GALAXY1( mass1, epsilon1, rin1, rout1, rscale1, theta1, phi1, opt1, heat1 )
+        call STANDARD_GALAXY2(  mass2, epsilon2, rin2, rout2, rscale2, theta2, phi2, opt2, heat2 )
 
         ! Default values based on Milky Way and M31.
         call SIMR_INIT_DISTRIBUTION( 0.01d0, 10.0d0, 5.8d0, 0.3333d0, 2.0d0, 1.0d0)
@@ -467,7 +467,6 @@ module custom_runs_module
         real (kind=8) :: lnl_in, rchalo_in, mhalo_in, mbulge_in, hbulge_in, hdisk_in
         real (kind=8) :: rmax
         real (kind=8) :: mold, dmold, mtot
-        real (kind=8) :: rscale
         real (kind=8) :: dx, x
         ! real (kind=8) :: alphahalo, qhalo, gammahalo, mhalo, rchalo, rhalo, epsilon_halo
         real (kind=8) :: alphahalo, qhalo, gammahalo, rhalo, epsilon_halo
@@ -526,8 +525,6 @@ module custom_runs_module
         dr = rmax / (nmax)
         mold = 0
     
-        rscale = 5
-    !    ntotal = nmax * rscale
         ntotal = nnn
     
     !!!!!
