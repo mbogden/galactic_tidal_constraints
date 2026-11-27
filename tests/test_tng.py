@@ -1251,11 +1251,14 @@ def test_spams_circular_orbit_keeps_keplers_time():
 
 
 def test_spams_unit_galaxy_is_the_same_size_whatever_its_mass():
-    """Why a galaxy's mass for SPAM matters: SPAM puts all of it within 3 lengths (45 kpc), 85% within 1 (15 kpc)."""
+    """Why a galaxy's mass for SPAM matters: SPAM puts all of it within 2 lengths (30 kpc), 85% within 1 (15 kpc)."""
     sim = pytest.importorskip("galactic_tidal_constraints.simr.simulation")
     profile = sim.mass_profile()
     inside = lambda r: float(np.interp(r, profile["radius"], profile["total"]))
-    assert inside(1.0) == pytest.approx(0.853, abs=0.005) and inside(3.0) == pytest.approx(1.0, abs=0.001)
+    assert inside(0.5) == pytest.approx(0.530, abs=0.005) and inside(1.0) == pytest.approx(0.853, abs=0.005)
+    assert inside(2.0) == pytest.approx(1.0, abs=0.001)
+    wide = sim.mass_profile(sim.SimulatorConfig(r_scale=50.0))                      # a larger r_scale does not spread it further
+    assert float(np.interp(2.0, wide["radius"], wide["total"])) == pytest.approx(1.0, abs=0.001)
     assert profile["radius"][-1] == pytest.approx(10.0, abs=0.01)                   # the force table ends at 10 lengths (150 kpc)
 
 

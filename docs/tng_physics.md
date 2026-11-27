@@ -406,8 +406,13 @@ fast": its last pass is at 0.4 to 0.7 of the track's time. The units are not the
 left.
 
 **What SPAM does with a mass.** SPAM builds both galaxies from one unit galaxy whose size does not
-change with its mass: 85% of the mass is within 1 length (15 kpc) and all of it within 3 (45 kpc)
-(`test_spams_unit_galaxy_is_the_same_size_whatever_its_mass`). A TNG galaxy's total mass is mostly
+change with its mass: half of the mass is within 0.47 lengths (7 kpc), 85% within 1 (15 kpc) and all
+of it within 2 (30 kpc). The mass is spread out, so the force inside 1 length is well below a
+point's, but the spread ends there: SPAM reads the table at row = distance × 1000, which puts the
+halo's cut-off radius (`r_scale`) at 1 length whatever its value, and the table's mass stops growing
+at 2 (`test_spams_unit_galaxy_is_the_same_size_whatever_its_mass`).
+
+A TNG galaxy's total mass is mostly
 dark matter spread over hundreds of kpc. For the primary of `62000000190717` the mass handed to
 SPAM is 17.7 × 10¹¹ M☉, while 1.8 × 10¹¹ M☉ of it lies within its disk radius (17 kpc). SPAM
 therefore puts about ten times TNG's mass between the two nuclei, which shortens every orbital time.
