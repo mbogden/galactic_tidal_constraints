@@ -1,0 +1,1341 @@
+"""TNG targets: the IllustrisTNG data this project already has.
+
+Two kinds of file, both HDF5, both made by the project's earlier TNG pipeline:
+
+    the target table      one row per encounter per snapshot: IDs, catalog values, the old
+                          pipeline's own values and its frame matrices
+    a target archive      one target's particles at its target snapshot
+
+    read_table, read_archive                return the values exactly as stored
+    galaxy_properties, half_mass_radius     measure a galaxy from its particles, in the units given
+    archive_to_box                          take an archive's particles out of the old frame
+    nearest_image                           undo the simulation box's wrap-around
+    physical, spam_units                    stored values -> kpc, km/s, Msun -> SPAM's units
+    core_velocity, hubble_rate, relative_to, orbit_rotation
+                                            the frame SPAM uses: primary at the origin and at rest,
+                                            secondary on +x, the orbit in the x-y plane
+    disk_angles                             a spin direction -> SPAM's two disk angles
+    primary_side                            which of the pair is the primary: "p" or "s"
+    TngTargetConfig, measure_target         everything measured for one target at its snapshot
+    spam_model                              a measured target -> SPAM's 14 parameters
+    encounter_rows                          the table rows of one encounter, in order of snapshot
+    track_separation                        the secondary's nucleus relative to the primary's, row by row
+    age_of_universe, track_time             a snapshot's age; a track's times relative to the target
+    track_spline                            a smooth curve through a track's rows
+    target_orbit                            a target's orbit for SPAM's metrics, sampled from that curve
+    target_particles                        a target's stars as SPAM's particles: its frame, units and row order
+    orbit_notes                             what to know about a target's orbit before comparing with it
+    write_target, write_targets             write one target's files, or every target's, for SIMR runs
+
+    python -m galactic_tidal_constraints.tng --data <legacy folder> --output <targets folder>
+
+The readers and the measuring functions convert nothing; units change only where `physical` or
+`spam_units` is called. What the stored values mean is in each function's docstring.
+
+The readers need `h5py` (the `tng` dependency group).
+"""
+
+import argparse
+import json
+import sys
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+import numpy as np
+
+# Particle types, by the TNG snapshot's PartType number.
+PARTICLE_TYPES = {"gas": 0, "dm": 1, "stars": 4, "bh": 5}
+
+# The two galaxies of a pair: the letter that starts their columns in the target table ("p_", "s_")
+# and their number in an archive's galaxy labels.
+GALAXY_LABELS = {"p": 0, "s": 1}
+
+# The rules `primary_side` knows, and the masses `measure_target` can give to SPAM.
+PRIMARY_RULES = ("table", "stars")
+MASS_CHOICES = ("historical", "catalog", "within_radius")
+
+# Columns every target table must have.
+TABLE_COLUMNS = ("moi_2", "snap", "p_SubhaloIDRaw", "s_SubhaloIDRaw")
+
+# Rows read at a time when only some particle types are wanted (bounds the memory used).
+_CHUNK_ROWS = 4_000_000
+
+# The side of TNG50-1's simulation box, in ckpc/h. The box wraps around: what leaves through one face
+# comes back in through the opposite one, so stored coordinates run from 0 to BOX.
+BOX = 35000.0
+
+# TNG's Hubble parameter h (Planck 2015): its lengths and masses are stored "per h".
+H = 0.6774
+
+# TNG's matter density today, as a fraction of the critical density (Planck 2015). The universe is
+# flat, so dark energy is 1 - OMEGA_M.
+OMEGA_M = 0.3089
+
+# The gravitational constant, in kpc (km/s)^2 / Msun.
+G = 4.30091e-6
+
+# SPAM's units. It works with G = 1, so a length and a mass fix the velocity and the time.
+SPAM_LENGTH = 15.0                                  # kpc
+SPAM_MASS = 1.0e11                                  # Msun
+SPAM_VELOCITY = (G * SPAM_MASS / SPAM_LENGTH) ** 0.5  # km/s, about 169.3
+GYR_PER_KPC_PER_KMS = 0.9777922                     # 1 kpc / (km/s), in Gyr
+SPAM_TIME = SPAM_LENGTH / SPAM_VELOCITY * GYR_PER_KPC_PER_KMS  # Gyr, about 0.0866
+
+# SPAM's 14 parameters, in SPAM's order (the same as `simr.simulation.PARAM_NAMES`).
+# The files `write_target` writes into a target's folder, and `write_targets` beside the folders. Every
+# name says where its contents come from: "tng_" is measured from TNG's data; nothing here is made by SPAM.
+TARGET_FILES = {"model": "tng_spam_model.txt", "orbit": "tng_orbit.npy", "particles": "tng_star_particles.npy",
+                "masses": "tng_star_masses.npy", "externals": "simr_externals.json", "target": "tng_target.json"}
+TARGETS_TABLE, TARGETS_MODELS = "tng_targets.h5", "tng_spam_models.txt"
+# The keys a SIMR request uses for a target's arrays: "ext.tng_orbit", "ext.tng_star_particles".
+EXTERNAL_KEYS = {"tng_orbit": "orbit", "tng_star_particles": "particles"}
+
+SPAM_PARAMETERS = ("x", "y", "z", "vx", "vy", "vz", "mass1", "mass2", "rout1", "rout2",
+                   "phi1", "phi2", "theta1", "theta2")
+
+# What a stored TNG value is multiplied by to become physical: (constant, power of the scale factor).
+_TO_PHYSICAL = {
+    "length": (1 / H, 1.0),             # ckpc/h          -> kpc
+    "velocity": (1.0, 0.0),             # km/s            -> km/s   (catalog velocities)
+    "particle_velocity": (1.0, 0.5),    # km/s / sqrt(a)  -> km/s   (snapshot particles)
+    "mass": (1e10 / H, 0.0),            # 1e10 Msun/h     -> Msun
+    "spin": (1 / H, 0.0),               # (kpc/h)(km/s)   -> kpc km/s   (catalog SubhaloSpin)
+}
+
+# What a physical value is divided by to be in SPAM's units.
+_SPAM_UNIT = {"length": SPAM_LENGTH, "velocity": SPAM_VELOCITY, "mass": SPAM_MASS, "time": SPAM_TIME}
+
+
+def _open(path, what: str):
+    """Open an HDF5 file for reading, with a clear error when it isn't there."""
+    import h5py
+
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"{what} not found: {path}")
+    return h5py.File(path, "r")
+
+
+def read_table(path) -> dict[str, np.ndarray]:
+    """Read the target table: one array per column, one row per encounter per snapshot.
+
+    Args:
+        path: the table file (`moi-4-targets.h5`).
+
+    Returns:
+        A dict of column name to array, in the table's column order. Every array has one entry per
+        row: a number column is (rows,), a vector column (rows, 3), a matrix column (rows, 4, 4),
+        and a text column is an array of `str`.
+
+    The values are as stored:
+        - `moi_2` identifies an encounter, `snap` the snapshot; `p_` is the primary galaxy and `s_`
+          the secondary. IDs and snapshot numbers are `int64`.
+        - `p_` and `s_` catalog columns (`SubhaloPos`, `SubhaloVel`, `SubhaloMass`, ...) are raw TNG
+          catalog values: lengths in ckpc/h, masses in 1e10 Msun/h, velocities in km/s.
+          `SubhaloSpin` is the angular momentum per unit mass, in (kpc/h)(km/s) with a physical
+          (not comoving) length.
+        - `pa_`, `sa_`, `ps_`, `ss_`, `_orbital_frame` and `_transform` columns are the earlier
+          pipeline's own values; their units aren't verified.
+        - Each dataset in the file has a `units` attribute, and some a `note`.
+    """
+    with _open(path, "Target table") as file:
+        if "columns" in file.attrs:
+            columns = [name.decode() if isinstance(name, bytes) else str(name) for name in file.attrs["columns"]]
+        else:
+            columns = list(file.keys())
+        missing = [name for name in (*TABLE_COLUMNS, *columns) if name not in file]
+        if missing:
+            raise ValueError(f"Target table {path} has no column {missing[0]!r}")
+
+        table = {}
+        for name in columns:
+            dataset = file[name]
+            table[name] = dataset.asstr()[...].astype(str) if dataset.dtype.kind == "O" else dataset[...]
+
+    rows = {len(array) for array in table.values()}
+    if len(rows) != 1:
+        raise ValueError(f"Target table {path} has columns of different lengths: {sorted(rows)}")
+    return table
+
+
+def read_archive(path, particle_types=("stars",)) -> dict:
+    """Read one target archive: the particles of both galaxies at the target snapshot.
+
+    Args:
+        path: the archive file (`target-archive-<primary SubhaloIDRaw>.h5`).
+        particle_types: which particles to return: any of "gas", "dm", "stars" and "bh" (one name
+            or several), or "all". Stars by default.
+
+    Returns:
+        A dict, with one row per returned particle in each array (the file's order is kept):
+
+        positions           (n, 3) float32   ckpc/h
+        velocities          (n, 3) float32   km/s / sqrt(a): multiply by sqrt(a) for km/s
+        masses              (n,)   float32   1e10 Msun/h
+        particle_type       (n,)   int8      0 gas, 1 dark matter, 4 stars, 5 black hole
+        subfind_galaxy      (n,)   int8      the galaxy SUBFIND gives the particle to: 0 primary, 1 secondary
+        historical_galaxy   (n,)   int8      the galaxy it belonged to before the encounter: 0 or 1
+        p_id, s_id          int              the primary's and secondary's SubhaloIDRaw
+        t_snap              int              the target snapshot
+
+    The values are as stored, which is not what the file's own labels say ("kpc", "km_per_s",
+    "1e10_Msun"): they are raw TNG snapshot units. Positions and velocities are in the earlier
+    pipeline's orbital frame (the table's `orbital_frame_pos_transform` and
+    `orbital_frame_vel_transform` for that row), not the simulation box.
+
+    Known limits of these files:
+        - "stars" includes wind particles: the archive has no formation time to tell them apart.
+        - A black hole's mass is its `BH_Mass`, not its dynamical mass.
+    """
+    if isinstance(particle_types, str):
+        particle_types = (particle_types,)
+    if "all" in particle_types:
+        wanted = None
+    else:
+        unknown = [name for name in particle_types if name not in PARTICLE_TYPES]
+        if unknown or not particle_types:
+            raise ValueError(f"Unknown particle type {unknown[0] if unknown else particle_types!r}. "
+                             f"Known: {list(PARTICLE_TYPES)} or 'all'")
+        wanted = [PARTICLE_TYPES[name] for name in particle_types]
+
+    with _open(path, "Target archive") as file:
+        for name, width in (("particles_orf", 7), ("particles_meta", 3)):
+            if name not in file:
+                raise ValueError(f"Target archive {path} has no dataset {name!r}")
+            if file[name].ndim != 2 or file[name].shape[1] != width:
+                raise ValueError(f"Target archive {path}: {name!r} has shape {file[name].shape}, "
+                                 f"expected (n, {width})")
+        particles, meta = file["particles_orf"], file["particles_meta"][...]
+        if len(meta) != len(particles):
+            raise ValueError(f"Target archive {path}: {len(particles)} particles but {len(meta)} labels")
+
+        if wanted is None:
+            data = particles[...]
+        else:
+            keep = np.isin(meta[:, 0], wanted)
+            data = np.empty((int(keep.sum()), 7), dtype=particles.dtype)
+            filled = 0
+            for start in range(0, len(keep), _CHUNK_ROWS):
+                rows = keep[start:start + _CHUNK_ROWS]
+                if rows.any():
+                    chunk = particles[start:start + _CHUNK_ROWS][rows]
+                    data[filled:filled + len(chunk)] = chunk
+                    filled += len(chunk)
+            meta = meta[keep]
+        ids = {name: int(file.attrs[name]) for name in ("p_id", "s_id", "t_snap")}
+
+    return {
+        "positions": data[:, 0:3],
+        "velocities": data[:, 3:6],
+        "masses": data[:, 6],
+        "particle_type": meta[:, 0],
+        "subfind_galaxy": meta[:, 1],
+        "historical_galaxy": meta[:, 2],
+        **ids,
+    }
+
+
+def _particles(positions, velocities, masses):
+    """The three arrays as float64, checked: (n, 3), (n, 3) or None, (n,), with some mass."""
+    positions, masses = np.asarray(positions, dtype=np.float64), np.asarray(masses, dtype=np.float64)
+    if positions.ndim != 2 or positions.shape[1] != 3:
+        raise ValueError(f"positions has shape {positions.shape}, expected (n, 3)")
+    if masses.shape != (len(positions),):
+        raise ValueError(f"masses has shape {masses.shape}, expected ({len(positions)},)")
+    if velocities is not None:
+        velocities = np.asarray(velocities, dtype=np.float64)
+        if velocities.shape != positions.shape:
+            raise ValueError(f"velocities has shape {velocities.shape}, expected {positions.shape}")
+    if len(masses) == 0 or not masses.sum() > 0:
+        raise ValueError("No mass: a galaxy needs at least one particle with mass")
+    return positions, velocities, masses
+
+
+def galaxy_properties(positions, velocities, masses) -> dict:
+    """Measure one galaxy from its particles: mass, center of mass, velocity and spin.
+
+    Args:
+        positions: (n, 3), the particles' positions.
+        velocities: (n, 3), their velocities.
+        masses: (n,), their masses.
+
+    Returns:
+        A dict (sums are done in float64):
+
+        mass             float   the total mass
+        center_of_mass   (3,)    the mass-weighted mean position
+        velocity         (3,)    the mass-weighted mean velocity
+        spin             (3,)    the angular momentum per unit mass, about the center of mass in the
+                                 galaxy's rest frame: sum(m (r - center) x (v - velocity)) / mass
+
+    Nothing is converted: the results are in the units of the arrays given (a spin is a length times
+    a velocity). The spin doesn't depend on where the origin is or on any velocity added to every
+    particle, and it turns with the frame.
+
+    For a target archive's particles (ckpc/h, km/s / sqrt(a), 1e10 Msun/h), with a the snapshot's
+    scale factor, these match the TNG catalog's `SubhaloMass`, `SubhaloCM` (in the archive's frame),
+    `SubhaloVel` (= velocity * sqrt(a)) and `SubhaloSpin` (= spin * a**1.5).
+    """
+    positions, velocities, masses = _particles(positions, velocities, masses)
+    mass = masses.sum()
+    center = masses @ positions / mass
+    velocity = masses @ velocities / mass
+    spin = masses @ np.cross(positions - center, velocities - velocity) / mass
+    return {"mass": float(mass), "center_of_mass": center, "velocity": velocity, "spin": spin}
+
+
+def half_mass_radius(positions, masses, center) -> float:
+    """The radius around a center that holds half of the particles' mass.
+
+    Args:
+        positions: (n, 3), the particles' positions.
+        masses: (n,), their masses.
+        center: (3,), the point to measure from. The TNG catalog's `SubhaloHalfmassRad` is measured
+            from `SubhaloPos` (the most bound particle), not from the center of mass.
+
+    Returns:
+        The distance of the first particle, going outward, at which the mass inside reaches half the
+        total. In the units of `positions`.
+    """
+    positions, _, masses = _particles(positions, None, masses)
+    center = np.asarray(center, dtype=np.float64)
+    if center.shape != (3,):
+        raise ValueError(f"center has shape {center.shape}, expected (3,)")
+    radii = np.linalg.norm(positions - center, axis=1)
+    order = np.argsort(radii)
+    inside = np.cumsum(masses[order])
+    return float(radii[order][np.searchsorted(inside, inside[-1] / 2)])
+
+
+def physical(values, quantity: str, scale_factor=None) -> np.ndarray:
+    """Convert stored TNG values to physical units: kpc, km/s, Msun, kpc km/s.
+
+    Args:
+        values: a number or an array of stored values (a table column, or an archive's positions,
+            velocities or masses).
+        quantity: what the values are:
+
+            "length"              ckpc/h           x a / h       -> kpc
+            "velocity"            km/s             unchanged     -> km/s      catalog velocities
+            "particle_velocity"   km/s / sqrt(a)   x sqrt(a)     -> km/s      snapshot particles
+            "mass"                1e10 Msun/h      x 1e10 / h    -> Msun
+            "spin"                (kpc/h)(km/s)    / h           -> kpc km/s  catalog `SubhaloSpin`
+
+        scale_factor: the snapshot's scale factor a = 1 / (1 + z). Needed for "length" and
+            "particle_velocity". One number, or one per row of `values` (a table column each).
+
+    Returns:
+        The converted values, as float64, in the shape of `values`.
+
+    h is TNG's 0.6774. A spin measured from particles has no row here: convert the positions and
+    velocities first, and `galaxy_properties` then gives the spin in kpc km/s.
+    """
+    if quantity not in _TO_PHYSICAL:
+        raise ValueError(f"Unknown quantity {quantity!r}. Known: {list(_TO_PHYSICAL)}")
+    constant, power = _TO_PHYSICAL[quantity]
+    values = np.asarray(values, dtype=np.float64)
+    if power == 0:
+        return values * constant
+    if scale_factor is None:
+        raise ValueError(f"A {quantity!r} needs the snapshot's scale factor")
+    scale_factor = np.asarray(scale_factor, dtype=np.float64)
+    if np.any(scale_factor <= 0) or np.any(scale_factor > 1):
+        raise ValueError("scale_factor must be above 0 and at most 1")
+    if scale_factor.ndim == 1:  # one per row: line it up with the rows of `values`
+        if values.ndim == 0 or len(scale_factor) != len(values):
+            raise ValueError(f"{len(scale_factor)} scale factors for values of shape {values.shape}")
+        scale_factor = scale_factor.reshape(-1, *[1] * (values.ndim - 1))
+    elif scale_factor.ndim > 1:
+        raise ValueError("scale_factor must be one number, or one per row")
+    return values * (constant * scale_factor ** power)
+
+
+def spam_units(values, quantity: str) -> np.ndarray:
+    """Convert physical values to SPAM's units.
+
+    Args:
+        values: a number or an array, in physical units.
+        quantity: what the values are:
+
+            "length"     kpc    / 15           (`SPAM_LENGTH`)
+            "velocity"   km/s   / about 169.3  (`SPAM_VELOCITY`)
+            "mass"       Msun   / 1e11         (`SPAM_MASS`)
+            "time"       Gyr    / about 0.0866 (`SPAM_TIME`)
+
+    Returns:
+        The values in SPAM's units, as float64.
+
+    SPAM works with G = 1: its length and mass units are Wallin's, and the velocity and time units
+    follow from them, velocity = sqrt(G mass / length) and time = length / velocity.
+    """
+    if quantity not in _SPAM_UNIT:
+        raise ValueError(f"Unknown quantity {quantity!r}. Known: {list(_SPAM_UNIT)}")
+    return np.asarray(values, dtype=np.float64) / _SPAM_UNIT[quantity]
+
+
+def nearest_image(positions, reference, box: float = BOX) -> np.ndarray:
+    """Move positions to the copy nearest a reference point, undoing the box's wrap-around.
+
+    The simulation box wraps around, so two points close together can sit on either side of a face
+    with coordinates almost a whole box apart (34950 and 50, say). This shifts each position by whole
+    box lengths until every coordinate is within half a box of the reference (50 becomes 35050), so
+    that differences and averages come out right.
+
+    Args:
+        positions: (3,) or (n, 3), stored positions in the box frame (ckpc/h).
+        reference: (3,), the point to stay near: for a galaxy's particles, its center. Or (n, 3),
+            one reference per position: `nearest_image(secondary_track, primary_track)`.
+        box: the box's side, in the units of `positions`. TNG50-1's by default.
+
+    Returns:
+        The positions as float64, in the shape of `positions`. They may lie outside 0 to `box`.
+
+    Call it on stored values, before `physical`: the box is 35000 only in comoving ckpc/h. It can't
+    be used on an archive's positions as read, which are in the old rotated frame.
+    """
+    if not box > 0:
+        raise ValueError(f"box must be above 0, got {box}")
+    positions = np.asarray(positions, dtype=np.float64)
+    return positions - box * np.round((positions - np.asarray(reference, dtype=np.float64)) / box)
+
+
+def archive_to_box(positions, velocities, pos_matrix, vel_matrix) -> tuple[np.ndarray, np.ndarray]:
+    """Take an archive's particles out of the old frame, back to the simulation box.
+
+    The archives store particles in the earlier pipeline's frame: the box frame turned by a rotation
+    and moved by a shift, x_old = R x_box + t, with one 4x4 matrix for positions and one for
+    velocities. This undoes both, exactly: x_box = R^T (x_old - t).
+
+    Args:
+        positions: (n, 3), an archive's positions as read.
+        velocities: (n, 3), its velocities as read.
+        pos_matrix: (4, 4), the target's `orbital_frame_pos_transform` from the target table.
+        vel_matrix: (4, 4), its `orbital_frame_vel_transform`.
+
+    Returns:
+        (positions, velocities) in the box frame, as float64 and still in stored units (ckpc/h and
+        km/s / sqrt(a)).
+
+    A galaxy that sits across a face of the box comes back in two parts, as TNG stored it: follow
+    with `nearest_image` around the galaxy's center.
+    """
+    results = []
+    for values, matrix, name in ((positions, pos_matrix, "pos_matrix"), (velocities, vel_matrix, "vel_matrix")):
+        values, matrix = np.asarray(values, dtype=np.float64), np.asarray(matrix, dtype=np.float64)
+        if values.ndim != 2 or values.shape[1] != 3:
+            raise ValueError(f"Expected (n, 3) particles, got shape {values.shape}")
+        if matrix.shape != (4, 4) or not np.array_equal(matrix[3], [0, 0, 0, 1]):
+            raise ValueError(f"{name} must be a (4, 4) matrix with last row 0, 0, 0, 1")
+        rotation, shift = matrix[:3, :3], matrix[:3, 3]
+        if np.abs(rotation @ rotation.T - np.eye(3)).max() > 1e-6 or np.linalg.det(rotation) < 0:
+            raise ValueError(f"{name} doesn't hold a rotation")
+        results.append((values - shift) @ rotation)  # row form of R^T (x - t)
+    return results[0], results[1]
+
+
+def hubble_rate(scale_factor):
+    """The universe's expansion rate at a snapshot, in TNG's cosmology.
+
+    Args:
+        scale_factor: the snapshot's scale factor a = 1 / (1 + z); a number or an array.
+
+    Returns:
+        H(a) in km/s per kpc: two points a distance d kpc apart are carried apart at H * d km/s.
+        Today (a = 1) it is 0.06774, which is 67.74 km/s per Mpc.
+
+    H(a) = H0 * sqrt(OMEGA_M / a**3 + 1 - OMEGA_M): a flat universe of matter and dark energy.
+    """
+    scale_factor = np.asarray(scale_factor, dtype=np.float64)
+    if np.any(scale_factor <= 0) or np.any(scale_factor > 1):
+        raise ValueError("scale_factor must be above 0 and at most 1")
+    return 0.1 * H * np.sqrt(OMEGA_M / scale_factor ** 3 + 1 - OMEGA_M)  # 100 h km/s/Mpc = 0.1 h km/s/kpc
+
+
+def core_velocity(positions, velocities, masses, center, radius: float) -> np.ndarray:
+    """The mean velocity of the particles within a radius of a center.
+
+    A galaxy's nucleus moves differently from the average of its whole halo, most of all during an
+    encounter. This measures the nucleus: give it the star particles, the nucleus's position and a
+    small radius. Averaging over many stars removes their own motion inside the core.
+
+    Args:
+        positions: (n, 3), the particles' positions.
+        velocities: (n, 3), their velocities.
+        masses: (n,), their masses.
+        center: (3,), the nucleus.
+        radius: how far from the center a particle may be, in the units of `positions`.
+
+    Returns:
+        (3,), the mass-weighted mean velocity of the particles inside, in the units of `velocities`.
+    """
+    positions, velocities, masses = _particles(positions, velocities, masses)
+    center = np.asarray(center, dtype=np.float64)
+    if center.shape != (3,):
+        raise ValueError(f"center has shape {center.shape}, expected (3,)")
+    inside = np.linalg.norm(positions - center, axis=1) < radius
+    if not masses[inside].sum() > 0:
+        raise ValueError(f"No particles within {radius} of the center")
+    return masses[inside] @ velocities[inside] / masses[inside].sum()
+
+
+def relative_to(positions, velocities, center, center_velocity, scale_factor,
+                hubble_flow: bool = True) -> tuple[np.ndarray, np.ndarray]:
+    """Positions and velocities relative to a center: the primary at the origin and at rest.
+
+    Args:
+        positions: (3,) or (n, 3), in kpc (after `nearest_image` and `physical`).
+        velocities: the same shape, in km/s.
+        center: (3,), the primary's nucleus, in kpc.
+        center_velocity: (3,), its velocity, in km/s.
+        scale_factor: the snapshot's scale factor (used for the Hubble flow).
+        hubble_flow: add the universe's expansion to the velocities. On by default.
+
+    Returns:
+        (positions, velocities) relative to the center, in kpc and km/s, as float64.
+
+    TNG's velocities are peculiar: the expansion of the universe is taken out. The rate at which a
+    physical distance really changes includes it, v = v_peculiar + H * r, and that is the velocity a
+    code working in physical coordinates (SPAM) needs. The added part points along r, so it changes
+    speeds a little (H is about 0.1 km/s per kpc) and never the plane of an orbit.
+    """
+    positions = np.asarray(positions, dtype=np.float64) - np.asarray(center, dtype=np.float64)
+    velocities = np.asarray(velocities, dtype=np.float64) - np.asarray(center_velocity, dtype=np.float64)
+    if positions.shape != velocities.shape or positions.shape[-1] != 3:
+        raise ValueError(f"positions {positions.shape} and velocities {velocities.shape} must both be (3,) or (n, 3)")
+    if hubble_flow:
+        velocities = velocities + hubble_rate(scale_factor) * positions
+    return positions, velocities
+
+
+def orbit_rotation(relative_position, relative_velocity) -> np.ndarray:
+    """The rotation into the orbit's own axes: secondary on +x, the orbit in the x-y plane.
+
+    Args:
+        relative_position: (3,), the secondary's nucleus relative to the primary's.
+        relative_velocity: (3,), its velocity relative to the primary's.
+
+    Returns:
+        (3, 3), a rotation matrix R. Its rows are the new axes: x toward the secondary, z along
+        position x velocity (the orbit's angular momentum), y completing them. Apply it with
+        `vectors @ R.T`, the same for positions, velocities and spins. Afterwards the secondary is at
+        (distance, 0, 0), its velocity has no z part, and it moves counter-clockwise seen from +z.
+
+    The plane is the one the pair moves in at this moment. A head-on pair (velocity along the line
+    between the nuclei) has no such plane, which is an error.
+    """
+    position = np.asarray(relative_position, dtype=np.float64)
+    velocity = np.asarray(relative_velocity, dtype=np.float64)
+    if position.shape != (3,) or velocity.shape != (3,):
+        raise ValueError(f"Expected two (3,) vectors, got {position.shape} and {velocity.shape}")
+    momentum = np.cross(position, velocity)
+    size = np.linalg.norm(position) * np.linalg.norm(velocity)
+    if not size > 0 or np.linalg.norm(momentum) < 1e-9 * size:
+        raise ValueError("No orbit plane: the relative velocity is along the line between the two nuclei")
+    x_axis = position / np.linalg.norm(position)
+    z_axis = momentum / np.linalg.norm(momentum)
+    return np.stack([x_axis, np.cross(z_axis, x_axis), z_axis])
+
+
+def disk_angles(spin) -> tuple[float, float]:
+    """Turn a disk's spin direction into SPAM's two disk angles.
+
+    SPAM builds each disk flat in the x-y plane, turning counter-clockwise seen from +z, then tilts
+    it by theta about the y axis and turns it by phi about the z axis. Its spin axis ends up along
+    (sin(theta) cos(phi), sin(theta) sin(phi), cos(theta)). This is the inverse.
+
+    Args:
+        spin: (3,), the disk's spin (angular momentum) in the frame SPAM will run in. Only its
+            direction matters.
+
+    Returns:
+        (phi, theta) in degrees, as SPAM's `phi1`/`theta1` or `phi2`/`theta2`. theta is the angle
+        from +z, 0 to 180; phi is the direction of the spin's x-y part, 0 up to 360. A spin exactly
+        along z has no such direction, and phi is 0.
+    """
+    spin = np.asarray(spin, dtype=np.float64)
+    if spin.shape != (3,):
+        raise ValueError(f"spin has shape {spin.shape}, expected (3,)")
+    size = np.linalg.norm(spin)
+    if not size > 0:
+        raise ValueError("A spin of zero has no direction")
+    theta = np.degrees(np.arccos(np.clip(spin[2] / size, -1.0, 1.0)))
+    in_plane = np.hypot(spin[0], spin[1])
+    phi = np.degrees(np.arctan2(spin[1], spin[0])) % 360.0 if in_plane > 1e-12 * size else 0.0
+    return float(phi), float(theta)
+
+
+def primary_side(archive: dict, rule: str) -> str:
+    """Say which galaxy of a pair is the primary: the table's "p" or its "s".
+
+    Args:
+        archive: one target's particles, as `read_archive` returns them. The "stars" rule uses
+            "masses", "particle_type" and "historical_galaxy", and needs the star particles.
+        rule: how to decide:
+
+            "table"   the galaxy the target table calls the primary. Always "p".
+            "stars"   the galaxy with more mass in stars, each star counted for the galaxy it
+                      belonged to before the encounter ("historical_galaxy"). A tie gives "p".
+
+    Returns:
+        "p" or "s": the letter that starts the primary's columns in the target table.
+        `GALAXY_LABELS` gives its number in the archive's labels.
+
+    Why stars: during an encounter the catalog's total mass (`SubhaloMass`) swings, because the two
+    galaxies share one dark halo and SUBFIND gives it to whichever it calls the central one. Stars
+    sit deep in each galaxy, and their mass ratio stays steady.
+    """
+    if rule not in PRIMARY_RULES:
+        raise ValueError(f"Unknown rule {rule!r}. Known: 'table', 'stars'")
+    if rule == "table":
+        return "p"
+    stars = np.asarray(archive["particle_type"]) == PARTICLE_TYPES["stars"]
+    masses = np.asarray(archive["masses"], dtype=np.float64)[stars]
+    galaxy = np.asarray(archive["historical_galaxy"])[stars]
+    mass = {side: masses[galaxy == label].sum() for side, label in GALAXY_LABELS.items()}
+    if not (mass["p"] > 0 and mass["s"] > 0):
+        raise ValueError("The 'stars' rule needs star particles in both galaxies")
+    return "s" if mass["s"] > mass["p"] else "p"
+
+
+@dataclass(frozen=True)
+class TngTargetConfig:
+    """The choices made when a target is measured (`measure_target`).
+
+    Attributes:
+        primary_rule: which galaxy is the primary: "stars" (the default) or "table". See `primary_side`.
+        core_radius: a nucleus's velocity is the mean of the stars within this many kpc of it. 1 by
+            default.
+        hubble_flow: add the universe's expansion to the pair's relative velocity. On by default.
+        mass: which of a galaxy's three measured masses is the one for SPAM (all three are always
+            returned):
+
+            "historical"      every particle (all types) that belonged to the galaxy before the
+                              encounter. The default.
+            "catalog"         the TNG catalog's `SubhaloMass`: every particle SUBFIND gives it now.
+            "within_radius"   those of the same particles that are within the galaxy's disk
+                              radius of its nucleus.
+
+        disk_radius_factor: a galaxy's disk radius is this many stellar half-mass radii. 5 by default.
+        spin_radius_factor: which stars give a disk's spin: those the galaxy owned before the
+            encounter that are within this many stellar half-mass radii of its nucleus. 5 by default,
+            the disk radius. None: all the stars it owned, however far out.
+    """
+
+    primary_rule: str = "stars"
+    core_radius: float = 1.0
+    hubble_flow: bool = True
+    mass: str = "historical"
+    disk_radius_factor: float = 5.0
+    spin_radius_factor: float | None = 5.0
+
+    def __post_init__(self):
+        if self.primary_rule not in PRIMARY_RULES:
+            raise ValueError(f"Unknown primary_rule {self.primary_rule!r}. Known: {list(PRIMARY_RULES)}")
+        if self.mass not in MASS_CHOICES:
+            raise ValueError(f"Unknown mass {self.mass!r}. Known: {list(MASS_CHOICES)}")
+        for name in ("core_radius", "disk_radius_factor"):
+            if not getattr(self, name) > 0:
+                raise ValueError(f"{name} must be above 0, got {getattr(self, name)}")
+        if self.spin_radius_factor is not None and not self.spin_radius_factor > 0:
+            raise ValueError(f"spin_radius_factor must be None or above 0, got {self.spin_radius_factor}")
+
+
+def measure_target(table: dict, row: int, archive: dict, config: TngTargetConfig | None = None) -> dict:
+    """Measure one target at its snapshot: the pair's orbit and each galaxy's mass, size and spin.
+
+    Args:
+        table: the target table, as `read_table` returns it.
+        row: the target's row in the table.
+        archive: the target's particles, as `read_archive(path, "all")` returns them. Every particle
+            type is needed.
+        config: the choices to make. `TngTargetConfig()` when None.
+
+    Returns:
+        A dict in physical units (kpc, km/s, Msun; spins in kpc km/s). Every vector is in the frame
+        SPAM uses: the primary's nucleus at the origin and at rest, the secondary on +x, the orbit
+        in the x-y plane.
+
+        target           int      the table's `p_SubhaloIDRaw` for the row (the archive's name)
+        snap             int      the snapshot
+        scale_factor     float
+        primary_side     str      "p" or "s": the table's letter for the galaxy used as the primary
+        separation       float    the distance between the two nuclei
+        position         (3,)     the secondary's nucleus: (separation, 0, 0)
+        velocity         (3,)     the secondary's velocity, from the stars around each nucleus
+        velocities       dict     the same by three measures: "stars" (the one used), "black_hole"
+                                  (each nucleus's black hole; None when a galaxy has none) and
+                                  "catalog" (`SubhaloVel`, the average over the whole halo)
+        rotation         (3, 3)   from the box's axes to this frame: `vectors @ rotation.T`
+        primary, secondary        one dict per galaxy:
+
+            side               str     its letter in the table
+            subhalo_id         int     its `SubhaloIDRaw`
+            mass               float   the mass for SPAM: `masses[config.mass]`
+            masses             dict    "historical", "catalog", "within_radius" (see `TngTargetConfig`)
+            stellar_mass       float   the stars that belonged to it before the encounter
+            half_mass_radius   float   the radius around its nucleus holding half of that stellar mass
+            disk_radius        float   `config.disk_radius_factor` x the half-mass radius
+            spin               (3,)    the spin of its stars, per unit mass
+            spin_stars         int     how many stars the spin was measured from
+            phi, theta         float   SPAM's disk angles for that spin, in degrees
+            black_hole_offset  float   how far its black hole is from its nucleus (None without one)
+
+    How it is measured:
+        - A nucleus is the catalog's `SubhaloPos` (the most bound particle). Everything else is
+          measured from the archive's particles, out of the old frame and whole across the box edge.
+        - A galaxy's stars are those it owned before the encounter (`historical_galaxy`).
+        - A nucleus's velocity is the mean of all stars within `config.core_radius` of it.
+        - The frame comes from the nuclei's relative position and the "stars" relative velocity.
+          The other two velocities are in the same frame, so they can have a z part.
+    """
+    config = TngTargetConfig() if config is None else config
+    row = int(row)
+    ids = {side: int(table[f"{side}_SubhaloIDRaw"][row]) for side in GALAXY_LABELS}
+    snap = int(table["snap"][row])
+    if (ids["p"], ids["s"], snap) != (archive["p_id"], archive["s_id"], archive["t_snap"]):
+        raise ValueError(f"Row {row} is target {ids['p']} at snapshot {snap}, but the archive holds "
+                         f"target {archive['p_id']} at snapshot {archive['t_snap']}")
+    types = np.asarray(archive["particle_type"])
+    stars = types == PARTICLE_TYPES["stars"]
+    if stars.all():
+        raise ValueError("The archive holds only stars: read it with read_archive(path, 'all')")
+
+    scale_factor = float(table["scale_factor"][row])
+    sides = {"primary": primary_side(archive, config.primary_rule)}
+    sides["secondary"] = "s" if sides["primary"] == "p" else "p"
+    origin = np.asarray(table[f"{sides['primary']}_SubhaloPos"][row], dtype=np.float64)
+
+    # The particles: out of the old frame, whole across the box edge, relative to the primary's nucleus, physical.
+    positions, velocities = archive_to_box(archive["positions"], archive["velocities"],
+                                           table["orbital_frame_pos_transform"][row], table["orbital_frame_vel_transform"][row])
+    positions = physical(nearest_image(positions, origin) - origin, "length", scale_factor)
+    velocities = physical(velocities, "particle_velocity", scale_factor)
+    masses = physical(archive["masses"], "mass")
+    holes = np.flatnonzero(types == PARTICLE_TYPES["bh"])
+
+    galaxies, nuclei, nucleus_velocity = {}, {}, {"stars": {}, "black_hole": {}, "catalog": {}}
+    for role, side in sides.items():
+        stored = np.asarray(table[f"{side}_SubhaloPos"][row], dtype=np.float64)
+        nucleus = physical(nearest_image(stored, origin) - origin, "length", scale_factor)
+        distance = np.linalg.norm(positions - nucleus, axis=1)
+        own = np.asarray(archive["historical_galaxy"]) == GALAXY_LABELS[side]
+        own_stars = own & stars
+        half = half_mass_radius(positions[own_stars], masses[own_stars], nucleus)
+        disk_radius = config.disk_radius_factor * half
+
+        for_spin = own_stars if config.spin_radius_factor is None else own_stars & (distance < config.spin_radius_factor * half)
+        if not for_spin.any():
+            raise ValueError(f"No stars of galaxy {side!r} within {config.spin_radius_factor} half-mass radii of its nucleus")
+        spin = galaxy_properties(positions[for_spin], velocities[for_spin], masses[for_spin])["spin"]
+
+        nucleus_velocity["stars"][role] = core_velocity(positions[stars], velocities[stars], masses[stars],
+                                                        nucleus, config.core_radius)
+        nucleus_velocity["catalog"][role] = physical(table[f"{side}_SubhaloVel"][row], "velocity")
+        hole = holes[np.argmin(distance[holes])] if len(holes) else None
+        nucleus_velocity["black_hole"][role] = None if hole is None else velocities[hole]
+
+        galaxy_masses = {"historical": float(masses[own].sum()),
+                         "catalog": float(physical(table[f"{side}_SubhaloMass"][row], "mass")),
+                         "within_radius": float(masses[own & (distance < disk_radius)].sum())}
+        nuclei[role] = nucleus
+        galaxies[role] = {"side": side, "subhalo_id": ids[side], "mass": galaxy_masses[config.mass],
+                          "masses": galaxy_masses, "stellar_mass": float(masses[own_stars].sum()),
+                          "half_mass_radius": half, "disk_radius": disk_radius, "spin": spin,
+                          "spin_stars": int(for_spin.sum()),
+                          "black_hole_offset": None if hole is None else float(distance[hole])}
+
+    # The secondary relative to the primary, by each measure of velocity; the frame from the stars' measure.
+    relative = {}
+    for measure, velocity in nucleus_velocity.items():
+        if velocity["primary"] is None or velocity["secondary"] is None:
+            relative[measure] = None
+            continue
+        position, relative[measure] = relative_to(nuclei["secondary"], velocity["secondary"], nuclei["primary"],
+                                                  velocity["primary"], scale_factor, config.hubble_flow)
+    rotation = orbit_rotation(position, relative["stars"])
+
+    for galaxy in galaxies.values():
+        galaxy["spin"] = galaxy["spin"] @ rotation.T
+        galaxy["phi"], galaxy["theta"] = disk_angles(galaxy["spin"])
+    velocities_by_measure = {measure: None if velocity is None else velocity @ rotation.T
+                             for measure, velocity in relative.items()}
+    return {"target": ids["p"], "snap": snap, "scale_factor": scale_factor, "primary_side": sides["primary"],
+            "separation": float(np.linalg.norm(position)), "position": position @ rotation.T,
+            "velocity": velocities_by_measure["stars"], "velocities": velocities_by_measure,
+            "rotation": rotation, "primary": galaxies["primary"], "secondary": galaxies["secondary"]}
+
+
+def spam_model(target: dict) -> np.ndarray:
+    """Turn a measured target into SPAM's 14 parameters: the model SPAM runs.
+
+    Args:
+        target: one target, as `measure_target` returns it.
+
+    Returns:
+        (14,), in the order of `SPAM_PARAMETERS` and in SPAM's units:
+
+        x, y, z              the secondary's nucleus          `position` / 15 kpc: (separation, 0, 0)
+        vx, vy, vz           its velocity                     `velocity` / about 169.3 km/s: no z part
+        mass1, mass2         the primary's and secondary's    each galaxy's `mass` / 1e11 Msun
+        rout1, rout2         their disk radii                 each `disk_radius` / 15 kpc
+        phi1, phi2           their disk angles, in degrees    each `phi`
+        theta1, theta2                                        each `theta`
+
+    Nothing is measured or chosen here: every choice was made by the `TngTargetConfig` the target was
+    measured with.
+    """
+    primary, secondary = target["primary"], target["secondary"]
+    return np.concatenate([
+        spam_units(target["position"], "length"),
+        spam_units(target["velocity"], "velocity"),
+        spam_units([primary["mass"], secondary["mass"]], "mass"),
+        spam_units([primary["disk_radius"], secondary["disk_radius"]], "length"),
+        [primary["phi"], secondary["phi"], primary["theta"], secondary["theta"]],
+    ])
+
+
+def encounter_rows(table: dict, row: int) -> np.ndarray:
+    """The table rows of one encounter, in order of snapshot: the track a target sits on.
+
+    Args:
+        table: the target table, as `read_table` returns it.
+        row: any row of the encounter, usually the target's.
+
+    Returns:
+        (n,) int64, the rows with the same `moi_2` as `row`, earliest snapshot first. `row` is one
+        of them: `np.flatnonzero(rows == row)[0]` is where the target sits in its own track. Rows
+        before it are its past, rows after it its future.
+
+    An encounter has one row per snapshot, with the same two galaxies as `p` and `s` in every row.
+    Snapshots can be missing from a track (three of the table's 59 encounters have such gaps), so
+    use each row's own time, never the row number. Two rows with the same snapshot is an error.
+    """
+    row = int(row)
+    encounter = np.asarray(table["moi_2"])
+    if not 0 <= row < len(encounter):
+        raise ValueError(f"row {row} is outside the table's {len(encounter)} rows")
+    rows = np.flatnonzero(encounter == encounter[row])
+    snaps = np.asarray(table["snap"])[rows]
+    order = np.argsort(snaps, kind="stable")
+    rows, snaps = rows[order], snaps[order]
+    if (np.diff(snaps) == 0).any():
+        twice = int(snaps[1:][np.diff(snaps) == 0][0])
+        raise ValueError(f"Encounter {int(encounter[row])} has two rows for snapshot {twice}")
+    return rows.astype(np.int64)
+
+
+def track_separation(table: dict, rows, primary_side: str) -> np.ndarray:
+    """The secondary's nucleus relative to the primary's at each row of a track, in kpc.
+
+    Args:
+        table: the target table, as `read_table` returns it.
+        rows: (n,), the rows of one encounter, as `encounter_rows` returns them.
+        primary_side: "p" or "s", the table's letter for the galaxy used as the primary. It is the
+            same for every row: the choice made at the target snapshot (`measure_target`'s
+            "primary_side"), not remade along the track.
+
+    Returns:
+        (n, 3) float64: secondary minus primary, in physical kpc, along the box's axes. Its length
+        is the distance between the two nuclei at that snapshot.
+
+    Each nucleus is the catalog's `SubhaloPos` (the most bound particle). The pair is made whole
+    across the box edge first, and each row is scaled by its own snapshot's scale factor, so the
+    distances are physical at that time, not comoving.
+    """
+    if primary_side not in GALAXY_LABELS:
+        raise ValueError(f"primary_side must be 'p' or 's', got {primary_side!r}")
+    rows = np.asarray(rows)
+    if rows.ndim != 1 or rows.dtype.kind not in "iu":
+        raise ValueError("rows must be a 1-D array of row numbers")
+    secondary_side = "s" if primary_side == "p" else "p"
+    primary = np.asarray(table[f"{primary_side}_SubhaloPos"], dtype=np.float64)[rows]
+    secondary = np.asarray(table[f"{secondary_side}_SubhaloPos"], dtype=np.float64)[rows]
+    scale_factor = np.asarray(table["scale_factor"], dtype=np.float64)[rows]
+    return physical(nearest_image(secondary, primary) - primary, "length", scale_factor)
+
+
+def age_of_universe(scale_factor):
+    """The age of the universe at a snapshot, in TNG's cosmology.
+
+    Args:
+        scale_factor: the snapshot's scale factor a = 1 / (1 + z); a number or an array.
+
+    Returns:
+        The age in Gyr, as float64 in the shape given. Today (a = 1) it is 13.80.
+
+    For a flat universe of matter and dark energy the age has a closed form:
+    t(a) = 2 / (3 H0 sqrt(L)) * asinh(sqrt(L / OMEGA_M) * a**1.5), with L = 1 - OMEGA_M. It is the
+    time integral of `hubble_rate`: dt = da / (a H(a)). Radiation is left out, which changes the age
+    by less than 0.01 Gyr at the snapshots used here.
+    """
+    scale_factor = np.asarray(scale_factor, dtype=np.float64)
+    if np.any(scale_factor <= 0) or np.any(scale_factor > 1):
+        raise ValueError("scale_factor must be above 0 and at most 1")
+    dark_energy = 1 - OMEGA_M
+    hubble_time = GYR_PER_KPC_PER_KMS / (0.1 * H)  # 1 / H0 in Gyr, about 14.43
+    return 2 * hubble_time / (3 * dark_energy ** 0.5) * np.arcsinh((dark_energy / OMEGA_M) ** 0.5 * scale_factor ** 1.5)
+
+
+def track_time(table: dict, rows, row: int) -> np.ndarray:
+    """Each row's time relative to the target's, in Gyr: now is 0 and the past is negative.
+
+    Args:
+        table: the target table, as `read_table` returns it.
+        rows: (n,), the rows of the target's encounter, as `encounter_rows` returns them.
+        row: the target's row. It must be one of `rows`.
+
+    Returns:
+        (n,) float64, in Gyr: `age_of_universe` of each row's snapshot minus the target's. It
+        increases along a track, and `spam_units(..., "time")` puts it in SPAM's units, where SPAM's
+        own orbit also has now at 0 and the past negative.
+
+    The times come from each row's scale factor, not from the table's `time_gyr` column; a test
+    checks that the two agree.
+    """
+    rows = np.asarray(rows)
+    if int(row) not in rows:
+        raise ValueError(f"row {int(row)} is not one of the track's rows")
+    scale_factor = np.asarray(table["scale_factor"], dtype=np.float64)
+    return age_of_universe(scale_factor[rows]) - age_of_universe(scale_factor[int(row)])
+
+
+@dataclass(frozen=True)
+class TrackSpline:
+    """A smooth curve through a track's rows, made by `track_spline`. Call it with times.
+
+    Attributes:
+        time: (n,), the rows' times, increasing.
+        values: (n, k), what the curve passes through at those times.
+        bend: (n, k), the curve's second derivative at those times.
+    """
+
+    time: np.ndarray
+    values: np.ndarray
+    bend: np.ndarray
+
+    def _pieces(self, when):
+        when = np.asarray(when, dtype=np.float64)
+        if np.any(when < self.time[0]) or np.any(when > self.time[-1]):
+            raise ValueError(f"The curve runs from {self.time[0]} to {self.time[-1]}: it is not extended beyond its rows")
+        left = np.clip(np.searchsorted(self.time, when, side="right") - 1, 0, len(self.time) - 2)
+        width = (self.time[left + 1] - self.time[left])[..., None]
+        to_right = (self.time[left + 1] - when)[..., None] / width      # 1 at the left row, 0 at the right one
+        return left, width, to_right, 1 - to_right
+
+    def __call__(self, when) -> np.ndarray:
+        """The curve at the given times: (k,) for one time, (m, k) for m times."""
+        left, width, a, b = self._pieces(when)
+        return (a * self.values[left] + b * self.values[left + 1]
+                + ((a ** 3 - a) * self.bend[left] + (b ** 3 - b) * self.bend[left + 1]) * width ** 2 / 6)
+
+    def slope(self, when) -> np.ndarray:
+        """The curve's rate of change at the given times, per unit of time: the velocity along it."""
+        left, width, a, b = self._pieces(when)
+        return ((self.values[left + 1] - self.values[left]) / width
+                + ((3 * b ** 2 - 1) * self.bend[left + 1] - (3 * a ** 2 - 1) * self.bend[left]) * width / 6)
+
+
+def track_spline(time, values, start_slope=None, end_slope=None) -> TrackSpline:
+    """Fit a smooth curve through a track's rows: a cubic spline, each column against time.
+
+    Args:
+        time: (n,), the rows' times, increasing; any spacing (snapshots can be missing).
+        values: (n, k), what to pass through at those times: a track's positions, (n, 3).
+        start_slope: (k,), the curve's rate of change at the first row, if it is known. None (the
+            default) leaves that end free: no bend there.
+        end_slope: (k,), the same at the last row.
+
+    Returns:
+        A `TrackSpline`. `curve(when)` is the position at any times within the rows' span, and
+        `curve.slope(when)` the velocity there, in the units of `values` per unit of `time`.
+
+    The curve passes exactly through every row and has no kinks: its value, slope and bend are
+    continuous. Between two rows it is a cubic, so it can't follow anything sharper than the rows'
+    spacing shows. It is not extended beyond the first or last row.
+    """
+    time, values = np.asarray(time, dtype=np.float64), np.asarray(values, dtype=np.float64)
+    if time.ndim != 1 or len(time) < 2 or not np.all(np.diff(time) > 0):
+        raise ValueError("time must be at least two increasing values")
+    if values.ndim != 2 or len(values) != len(time):
+        raise ValueError(f"values has shape {values.shape}, expected ({len(time)}, k)")
+    count, width = len(time), np.diff(time)
+    chord = np.diff(values, axis=0) / width[:, None]              # the straight-line slope across each interval
+    system, right = np.zeros((count, count)), np.zeros_like(values)
+    for row in range(1, count - 1):
+        system[row, row - 1:row + 2] = width[row - 1], 2 * (width[row - 1] + width[row]), width[row]
+        right[row] = 6 * (chord[row] - chord[row - 1])
+    for row, slope, near, sign in ((0, start_slope, 0, 1.0), (count - 1, end_slope, count - 2, -1.0)):
+        if slope is None:
+            system[row, row] = 1.0                                # a free end: no bend
+            continue
+        slope = np.asarray(slope, dtype=np.float64)
+        if slope.shape != values.shape[1:]:
+            raise ValueError(f"A slope has shape {slope.shape}, expected {values.shape[1:]}")
+        other = 1 if row == 0 else count - 2
+        system[row, row], system[row, other] = 2 * width[near], width[near]
+        right[row] = 6 * sign * (chord[near] - slope)
+    return TrackSpline(time, values, np.linalg.solve(system, right))
+
+
+def target_orbit(table: dict, row: int, target: dict, spacing: float = 0.01, earliest: float = -30.0) -> np.ndarray:
+    """A target's orbit up to now, sampled finely, in SPAM's frame and units: what the orbit metrics compare with.
+
+    Args:
+        table: the target table, as `read_table` returns it.
+        row: the target's row.
+        target: the target measured at that row, as `measure_target` returns it. Its "primary_side"
+            and "rotation" set the frame.
+        spacing: the time between samples, in SPAM's time units. 0.01 by default (about 0.9 Myr).
+        earliest: the earliest time sampled, in SPAM's time units. -30 by default, where SPAM's own
+            backward search of the orbit stops.
+
+    Returns:
+        (n, 7) float64, one row per sample, times increasing and ending exactly at 0 (now):
+
+        x, y, z       the secondary's nucleus relative to the primary's, in SPAM's length unit
+        vx, vy, vz    zeros. They are not measured: the columns are there so that the array has the
+                      shape of SPAM's own orbits
+        t             the time, in SPAM's time unit: 0 is now, the past is negative
+
+        The last row is the target itself: (separation, 0, 0, 0, 0, 0, 0).
+
+    How it is made: the track's rows (`encounter_rows`), their separations (`track_separation`)
+    turned by the target's one rotation, their times (`track_time`), and a cubic spline through all
+    of them, later rows included (`track_spline`). The samples start at `earliest`, or at the
+    track's first row when that is later: the curve is not extended beyond its rows. A target with
+    no earlier row gives one sample, now.
+
+    The curve is good between close passes and for when a pass happened, not for how close a tight
+    one came (docs/tng_physics.md, "A curve through the snapshots").
+    """
+    row = int(row)
+    if int(table["p_SubhaloIDRaw"][row]) != target["target"]:
+        raise ValueError(f"Row {row} is target {int(table['p_SubhaloIDRaw'][row])}, but the measurements are of {target['target']}")
+    if not spacing > 0:
+        raise ValueError(f"spacing must be above 0, got {spacing}")
+    if not earliest < 0:
+        raise ValueError(f"earliest must be below 0, got {earliest}")
+    rows = encounter_rows(table, row)
+    time = spam_units(track_time(table, rows, row), "time")
+    path = spam_units(track_separation(table, rows, target["primary_side"]) @ np.asarray(target["rotation"]).T, "length")
+
+    start = max(float(earliest), float(time[0]))
+    when = 0.0 - spacing * np.arange(int(np.floor(-start / spacing + 1e-9)), -1, -1.0)    # ..., -2 spacing, -spacing, 0
+    orbit = np.zeros((len(when), 7))
+    orbit[:, 6] = when
+    if len(time) == 1:
+        orbit[:, :3] = path
+    else:
+        orbit[:, :3] = track_spline(time, path)(when)
+    orbit[-1, :3] = path[rows == row][0]            # exactly the target's row, not the curve's rounding of it
+    return orbit
+
+
+def target_particles(table: dict, row: int, archive: dict, target: dict, config: TngTargetConfig | None = None) -> dict:
+    """A target's stars in the form of SPAM's particles: what a model's particles are compared with.
+
+    Args:
+        table: the target table, as `read_table` returns it.
+        row: the target's row.
+        archive: the target's particles, as `read_archive` returns them. Only the stars are used, so
+            the default `read_archive(path)` is enough.
+        target: the target measured at that row, as `measure_target` returns it. Its "primary_side"
+            and "rotation" set the frame.
+        config: the config the target was measured with. `TngTargetConfig()` when None. Its
+            `core_radius` and `hubble_flow` are used; a config that doesn't give the target's own
+            velocity back is an error.
+
+    Returns:
+        A dict:
+
+        particles   (n1 + n2 + 1, 6) float64   x, y, z, vx, vy, vz in SPAM's frame and units, in the
+                                               row order of `simulate_particles`: the primary's stars,
+                                               then the secondary's, then one row for the secondary's
+                                               center, which is the model's x, y, z, vx, vy, vz
+        masses      (n1 + n2,) float64         each star's mass, in SPAM's mass unit (1e11 Msun)
+        n1, n2      int                        how many stars each galaxy has
+
+    How it is made:
+        - A galaxy's stars are those it owned before the encounter (`historical_galaxy`), all of
+          them, however far out. Their order in the archive is kept.
+        - Positions: out of the old frame, whole across the box edge, relative to the primary's
+          nucleus (the catalog's `SubhaloPos`), in kpc, turned by the target's rotation.
+        - Velocities: in km/s, relative to the primary's nucleus (the mean of all stars within
+          `config.core_radius` of it), with the Hubble flow added unless the config turns it off,
+          turned by the same rotation.
+
+    SPAM's particles are equal points; TNG's stars have different masses, and there are many more of
+    them. Nothing is thinned or weighted here: "masses" is there for whoever compares. "stars"
+    includes wind particles (`read_archive`).
+    """
+    config = TngTargetConfig() if config is None else config
+    row = int(row)
+    ids = (int(table["p_SubhaloIDRaw"][row]), int(table["s_SubhaloIDRaw"][row]), int(table["snap"][row]))
+    if ids != (archive["p_id"], archive["s_id"], archive["t_snap"]):
+        raise ValueError(f"Row {row} is target {ids[0]} at snapshot {ids[2]}, but the archive holds "
+                         f"target {archive['p_id']} at snapshot {archive['t_snap']}")
+    if ids[0] != target["target"]:
+        raise ValueError(f"Row {row} is target {ids[0]}, but the measurements are of {target['target']}")
+    stars = np.asarray(archive["particle_type"]) == PARTICLE_TYPES["stars"]
+    owner = np.asarray(archive["historical_galaxy"])[stars]
+    primary = target["primary_side"]
+    secondary = "s" if primary == "p" else "p"
+    of_primary, of_secondary = (np.flatnonzero(owner == GALAXY_LABELS[side]) for side in (primary, secondary))
+    if not (len(of_primary) and len(of_secondary)):
+        raise ValueError("The archive needs star particles in both galaxies")
+
+    scale_factor = float(table["scale_factor"][row])
+    origin = np.asarray(table[f"{primary}_SubhaloPos"][row], dtype=np.float64)
+    positions, velocities = archive_to_box(np.asarray(archive["positions"])[stars], np.asarray(archive["velocities"])[stars],
+                                           table["orbital_frame_pos_transform"][row], table["orbital_frame_vel_transform"][row])
+    positions = physical(nearest_image(positions, origin) - origin, "length", scale_factor)
+    velocities = physical(velocities, "particle_velocity", scale_factor)
+    masses = physical(np.asarray(archive["masses"])[stars], "mass")
+
+    # The two nuclei's velocities, as `measure_target` measures them, and the check that they give the target back.
+    nucleus = physical(nearest_image(np.asarray(table[f"{secondary}_SubhaloPos"][row], dtype=np.float64), origin) - origin,
+                       "length", scale_factor)
+    at_rest = core_velocity(positions, velocities, masses, np.zeros(3), config.core_radius)
+    moving = core_velocity(positions, velocities, masses, nucleus, config.core_radius)
+    rotation = np.asarray(target["rotation"], dtype=np.float64)
+    seen = relative_to(nucleus, moving, np.zeros(3), at_rest, scale_factor, config.hubble_flow)[1] @ rotation.T
+    wanted = np.asarray(target["velocity"], dtype=np.float64)
+    if np.abs(seen - wanted).max() > 1e-6 * max(1.0, np.abs(wanted).max()):
+        raise ValueError(f"This config gives the secondary a velocity of {seen}, but the target was measured "
+                         f"with {wanted}: give the config the target was measured with")
+
+    positions, velocities = relative_to(positions, velocities, np.zeros(3), at_rest, scale_factor, config.hubble_flow)
+    order = np.concatenate([of_primary, of_secondary])
+    particles = np.empty((len(order) + 1, 6))
+    particles[:-1, :3] = spam_units(positions[order] @ rotation.T, "length")
+    particles[:-1, 3:] = spam_units(velocities[order] @ rotation.T, "velocity")
+    particles[-1] = spam_model(target)[:6]
+    return {"particles": particles, "masses": spam_units(masses[order], "mass"),
+            "n1": int(len(of_primary)), "n2": int(len(of_secondary))}
+
+
+def orbit_notes(table: dict, row: int, target: dict, orbit: np.ndarray) -> dict:
+    """What to know about a target's orbit before comparing a model with it.
+
+    Args:
+        table: the target table, as `read_table` returns it.
+        row: the target's row.
+        target: the target measured at that row. Its "primary_side" and "rotation" are used.
+        orbit: the target's orbit, as `target_orbit` returns it.
+
+    Returns:
+        A dict of plain values:
+
+        rows_before, rows_after   int           track rows earlier and later than the target
+        samples                   int           the orbit's rows
+        start                     float         its first time, in SPAM's time unit (-30 at the earliest)
+        velocity_columns          str           "zeros": the orbit's velocities are not measured
+        last_pass                 dict | None   the most recent dip in distance before now: its "time"
+                                                and "distance", in SPAM's units. None: no pass in the orbit
+        recent_approach_window    bool          a window centered on that pass and reaching now (twice as
+                                                far back as the pass) fits inside the orbit
+        track_plane_angle         float | None  the angle, in degrees, between the frame's z and the plane
+                                                the track itself moved in over the last Gyr (the sum of
+                                                r x the next r over those rows). Near 0: the track has
+                                                stayed in the frame's plane. Above 90: it went round the
+                                                other way, as happens on a nearly radial orbit, where the
+                                                sideways velocity that sets the frame's plane is within
+                                                its own noise. None: no earlier row
+        crosses_box_edge          bool          on some row the pair sits across a face of the box
+
+    A pass's distance is the curve's own, not a snapshot's: docs/tng_physics.md, "A curve through the
+    snapshots".
+    """
+    row = int(row)
+    rows = encounter_rows(table, row)
+    time = track_time(table, rows, row)
+    here = int(np.flatnonzero(rows == row)[0])
+    orbit = np.asarray(orbit, dtype=np.float64)
+    distance = np.linalg.norm(orbit[:, :3], axis=1)
+    dips = np.flatnonzero((distance[1:-1] < distance[:-2]) & (distance[1:-1] <= distance[2:])) + 1 if len(orbit) >= 3 else []
+    last_pass = {"time": float(orbit[dips[-1], 6]), "distance": float(distance[dips[-1]])} if len(dips) else None
+
+    track_plane_angle = None
+    if here > 0:
+        first = min(int(np.searchsorted(time, -1.0)), here - 1)         # the rows of the last Gyr; at least one before now
+        path = track_separation(table, rows[first:here + 1], target["primary_side"]) @ np.asarray(target["rotation"]).T
+        turning = np.cross(path[:-1], path[1:]).sum(axis=0)
+        if np.linalg.norm(turning) > 0:
+            track_plane_angle = float(np.degrees(np.arccos(np.clip(turning[2] / np.linalg.norm(turning), -1.0, 1.0))))
+    primary, secondary = (np.asarray(table[f"{side}_SubhaloPos"], dtype=np.float64)[rows] for side in "ps")
+    return {"rows_before": here, "rows_after": int(len(rows) - 1 - here),
+            "samples": int(len(orbit)), "start": float(orbit[0, 6]), "velocity_columns": "zeros",
+            "last_pass": last_pass,
+            "recent_approach_window": bool(last_pass is not None and 2 * last_pass["time"] >= orbit[0, 6] - 1e-9),
+            "track_plane_angle": track_plane_angle,
+            "crosses_box_edge": bool(np.abs(secondary - primary).max() > BOX / 2)}
+
+
+def _plain(value):
+    """A measured value as JSON can hold it: arrays become lists, NumPy numbers become Python's."""
+    if isinstance(value, dict):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def write_target(folder, table: dict, row: int, archive: dict, config: TngTargetConfig | None = None) -> dict:
+    """Measure one target and write its files: what a SIMR run needs to compare models with it.
+
+    Args:
+        folder: the targets folder. The target's own folder, `<folder>/<target>`, is made if needed;
+            files already in it with these names are replaced.
+        table: the target table, as `read_table` returns it.
+        row: the target's row.
+        archive: the target's particles, as `read_archive(path, "all")` returns them.
+        config: the choices to make. `TngTargetConfig()` when None.
+
+    Returns:
+        The record written to `tng_target.json`, a dict of plain values:
+
+        target      everything `measure_target` returned (physical units, SPAM's frame)
+        config      the `TngTargetConfig` used, as a dict
+        model       SPAM's 14 parameters by name (`spam_model`)
+        stars       {"n1", "n2"}: how many stars each galaxy has in the particle file
+        orbit       `orbit_notes`
+        files       the names of the files written, as below
+
+    The files, all in `<folder>/<target>/` (names in `TARGET_FILES`):
+
+        tng_spam_model.txt       the 14 parameters on one line, comma-separated: a models file for SIMR
+        tng_orbit.npy            `target_orbit`: (n, 7) float64
+        tng_star_particles.npy   `target_particles`' particles: (n1 + n2 + 1, 6) float32
+        tng_star_masses.npy      their masses: (n1 + n2,) float32
+        simr_externals.json      {"tng_orbit": ..., "tng_star_particles": ...}: SIMR's --externals file
+        tng_target.json          the record
+
+    Everything is measured from TNG's data; none of it is made by SPAM.
+    """
+    config = TngTargetConfig() if config is None else config
+    target = measure_target(table, row, archive, config)
+    model = spam_model(target)
+    orbit = target_orbit(table, row, target)
+    stars = target_particles(table, row, archive, target, config)
+
+    out = Path(folder) / str(target["target"])
+    out.mkdir(parents=True, exist_ok=True)
+    (out / TARGET_FILES["model"]).write_text(",".join(repr(float(value)) for value in model) + "\n", encoding="utf-8")
+    np.save(out / TARGET_FILES["orbit"], orbit)
+    np.save(out / TARGET_FILES["particles"], stars["particles"].astype(np.float32))
+    np.save(out / TARGET_FILES["masses"], stars["masses"].astype(np.float32))
+    externals = {key: TARGET_FILES[name] for key, name in EXTERNAL_KEYS.items()}
+    (out / TARGET_FILES["externals"]).write_text(json.dumps(externals, indent=2) + "\n", encoding="utf-8")
+    record = _plain({"target": target, "config": asdict(config),
+                     "model": dict(zip(SPAM_PARAMETERS, model)),
+                     "stars": {"n1": stars["n1"], "n2": stars["n2"]},
+                     "orbit": orbit_notes(table, row, target, orbit),
+                     "files": dict(TARGET_FILES)})
+    (out / TARGET_FILES["target"]).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    return record
+
+
+def write_targets(data, folder, config: TngTargetConfig | None = None, targets=None, report=None) -> list[dict]:
+    """Write every target's files, and two files that list them all.
+
+    Args:
+        data: the legacy folder: `moi-4-targets.h5` and the `target-archive-<id>.h5` files.
+        folder: the targets folder to write into (made if needed).
+        config: the choices to make, the same for every target. `TngTargetConfig()` when None.
+        targets: the targets to write, by full `SubhaloIDRaw`. Every archive in `data` when None.
+        report: called with one line of text per target, as it is done. Nothing is reported when None.
+
+    Returns:
+        One record per target, in order of ID: what `write_target` returned, or
+        {"target": id, "error": message} for a target that could not be measured (nothing is written
+        for it, and the others go on).
+
+    Besides each target's folder (`write_target`), in `folder`:
+
+        tng_spam_models.txt   every written target's model, one per line, in order of ID
+        tng_targets.h5        one row per written target: "target" (the ID), "model" (the 14
+                              parameters), "snap", "scale_factor", "separation", "n1", "n2",
+                              "primary_is_table_p", the orbit's notes ("rows_before", "rows_after",
+                              "orbit_samples", "orbit_start", "last_pass_time", "last_pass_distance",
+                              "recent_approach_window", "track_plane_angle", "crosses_box_edge"), and
+                              each galaxy's three masses in Msun ("primary_mass_historical", ...).
+                              Missing values are NaN
+    """
+    import h5py
+
+    data, folder = Path(data), Path(folder)
+    table = read_table(data / "moi-4-targets.h5")
+    if targets is None:
+        targets = [int(path.stem.split("-")[-1]) for path in data.glob("target-archive-*.h5")]
+    records = []
+    for target_id in sorted(int(target) for target in targets):
+        rows = np.flatnonzero(table["p_SubhaloIDRaw"] == target_id)
+        try:
+            if len(rows) != 1:
+                raise ValueError(f"the table has {len(rows)} rows for it")
+            record = write_target(folder, table, int(rows[0]), read_archive(data / f"target-archive-{target_id}.h5", "all"), config)
+            line = f"{target_id}: {record['stars']['n1'] + record['stars']['n2']} stars, {record['orbit']['samples']} orbit samples"
+        except (ValueError, OSError) as error:
+            record = {"target": target_id, "error": str(error)}
+            line = f"{target_id}: NOT WRITTEN: {error}"
+        records.append(record)
+        if report is not None:
+            report(line)
+
+    written = [record for record in records if "error" not in record]
+    folder.mkdir(parents=True, exist_ok=True)
+    models = np.array([[record["model"][name] for name in SPAM_PARAMETERS] for record in written]).reshape(-1, len(SPAM_PARAMETERS))
+    (folder / TARGETS_MODELS).write_text(
+        "".join(",".join(repr(float(value)) for value in model) + "\n" for model in models), encoding="utf-8")
+
+    def number(value):
+        return np.nan if value is None else value
+
+    columns = {
+        "target": np.array([record["target"]["target"] for record in written], dtype=np.int64),
+        "model": models,
+        "snap": np.array([record["target"]["snap"] for record in written], dtype=np.int64),
+        "scale_factor": np.array([record["target"]["scale_factor"] for record in written], dtype=np.float64),
+        "separation": np.array([record["target"]["separation"] for record in written], dtype=np.float64),
+        "primary_is_table_p": np.array([record["target"]["primary_side"] == "p" for record in written], dtype=bool),
+        "n1": np.array([record["stars"]["n1"] for record in written], dtype=np.int64),
+        "n2": np.array([record["stars"]["n2"] for record in written], dtype=np.int64),
+        "rows_before": np.array([record["orbit"]["rows_before"] for record in written], dtype=np.int64),
+        "rows_after": np.array([record["orbit"]["rows_after"] for record in written], dtype=np.int64),
+        "orbit_samples": np.array([record["orbit"]["samples"] for record in written], dtype=np.int64),
+        "orbit_start": np.array([record["orbit"]["start"] for record in written], dtype=np.float64),
+        "last_pass_time": np.array([number((record["orbit"]["last_pass"] or {}).get("time")) for record in written], dtype=np.float64),
+        "last_pass_distance": np.array([number((record["orbit"]["last_pass"] or {}).get("distance")) for record in written], dtype=np.float64),
+        "recent_approach_window": np.array([record["orbit"]["recent_approach_window"] for record in written], dtype=bool),
+        "track_plane_angle": np.array([number(record["orbit"]["track_plane_angle"]) for record in written], dtype=np.float64),
+        "crosses_box_edge": np.array([record["orbit"]["crosses_box_edge"] for record in written], dtype=bool),
+    }
+    for role in ("primary", "secondary"):
+        for mass in MASS_CHOICES:
+            columns[f"{role}_mass_{mass}"] = np.array([record["target"][role]["masses"][mass] for record in written], dtype=np.float64)
+    with h5py.File(folder / TARGETS_TABLE, "w") as file:
+        for name, values in columns.items():
+            file[name] = values
+        file["model"].attrs["parameters"] = list(SPAM_PARAMETERS)
+    return records
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Write the targets' files from the command line. Returns 0, or 1 when a target could not be written."""
+    parser = argparse.ArgumentParser(prog="python -m galactic_tidal_constraints.tng",
+                                     description="Measure TNG targets and write their files for SIMR runs.")
+    parser.add_argument("--data", required=True, help="the legacy folder: moi-4-targets.h5 and the target archives")
+    parser.add_argument("--output", required=True, help="the targets folder to write into")
+    parser.add_argument("--target", type=int, action="append",
+                        help="a target's full SubhaloIDRaw; repeat for several (default: every archive in --data)")
+    args = parser.parse_args(argv)
+    records = write_targets(args.data, args.output, targets=args.target, report=lambda line: print(line, flush=True))
+    failed = [record for record in records if "error" in record]
+    print(f"{len(records) - len(failed)} targets written to {args.output}, {len(failed)} not written")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

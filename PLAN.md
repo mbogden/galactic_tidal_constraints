@@ -187,6 +187,56 @@ One Docker image, run with Apptainer on the cluster.
 - **Build:** `meson-python`, with `f2py` generating the Python interface. The package is named
   `jspam`. Work happens on `simr-branch`; the fork's `master` stays as the original code.
 
+## TNG targets
+How it works: [docs/modules/tng.md](docs/modules/tng.md). What the TNG values mean, with sources:
+[docs/tng_physics.md](docs/tng_physics.md).
+- The TNG code starts from the data already in hand (decided 2026-11-24): the target table and the
+  target archives, both HDF5, in the data folder. It doesn't download from the TNG server.
+- One module, `tng.py`, grown a function at a time. Readers return values as stored; unit and frame
+  conversions are separate functions, so each can be tested on its own.
+- `h5py` is its only added dependency: the `tng` group, which `dev` includes so the tests always run.
+- IllustrisTNG is acknowledged, with the citations its project asks for, in the README and
+  `docs/tng_physics.md` (2026-11-24). No TNG data goes in the repo.
+- Tests on the real files run only when `GTC_DATA_DIR` names the data folder.
+- What the stored values mean is pinned by tests against the TNG catalog (2026-11-24): a galaxy
+  measured from the archive's particles must give back the catalog's mass, velocity, spin and
+  half-mass radius. The measuring functions work in the units they are given.
+- The box's wrap-around is undone explicitly, on stored positions, relative to a reference point
+  (2026-11-24). Only positions relative to a galaxy's center are used after that.
+- A galaxy's center is its nucleus (the catalog's most bound particle) and its velocity is the
+  nucleus's: the mean of the stars within 1 kpc, cross-checked against its black hole (2026-11-24).
+  Not the catalog's halo averages.
+- The frame for SPAM (2026-11-24): the primary's nucleus at the origin and at rest; x toward the
+  secondary and z along the orbit's angular momentum, both at the target snapshot. The Hubble flow is
+  added to relative velocities unless switched off. Rotations are plain 3×3 matrices.
+- Which galaxy is the primary is a named rule (2026-11-25): `"table"` (the table's own label) or
+  `"stars"` (more mass in the stars it owned before the encounter). Not the catalog's total mass,
+  which swings during an encounter. The table and archives are never relabelled.
+- A target is measured by one function, `measure_target`, whose choices are the fields of
+  `TngTargetConfig` (2026-11-25): the primary rule, the nucleus radius (1 kpc), the Hubble flow (on),
+  which mass goes to SPAM (all particles the galaxy owned before the encounter; the catalog's and the
+  mass of those particles within the disk radius are recorded too), the disk radius (5 stellar
+  half-mass radii), and which stars give the spin (those within the disk radius; all is an option).
+  It writes no files. These defaults are first choices, to be compared against the alternatives later.
+  `spam_model` then only converts the result to SPAM's 14 parameters.
+- A target's orbit comes from its track in the table (2026-11-26): the rows of its encounter, the
+  catalog's separations made whole and physical, turned by the target's one rotation, with times from
+  TNG's cosmology. Between snapshots it is a cubic spline through the positions of every row, before
+  and after the target; no catalog velocities. It is trusted for when a close pass happened, not for
+  how close a tight one came. The orbit given to the metrics is that curve sampled from t = -30 (SPAM's
+  own limit) to now, with zeros in the velocity columns: the metrics read positions and times only.
+- A target's particles for comparison are its stars (2026-11-26): all the stars each galaxy owned
+  before the encounter, in the target's frame and SPAM's units, in the row order of SPAM's own
+  particles. Not cut by radius and not thinned; their masses are returned alongside. See
+  `docs/modules/tng.md`.
+- A target's files for SIMR go in `data/tng-targets/<target>/` (2026-11-27): model, orbit, star
+  particles and masses, SIMR's externals file and a record of what was measured and with which
+  choices. Names start with `tng_`: everything there is measured from TNG, nothing is made by SPAM.
+  The folder is rebuilt by `python -m galactic_tidal_constraints.tng` and never edited; the legacy
+  table and archives stay frozen inputs. No target is dropped: what limits one is in its record.
+- Units change in two explicit steps (2026-11-24): stored TNG values to physical (kpc, km/s, M☉),
+  then physical to SPAM's units. Each step is one function with its factors in one table.
+
 ## Repository
 - **Name:** `galactic_tidal_constraints` for the GitHub repo, the local folder and the Python
   package (`import galactic_tidal_constraints as gtc`).
@@ -227,6 +277,7 @@ how-to guides.
 | `docs/modules/image_creator.md` | The Image Creator's config, pixel frame and steps | Exists |
 | `docs/modules/metrics.md` | The Metrics stage: the method registry, input kinds, each method | Exists |
 | `docs/modules/derived.md` | The Derived stage: derived or metric, the registry, each method | Exists (the methods; not yet in `simr`) |
+| `docs/modules/tng.md` | The TNG readers: the target table and a target archive, and what their stored values are | Exists |
 | `docs/modules/<module>.md` | The same for each later module | With the module or after it |
 | `docs/guides/running_spam.md` | Compile and run SPAM itself, from Python or as the Fortran program | Exists |
 | `docs/guides/running_on_babbage.md` | A how-to for setting up an experiment and launching runs on Babbage | Exists (CPU only) |

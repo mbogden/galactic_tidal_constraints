@@ -1,0 +1,563 @@
+# TNG targets (`tng.py`)
+
+The IllustrisTNG (TNG50-1) data this project already has: two readers, two functions that measure a
+galaxy from its particles, one that takes an archive's particles out of the old frame, one that undoes
+the simulation box's wrap-around, two that convert units, four that build the frame SPAM uses, one that turns a spin into SPAM's
+disk angles, one that says which galaxy is the primary, `measure_target`, which puts them together
+for one target, `spam_model`, which turns the result into SPAM's 14 parameters, and
+`encounter_rows`, `track_separation`, `track_time` and `track_spline`, which follow a target's track in the table,
+and `target_orbit`, which makes the orbit SPAM's metrics compare with. Both files are HDF5 and live in the data folder, outside the repo. The readers return the values **exactly as stored**, and the measuring
+functions work in whatever units they are given; units change only where `physical` or `spam_units`
+is called, and the frame only where `archive_to_box`, `relative_to` or a rotation is applied.
+
+```python
+from galactic_tidal_constraints import tng
+
+table = tng.read_table("../data/tng-legacy-data/moi-4-targets.h5")
+archive = tng.read_archive("../data/tng-legacy-data/target-archive-62000000190717.h5")           # stars
+archive = tng.read_archive("../data/tng-legacy-data/target-archive-62000000190717.h5", "all")    # every type
+
+primary = archive["subfind_galaxy"] == 0
+measured = tng.galaxy_properties(archive["positions"][primary], archive["velocities"][primary],
+                                 archive["masses"][primary])        # mass, center_of_mass, velocity, spin
+```
+
+Only what exists today is described here. The readers need `h5py`, which is in the `tng` dependency
+group (`uv sync --group tng`; a plain `uv sync` installs it too, for the tests). Decisions behind it
+are in [PLAN.md](../../PLAN.md); what the TNG values mean, and how that was checked, is in
+[tng_physics.md](../tng_physics.md). A worked tour is in
+[`examples/notebooks/tng_tour.ipynb`](../../examples/notebooks/tng_tour.ipynb).
+
+## The target table: `read_table(path)`
+One row per encounter per snapshot (1268 rows, 59 encounters). Returns a dict of column name to
+array, in the table's column order. Every array has one entry per row:
+
+| Kind of column | Shape | Examples |
+|---|---|---|
+| Number | (rows,) | `snap`, `p_SubhaloMass`, `time_gyr`, `scale_factor` |
+| Vector | (rows, 3) | `p_SubhaloPos`, `s_SubhaloVel`, `p_SubhaloSpin` |
+| Matrix | (rows, 4, 4) | `orbital_frame_pos_transform`, `orbital_frame_vel_transform` |
+| Text | (rows,), `str` | `img_name_1` |
+
+- `moi_2` identifies an encounter and `snap` the snapshot. `p_` is the primary galaxy, `s_` the
+  secondary. IDs and snapshot numbers are `int64`, so a full `SubhaloIDRaw` matches exactly:
+  `table["p_SubhaloIDRaw"] == 62000000190717`.
+- An encounter's rows: `rows = table["moi_2"] == table["moi_2"][i]`.
+
+What the stored values are:
+
+| Columns | Values |
+|---|---|
+| `p_`, `s_` + a catalog field (`SubhaloPos`, `SubhaloCM`, `SubhaloHalfmassRad`, `SubhaloVel`, `SubhaloMass`, `SubhaloSpin`) | Raw TNG catalog values: lengths in ckpc/h, velocities in km/s, masses in 10¹⁰ M☉/h. `SubhaloSpin` is the angular momentum **per unit mass**, in (kpc/h)(km/s) with a physical (not comoving) length |
+| `redshift`, `scale_factor`, `time_gyr` | The snapshot's redshift, a = 1 / (1 + z), and the age of the universe in TNG's cosmology (Gyr) |
+| `pa_`, `sa_`, `ps_`, `ss_` columns; `_orbital_frame` columns; `_transform` matrices; `inclination`, `azimuthal` | The earlier pipeline's own values. Units not verified |
+
+Each dataset in the file also carries a `units` attribute, and some a `note`.
+
+## A target archive: `read_archive(path, particle_types=("stars",))`
+One target's particles, both galaxies, at the target snapshot. The file is named after the primary's
+`SubhaloIDRaw`. `particle_types` is any of `"gas"`, `"dm"`, `"stars"` and `"bh"` (one name or
+several), or `"all"`. Returns a dict with one row per returned particle, in the file's order:
+
+| Key | Shape, type | Values |
+|---|---|---|
+| `positions` | (n, 3) `float32` | ckpc/h |
+| `velocities` | (n, 3) `float32` | km/s ÷ √a: multiply by √a for km/s |
+| `masses` | (n,) `float32` | 10¹⁰ M☉/h |
+| `particle_type` | (n,) `int8` | 0 gas, 1 dark matter, 4 stars, 5 black hole (`tng.PARTICLE_TYPES`) |
+| `subfind_galaxy` | (n,) `int8` | The galaxy SUBFIND gives the particle to: 0 primary, 1 secondary |
+| `historical_galaxy` | (n,) `int8` | The galaxy it belonged to before the encounter: 0 or 1 |
+| `p_id`, `s_id` | `int` | The primary's and secondary's `SubhaloIDRaw` |
+| `t_snap` | `int` | The target snapshot |
+
+- **The file's own labels are wrong.** It labels its columns "kpc", "km_per_s" and "1e10_Msun", but
+  the values are raw TNG snapshot units, as in the table above.
+- **The frame is the earlier pipeline's orbital frame**, not the simulation box: the particles were
+  moved by the table's `orbital_frame_pos_transform` and `orbital_frame_vel_transform` for that row.
+- When only some types are asked for, the file is read a few million rows at a time, so a
+  stars-only read doesn't load the whole file (the largest holds 28.8 million particles).
+
+## Measuring a galaxy
+Both functions take plain arrays and return results in the units of those arrays: nothing is
+converted. Sums are done in `float64`.
+
+**`galaxy_properties(positions, velocities, masses)`** returns a dict:
+
+| Key | Type | Value |
+|---|---|---|
+| `mass` | `float` | The total mass |
+| `center_of_mass` | (3,) | The mass-weighted mean position |
+| `velocity` | (3,) | The mass-weighted mean velocity |
+| `spin` | (3,) | The angular momentum per unit mass, about the center of mass in the galaxy's rest frame: Σ m (r − center) × (v − velocity) / Σ m |
+
+The spin doesn't depend on where the origin is or on a velocity added to every particle, and it
+turns with the frame. So a spin is moved to another frame by the rotation alone, never the shift.
+
+**`half_mass_radius(positions, masses, center)`** returns the distance from `center` of the first
+particle, going outward, at which the mass inside reaches half the total.
+
+## Out of the old frame: `archive_to_box`
+The archives store particles in the earlier pipeline's frame: the box frame turned by a rotation and
+moved by a shift, with one 4×4 matrix for positions and one for velocities, both in the target table.
+**`archive_to_box(positions, velocities, pos_matrix, vel_matrix)`** undoes both and returns
+`(positions, velocities)` in the box frame, as `float64` and still in stored units:
+
+```python
+row = int(np.flatnonzero(table["p_SubhaloIDRaw"] == archive["p_id"])[0])
+positions, velocities = tng.archive_to_box(archive["positions"], archive["velocities"],
+                                           table["orbital_frame_pos_transform"][row],
+                                           table["orbital_frame_vel_transform"][row])
+```
+
+- It is exact: the matrices hold a pure rotation and a shift, so x_box = Rᵀ (x_old − shift). A matrix
+  that isn't a rotation and a shift is an error.
+- In the box frame the particles can be compared with the catalog directly: a particle sits on each
+  galaxy's `SubhaloPos` (the most bound one), and the center of mass is `SubhaloCM`.
+- A galaxy that sits across a face of the box comes back in two parts, as TNG stored it. Follow with
+  `nearest_image(positions[galaxy], nucleus)`. Two archives need it: `49000000112167` (47,690 of the
+  primary's particles are across a face; unmended, its center of mass is 73 ckpc/h off and its spin
+  28% off) and `87000000451863` (10 particles).
+
+## The box edge
+TNG50-1's box is 35,000 ckpc/h on a side (`tng.BOX`) and wraps around, so two points close together
+can have coordinates almost a whole box apart
+([why](../tng_physics.md#the-box)).
+
+**`nearest_image(positions, reference, box=BOX)`** shifts each position by whole box lengths until
+every coordinate is within half a box of `reference`, and returns them as `float64`:
+
+```python
+tng.nearest_image([50.0, 100.0, 200.0], [34950.0, 120.0, 180.0])       # [35050., 100., 200.]
+secondary = tng.nearest_image(table["s_SubhaloPos"], table["p_SubhaloPos"])   # a whole track at once
+apart = secondary - table["p_SubhaloPos"]
+```
+
+- `reference` is one point (a galaxy's center, for its particles) or one per position (a track).
+- Call it on stored values, before `physical`: the box is 35,000 only in comoving ckpc/h.
+- The results may lie outside 0 to 35,000. Only positions relative to the reference are meaningful.
+- In the target table, 20 rows in 6 encounters have the pair split by a face; stored, they look
+  about 34,800 ckpc/h apart. Two target archives (`49000000112167`, `87000000451863`) have galaxies
+  whose own particles are split. An archive's positions can't be mended as read, because they are in
+  the old rotated frame: use `archive_to_box` first.
+
+## Units
+Two steps, each one function with the factors in one table.
+
+**`physical(values, quantity, scale_factor=None)`** converts stored TNG values to kpc, km/s and M☉.
+h is TNG's 0.6774 (`tng.H`) and a is the snapshot's scale factor (the table's `scale_factor`):
+
+| `quantity` | Stored as | Factor | Result |
+|---|---|---|---|
+| `"length"` | ckpc/h | × a ÷ h | kpc |
+| `"velocity"` (catalog velocities) | km/s | none | km/s |
+| `"particle_velocity"` (snapshot particles) | km/s ÷ √a | × √a | km/s |
+| `"mass"` | 10¹⁰ M☉/h | × 10¹⁰ ÷ h | M☉ |
+| `"spin"` (catalog `SubhaloSpin`) | (kpc/h)(km/s) | ÷ h | kpc km/s |
+
+- `scale_factor` is needed for `"length"` and `"particle_velocity"`: one number, or one per row to
+  convert a table column in one call (`tng.physical(table["p_SubhaloPos"], "length", table["scale_factor"])`).
+- A spin measured from particles has no row: convert the positions and velocities first, and
+  `galaxy_properties` then gives the spin in kpc km/s.
+
+**`spam_units(values, quantity)`** converts physical values to SPAM's units:
+
+| `quantity` | From | SPAM's unit | Constant |
+|---|---|---|---|
+| `"length"` | kpc | 15 kpc | `tng.SPAM_LENGTH` |
+| `"mass"` | M☉ | 10¹¹ M☉ | `tng.SPAM_MASS` |
+| `"velocity"` | km/s | 169.33 km/s | `tng.SPAM_VELOCITY` |
+| `"time"` | Gyr | 0.08662 Gyr | `tng.SPAM_TIME` |
+
+SPAM works with G = 1. Its length and mass units are Wallin's (`parameters_module.f90` in the JSPAM
+fork); the velocity and time units follow from them, √(G × mass ÷ length) and length ÷ velocity, with
+G = 4.30091 × 10⁻⁶ kpc (km/s)² / M☉ (`tng.G`). They agree with the constants in SPAM's source to
+3 × 10⁻⁵.
+
+## The frame SPAM uses
+SPAM works with the primary's nucleus at the origin and at rest. Four functions build that frame from
+box-frame values in physical units; why each step is what it is, is in
+[tng_physics.md](../tng_physics.md#a-galaxys-velocity).
+
+| Function | Returns |
+|---|---|
+| `core_velocity(positions, velocities, masses, center, radius)` | (3,), the mass-weighted mean velocity of the particles within `radius` of `center`. Units as given. No particle inside is an error |
+| `hubble_rate(scale_factor)` | H at that snapshot, in km/s per kpc (0.06774 today) |
+| `relative_to(positions, velocities, center, center_velocity, scale_factor, hubble_flow=True)` | `(positions, velocities)` relative to the center, in kpc and km/s. With `hubble_flow` on, H × position is added to the velocities |
+| `orbit_rotation(relative_position, relative_velocity)` | (3, 3) rotation `R`: x toward the secondary, z along position × velocity. A head-on pair is an error |
+
+One target, start to finish (`a` is the row's `scale_factor`; `p_pos`, `s_pos` its two `SubhaloPos`):
+
+```python
+positions, velocities = tng.archive_to_box(archive["positions"], archive["velocities"], pos_matrix, vel_matrix)
+positions = tng.physical(tng.nearest_image(positions, p_pos), "length", a)           # kpc, whole galaxies
+velocities = tng.physical(velocities, "particle_velocity", a)                        # km/s
+nucleus = {"p": tng.physical(p_pos, "length", a),
+           "s": tng.physical(tng.nearest_image(s_pos, p_pos), "length", a)}
+
+stars = archive["particle_type"] == tng.PARTICLE_TYPES["stars"]
+moving = {side: tng.core_velocity(positions[stars], velocities[stars], archive["masses"][stars], nucleus[side], 1.0)
+          for side in "ps"}                                                          # each nucleus's velocity
+
+secondary = tng.relative_to(nucleus["s"], moving["s"], nucleus["p"], moving["p"], a)
+R = tng.orbit_rotation(*secondary)
+positions, velocities = tng.relative_to(positions, velocities, nucleus["p"], moving["p"], a)
+positions, velocities = positions @ R.T, velocities @ R.T                            # the same for a spin
+```
+
+- Afterwards the primary's nucleus is at the origin and at rest, the secondary's is at
+  (distance, 0, 0), and the pair turns counter-clockwise in the x-y plane.
+- A rotation is applied with `vectors @ R.T`. There is no shift inside it, so a spin can't pick one up.
+- A galaxy's black hole gives a second measure of its nucleus's velocity: it is one row of the
+  archive, `velocities[archive["particle_type"] == tng.PARTICLE_TYPES["bh"]]`. The tests compare the two.
+- An earlier snapshot's nucleus positions (from the table) can be turned by the same `R` to draw the
+  past orbit in this frame. Only the target snapshot has a measured nucleus velocity.
+
+## Disk angles: `disk_angles(spin)`
+Turns a disk's spin direction, in the frame SPAM will run in, into SPAM's two disk angles. Returns
+`(phi, theta)` in degrees, for `phi1`/`theta1` or `phi2`/`theta2`:
+
+```python
+spin = tng.galaxy_properties(positions[disk], velocities[disk], masses[disk])["spin"]   # in SPAM's frame
+phi, theta = tng.disk_angles(spin)
+```
+
+- `theta` is the angle from +z, 0 to 180: 0 is a flat disk turning counter-clockwise, 180 the same
+  disk turning clockwise, 90 edge-on.
+- `phi` is the direction of the spin's x-y part, 0 up to 360. A spin exactly along z has none, and
+  `phi` is 0.
+- Only the direction matters; a spin of zero is an error.
+- The convention is SPAM's own, and a test builds disks with SPAM and measures their spin to confirm
+  it ([tng_physics.md](../tng_physics.md#disk-angles)).
+
+## Which galaxy is the primary: `primary_side(archive, rule)`
+Returns `"p"` or `"s"`: the letter that starts the primary's columns in the target table.
+`tng.GALAXY_LABELS` (`{"p": 0, "s": 1}`) gives each letter's number in an archive's galaxy labels.
+The rule must be named:
+
+| `rule` | The primary is |
+|---|---|
+| `"table"` | The galaxy the target table calls the primary. Always `"p"` |
+| `"stars"` | The galaxy with more mass in stars, each star counted for the galaxy it belonged to before the encounter (`historical_galaxy`). A tie gives `"p"` |
+
+```python
+archive = tng.read_archive(path)                    # stars
+primary = tng.primary_side(archive, "stars")        # "p" or "s"
+secondary = "s" if primary == "p" else "p"
+origin = table[f"{primary}_SubhaloPos"][row]        # the primary's nucleus
+```
+
+- Nothing is renamed or rewritten: the table and the archive keep their own `p` and `s`. Code that
+  builds a target uses the answer to choose which galaxy goes at the origin.
+- `"stars"` needs star particles in both galaxies, or it is an error.
+- Why not the catalog's total mass: [tng_physics.md](../tng_physics.md#which-galaxy-is-the-primary).
+
+## Measuring a target: `measure_target(table, row, archive, config=None)`
+Everything measured for one target at its snapshot, in one dict. It uses the functions above in
+order and writes nothing.
+
+```python
+table = tng.read_table("../data/tng-legacy-data/moi-4-targets.h5")
+row = int(np.flatnonzero(table["p_SubhaloIDRaw"] == 62000000190717)[0])
+archive = tng.read_archive("../data/tng-legacy-data/target-archive-62000000190717.h5", "all")
+
+target = tng.measure_target(table, row, archive)                                # the default choices
+target = tng.measure_target(table, row, archive, tng.TngTargetConfig(primary_rule="table"))
+```
+
+The archive must hold every particle type (`"all"`) and belong to the row, or it is an error. One
+target takes a few seconds once its archive is read.
+
+**The choices** are the fields of `TngTargetConfig`. A value it doesn't know is an error when the
+config is made.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `primary_rule` | `"stars"` | Which galaxy is the primary: `"stars"` or `"table"` (`primary_side`) |
+| `core_radius` | `1.0` | A nucleus's velocity is the mean of the stars within this many kpc of it |
+| `hubble_flow` | `True` | Add the universe's expansion to the pair's relative velocity |
+| `mass` | `"historical"` | Which of a galaxy's three masses is the one for SPAM (below) |
+| `disk_radius_factor` | `5.0` | A disk's radius is this many stellar half-mass radii |
+| `spin_radius_factor` | `5.0` | Which stars give a disk's spin: the galaxy's stars within this many stellar half-mass radii of its nucleus. `None`: all its stars |
+
+**What comes back.** Physical units throughout: kpc, km/s, M☉, and kpc km/s for spins. Every vector
+is in the frame SPAM uses.
+
+| Key | Value |
+|---|---|
+| `target`, `snap`, `scale_factor` | The table's `p_SubhaloIDRaw` for the row (the archive's name), the snapshot, its scale factor |
+| `primary_side` | `"p"` or `"s"`: the table's letter for the galaxy used as the primary |
+| `separation` | The distance between the two nuclei |
+| `position` | `(3,)` the secondary's nucleus: `(separation, 0, 0)` |
+| `velocity` | `(3,)` the secondary's velocity, from the stars around each nucleus. No z part |
+| `velocities` | The same by three measures: `"stars"` (the one used), `"black_hole"` (`None` if a galaxy has none) and `"catalog"` (`SubhaloVel`). The last two can have a z part |
+| `rotation` | `(3, 3)` from the box's axes to this frame: `vectors @ rotation.T` |
+| `primary`, `secondary` | One dict per galaxy (below) |
+
+Each galaxy's dict:
+
+| Key | Value |
+|---|---|
+| `side`, `subhalo_id` | Its letter in the table and its `SubhaloIDRaw` |
+| `masses` | `"historical"`: every particle, of all types, that belonged to it before the encounter. `"catalog"`: the catalog's `SubhaloMass`. `"within_radius"`: those of the same particles within its disk radius of its nucleus |
+| `mass` | The one for SPAM: `masses[config.mass]` |
+| `stellar_mass` | The stars that belonged to it before the encounter |
+| `half_mass_radius` | The radius around its nucleus that holds half of that stellar mass |
+| `disk_radius` | `disk_radius_factor` × the half-mass radius |
+| `spin`, `spin_stars` | `(3,)` the spin of its stars, per unit mass, and how many stars it was measured from |
+| `phi`, `theta` | SPAM's disk angles for that spin, in degrees |
+| `black_hole_offset` | How far its black hole is from its nucleus (`None` without one) |
+
+- A nucleus is the catalog's `SubhaloPos`. Everything else is measured from the archive's particles.
+- A galaxy's own particles are those it owned before the encounter (`historical_galaxy`). A
+  nucleus's velocity uses all stars within `core_radius`, whatever their label.
+- The spin depends on which stars are used:
+  [tng_physics.md](../tng_physics.md#which-stars-give-a-disks-spin).
+
+## SPAM's 14 parameters: `spam_model(target)`
+Turns a measured target into the model SPAM runs: an array of shape `(14,)`, in the order of
+`tng.SPAM_PARAMETERS` (the simulator's `PARAM_NAMES`) and in SPAM's units.
+
+```python
+target = tng.measure_target(table, row, archive)
+model = tng.spam_model(target)
+particles = simulation.simulate_particles(model)        # galactic_tidal_constraints.simr.simulation
+```
+
+| Parameters | From the measured target | Unit |
+|---|---|---|
+| `x`, `y`, `z` | `position`: (separation, 0, 0) | 15 kpc |
+| `vx`, `vy`, `vz` | `velocity`: no z part | About 169.3 km/s |
+| `mass1`, `mass2` | The primary's and the secondary's `mass` | 10¹¹ M☉ |
+| `rout1`, `rout2` | Each `disk_radius` | 15 kpc |
+| `phi1`, `phi2`, `theta1`, `theta2` | Each `phi` and `theta` | Degrees |
+
+- It measures and chooses nothing: every choice was made by the `TngTargetConfig` the target was
+  measured with.
+- `y`, `z` and `vz` are zero because the frame was built that way.
+- A test runs SPAM on three real targets' models: its secondary ends on the model's position and
+  velocity at time 0, to within SPAM's own integration error (0.004 at most, in SPAM's units).
+
+## A target's track: `encounter_rows(table, row)`
+The table rows of one encounter, earliest snapshot first. A target is one row of its encounter; the
+rows before it are its past and the rows after it its future.
+
+```python
+rows = tng.encounter_rows(table, row)             # e.g. 26 row numbers
+now = int(np.flatnonzero(rows == row)[0])         # where the target sits in its own track
+ago = table["time_gyr"][row] - table["time_gyr"][rows]
+```
+
+- It reads only `moi_2` (the encounter) and `snap`. Two rows with the same snapshot is an error.
+- **Snapshots can be missing.** Three of the encounters that hold targets have gaps (snapshots 45,
+  47 and 53 of `67000000260243`, for one). Use each row's own time, never the row number.
+- **`p` and `s` are the same two galaxies in every row.** A test follows TNG's merger tree along
+  every track: each galaxy's `DescendantID` is the same letter's `SubhaloID` in the next row, for all
+  1,196 links in the table.
+- **Several targets can share one track.** The 61 targets sit on 29 encounters: the same pair taken
+  as a target at different snapshots. `62000000190717` shares its track with `61000000186579`,
+  `63000000192216` and `64000000153811`.
+
+### The separation along it: `track_separation(table, rows, primary_side)`
+The secondary's nucleus relative to the primary's at each row of a track: `(n, 3)`, in physical kpc,
+along the box's axes.
+
+```python
+rows = tng.encounter_rows(table, row)
+separation = tng.track_separation(table, rows, target["primary_side"])     # (n, 3) kpc
+distance = np.linalg.norm(separation, axis=1)                              # (n,) kpc
+```
+
+- Each nucleus is the catalog's `SubhaloPos`. The pair is made whole across the box edge, then each
+  row is scaled by its own snapshot's scale factor: physical distances at that time, not comoving.
+- **`primary_side` is one choice for the whole track**, made at the target snapshot
+  (`measure_target`'s `"primary_side"`). Targets that share a track can make it differently.
+- At the target's row its length is `measure_target`'s `"separation"`.
+- On the 29 tracks that hold targets the pairs start 265 to 604 kpc apart, and the separation never
+  changes faster than 676 km/s between snapshots: no track has a jump (`test_no_real_track_jumps`).
+
+### The track in SPAM's frame
+The target's one rotation turns the whole track, past and future, into the frame SPAM runs in:
+
+```python
+target = tng.measure_target(table, row, archive)
+rows = tng.encounter_rows(table, row)
+path = tng.track_separation(table, rows, target["primary_side"]) @ target["rotation"].T     # (n, 3) kpc
+```
+
+- At the target's own row this is `target["position"]`: `(separation, 0, 0)`.
+- The frame is fixed at the target snapshot. The pair's orbit plane turns during an encounter, so
+  earlier and later rows have a z part: [tng_physics.md](../tng_physics.md#the-track-leaves-the-plane).
+
+### Its time axis: `track_time(table, rows, row)` and `age_of_universe(scale_factor)`
+`track_time` gives each row's time relative to the target's, in Gyr: 0 at the target, negative
+before it. `age_of_universe` is the age at a scale factor in TNG's cosmology, which it is built on.
+
+```python
+time = tng.track_time(table, rows, row)              # (n,) Gyr, 0 at the target
+spam_time = tng.spam_units(time, "time")             # SPAM's units (one is about 86.6 Myr)
+tng.age_of_universe(1.0)                             # 13.80 Gyr, today
+```
+
+- SPAM's own orbit has the same zero and sign: now at 0, the past negative.
+- The times come from each row's scale factor, not from the table's `time_gyr` column. A test finds
+  the two agree to a millionth of a Gyr over the whole table.
+- **Tracks reach further back than SPAM looks.** SPAM's backward orbit search stops at t = -30 in its
+  units (2.6 Gyr). 46 of the 61 targets have rows earlier than that (the median target's first row
+  is at -34.8; the furthest at -71.3).
+- The formula: [tng_physics.md](../tng_physics.md#the-hubble-flow).
+
+### A curve through it: `track_spline(time, values, start_slope=None, end_slope=None)`
+A smooth curve through a track's rows: a cubic spline, each column against time. It returns a
+`TrackSpline`, which is called with times.
+
+```python
+curve = tng.track_spline(time, path)        # through every row, before and after the target
+curve(0.0)                                  # (3,) the position at the target: one of the rows
+curve(np.linspace(time[0], 0, 500))         # (500, 3) positions between the rows
+curve.slope(0.0)                            # (3,) the velocity along the curve, per unit of `time`
+```
+
+- It passes exactly through every row, with no kinks: value, slope and bend are continuous. The
+  rows may be unevenly spaced.
+- **Ends are free by default** (no bend there). `start_slope` or `end_slope` sets the curve's slope
+  at that end when it is known.
+- It is not extended beyond the first or last row: a time outside them is an error.
+- Fit it through all of a track's rows, later ones included, so that the target's row is held from
+  both sides. 12 of the 61 targets have no later row; for them now is a free end.
+- **What it can and can't recover** at TNG's snapshot spacing, measured:
+  [tng_physics.md](../tng_physics.md#a-curve-through-the-snapshots).
+
+## A target's orbit: `target_orbit(table, row, target, spacing=0.01, earliest=-30.0)`
+The target's orbit up to now, sampled finely, in SPAM's frame and units: the array the orbit metrics
+compare a model's orbit with. It runs the four track functions above in order.
+
+```python
+target = tng.measure_target(table, row, archive)
+orbit = tng.target_orbit(table, row, target)             # (3001, 7) for a track that reaches back to -30
+
+model_orbit = simulation.search_orbit(tng.spam_model(target))
+weights = derived.recent_approach_cosine_window(orbit)   # centered on the target's most recent close pass
+metrics.orbit_position_error(orbit, model_orbit, weights)
+```
+
+| Column | Value |
+|---|---|
+| `x`, `y`, `z` | The secondary's nucleus relative to the primary's, in SPAM's length unit (15 kpc) |
+| `vx`, `vy`, `vz` | **Zeros.** Not measured: the columns are there so the array has the shape of SPAM's own orbits. The orbit metrics read only positions and times |
+| `t` | SPAM's time unit, increasing, ending exactly at 0 (now) |
+
+- **The last row is the target:** `(separation, 0, 0)`, the model's `x`, `y`, `z`.
+- **It starts at `earliest`**, -30 by default, where SPAM's own backward search stops; or at the
+  track's first row when that is later (15 of the 61 targets). The curve is never extended beyond
+  its rows. One target has no earlier row and gives a single sample.
+- **`spacing`** is the time between samples: 0.01 SPAM units, about 0.9 Myr.
+- The curve is fitted through all of the track's rows, later ones included, and sampled up to now.
+- **13 of the 61 targets have no close pass in their sampled orbit**, so the recent-approach window
+  can't be made for them: they are on first approach, or the pass is too near the orbit's start.
+- How far to trust it: [tng_physics.md](../tng_physics.md#a-curve-through-the-snapshots).
+
+## A target's stars: `target_particles(table, row, archive, target, config=None)`
+The target's stars in the form of SPAM's particles: the same frame, units and row order as
+`simulation.simulate_particles`, so the particle metrics and the image maker take them unchanged.
+
+```python
+archive = tng.read_archive(path, "all")
+target = tng.measure_target(table, row, archive)
+stars = tng.target_particles(table, row, archive, target)
+
+model = tng.spam_model(target)
+metrics.pca_shape(stars["particles"])
+image_creator.create_image(stars["particles"], model, stars["n1"], stars["n2"])
+```
+
+| Key | Shape | Value |
+|---|---|---|
+| `particles` | `(n1 + n2 + 1, 6)` | `x, y, z, vx, vy, vz` in SPAM's units. The primary's stars, then the secondary's, then one row for the secondary's center: the model's `x, y, z, vx, vy, vz` |
+| `masses` | `(n1 + n2,)` | Each star's mass, in SPAM's mass unit (1e11 M☉) |
+| `n1`, `n2` | int | How many stars each galaxy has |
+
+- **Which stars:** those each galaxy owned before the encounter (`historical_galaxy`), all of them,
+  however far out. Tidal features are the outliers, so nothing is cut by radius.
+- **The frame is the target's:** the primary's nucleus at the origin and at rest, the secondary on
+  +x, the orbit in the x-y plane. Velocities include the Hubble flow, as the model's do.
+- **Nothing is thinned or weighted.** A target has about a million stars of differing mass where a
+  SPAM run has a few thousand equal points. `masses` is returned for whoever compares.
+- **`config`** must be the one the target was measured with (it sets how the nuclei's velocities are
+  measured). A config that doesn't give the target's velocity back is an error.
+- Only the stars are read, so an archive read with the default `read_archive(path)` is enough.
+  "stars" includes wind particles ([Known issues](#known-issues)).
+
+## A target's files: `write_target` and `write_targets`
+`write_target(folder, table, row, archive, config=None)` measures one target and writes what a SIMR
+run needs to compare models with it. `write_targets(data, folder, config=None, targets=None)` does
+it for every archive in the legacy folder and adds two files that list them all. From the command
+line:
+
+```bash
+python -m galactic_tidal_constraints.tng --data ../data/tng-legacy-data --output ../data/tng-targets
+python -m galactic_tidal_constraints.tng --data ... --output ... --target 62000000190717   # one target
+```
+
+The targets folder holds only inputs to a comparison, all measured from TNG's data. Every name says
+so: nothing in it is made by SPAM, whose own orbits, particles and images go to each run's `--output`.
+
+| File | Holds |
+|---|---|
+| `<target>/tng_spam_model.txt` | SPAM's 14 parameters on one line (`spam_model`): a models file for SIMR |
+| `<target>/tng_orbit.npy` | `target_orbit`: `(n, 7)` float64 |
+| `<target>/tng_star_particles.npy` | `target_particles`' particles: `(n1 + n2 + 1, 6)` float32 |
+| `<target>/tng_star_masses.npy` | Their masses: `(n1 + n2,)` float32 |
+| `<target>/simr_externals.json` | SIMR's `--externals` file: the keys `tng_orbit` and `tng_star_particles` |
+| `<target>/tng_target.json` | The record: everything `measure_target` returned, the config, the model by name, `n1` and `n2`, and the orbit's notes |
+| `tng_spam_models.txt` | Every written target's model, one per line, in order of ID |
+| `tng_targets.h5` | One row per written target: ID, model, masses, star counts and the orbit's notes |
+
+A run against one target:
+
+```bash
+python -m galactic_tidal_constraints.simr --models tng-targets/62000000190717/tng_spam_model.txt     --externals tng-targets/62000000190717/simr_externals.json --config request.json --output runs/
+```
+
+with a request that names the arrays `ext.tng_orbit` and `ext.tng_star_particles`.
+
+- The folder is rebuilt by the code and never edited by hand. Writing a target again replaces its
+  files. `tng_spam_models.txt` and `tng_targets.h5` list the targets written by that call.
+- A target that can't be measured is reported and skipped; the others go on.
+- The largest target has 5.5 million stars: about 130 MB of particles as float32.
+
+### What to know about an orbit: `orbit_notes(table, row, target, orbit)`
+The record's `orbit` entry, so a comparison can pick its targets:
+
+| Note | Meaning |
+|---|---|
+| `rows_before`, `rows_after` | Track rows earlier and later than the target. With no later row, now is the curve's free end |
+| `samples`, `start` | The orbit's rows and its first time (-30 at the earliest) |
+| `velocity_columns` | `"zeros"`: the orbit's velocities are not measured |
+| `last_pass` | The most recent dip in distance before now, its `time` and `distance`; `None` without one. The distance is the curve's own, not a snapshot's |
+| `recent_approach_window` | A window centered on that pass and reaching now fits in the orbit: the metric's `recent_approach_cosine_window` can be made |
+| `track_plane_angle` | Degrees between the frame's z and the plane the track itself moved in over the last Gyr. Near 0: the track stayed in the frame's plane. Above 90: it went round the other way, as on nearly radial orbits, where the sideways velocity that sets the plane is within its own noise |
+| `crosses_box_edge` | On some row the pair sits across a face of the box (handled; noted for checking) |
+
+## Checked against the TNG catalog
+The archives' particles, split by SUBFIND's galaxy label, give back the catalog's values for the same
+galaxies: mass, separation, relative velocity (with √a), spin (× a^1.5) and half-mass radius. The
+comparison, its numbers and what it settles are in
+[tng_physics.md](../tng_physics.md#checked-against-particles). Two results concern the archives' frame:
+
+- **The frame matrices are a pure rotation plus a shift**, the same rotation for positions and
+  velocities. The velocity matrix works on particle velocities (km/s ÷ √a), not on catalog km/s.
+- Not settled: what the old frame's origin and rest velocity are. Neither galaxy, nor the pair's
+  center of mass, sits at the origin or at rest in it.
+
+## Known issues
+- `"stars"` includes wind particles: the archives have no formation time to tell them apart.
+- A black hole's mass is its `BH_Mass`, not its dynamical mass.
+
+## Tests
+`tests/test_tng.py`. The tests on small made-up files and particles always run. The tests on the
+real files, including the check against the catalog, run only when `GTC_DATA_DIR` names the data
+folder (the one holding `tng-legacy-data/`); they take about a minute, or 45 seconds with `-m "not slow"`:
+
+```bash
+GTC_DATA_DIR=../data uv run pytest tests/test_tng.py
+```

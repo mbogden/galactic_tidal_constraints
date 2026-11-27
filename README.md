@@ -55,9 +55,10 @@ rewrites the `/src` path. To work on the repo in place, run notebooks or save da
 Without the image: Python 3.12 or newer, git, `gfortran` and a C compiler (Linux, macOS or WSL).
 With [uv](https://docs.astral.sh/uv/), from the repo's root:
 ```bash
-uv sync                       # the package, jspam (compiled on install) and pytest
+uv sync                       # the package, jspam (compiled on install), pytest and h5py
 uv sync --group notebook      # also JupyterLab and matplotlib, for the notebooks
 uv sync --group mpi           # also mpi4py, for --mode mpi (needs an MPI library)
+uv sync --group tng           # h5py, for the TNG readers (already in a plain uv sync, for the tests)
 ```
 
 ## Quick start
@@ -82,8 +83,9 @@ request, the output folder and catalog, failures, modes) is in
 
 The notebooks in [`examples/notebooks/`](examples/notebooks/) are the guided way in:
 `simulator_tour.ipynb` for the Simulator stage, `simr_tour.ipynb` for the workflow,
-`image_tour.ipynb` for the Image Creator (on its own, through `simr`, and saving and loading images)
-and `metrics_tour.ipynb` for metrics, externals, derived arrays, the composite and what a run records.
+`image_tour.ipynb` for the Image Creator (on its own, through `simr`, and saving and loading images),
+`metrics_tour.ipynb` for metrics, externals, derived arrays, the composite and what a run records,
+and `tng_tour.ipynb` for reading the TNG target table and target archives (it needs the data folder).
 
 ## Docs
 | Doc | What it covers |
@@ -91,11 +93,13 @@ and `metrics_tour.ipynb` for metrics, externals, derived arrays, the composite a
 | [architecture.md](docs/architecture.md) | The planned structure of the whole project (a plan; partly built) |
 | [configuration.md](docs/configuration.md) | How to write a config: its sections, how lists combine, the checks, what's recorded, and examples |
 | [spam_physics.md](docs/spam_physics.md) | SPAM's physics and every setting the Simulator stage exposes, with code and open questions |
+| [tng_physics.md](docs/tng_physics.md) | What the IllustrisTNG values mean: units, the periodic box, how galaxies are defined, and how each fact was checked |
 | [modules/simr.md](docs/modules/simr.md) | How `simr` works: inputs, results, saving and reuse, the catalog, the command line |
 | [modules/simulation.md](docs/modules/simulation.md) | How the Simulator stage works: a model, `SimulatorConfig`, the functions and what they return, costs |
 | [modules/image_creator.md](docs/modules/image_creator.md) | How the Image Creator works: the config, the pixel frame, the image steps |
 | [modules/metrics.md](docs/modules/metrics.md) | How the Metrics stage works: the metrics table, input kinds, weights, each method, the composite |
 | [modules/derived.md](docs/modules/derived.md) | Derived arrays: arrays made from other arrays, for metrics to use as data or weights |
+| [modules/tng.md](docs/modules/tng.md) | The TNG module: reading the target table and archives, measuring a galaxy, the box edge, unit conversions |
 | [guides/running_spam.md](docs/guides/running_spam.md) | Compile and run SPAM itself, from Python or as the Fortran program |
 | [guides/running_on_babbage.md](docs/guides/running_on_babbage.md) | Set up an experiment and run `simr` on Babbage |
 | [guides/docker_image.md](docs/guides/docker_image.md) | Run in the project's image (copies, working in place, notebooks, saving data, Apptainer), check it, and make a new tag |
@@ -103,8 +107,9 @@ and `metrics_tour.ipynb` for metrics, externals, derived arrays, the composite a
 ## Repo layout
 ```
 src/galactic_tidal_constraints/
-└── simr/            simulation.py (Simulator stage), simr.py (workflow), image_creator.py (Image Creator),
+├── simr/            simulation.py (Simulator stage), simr.py (workflow), image_creator.py (Image Creator),
                      metrics.py (Metrics stage), derived.py (derived arrays), __main__.py (command line)
+└── tng.py           TNG targets: readers, galaxy measurements, units, measuring a target, SPAM's 14 parameters, a target's orbit and particles, the targets' files
 docs/                the docs above: overview and references at the top
 ├── modules/         one per code module
 └── guides/          how-to guides
@@ -130,6 +135,11 @@ uv run pytest -m "not slow"    # skip the long tests
 ```
 `test_original_jspam` needs Docker on the host, so it skips inside the container. To run that check,
 run `bash examples/spam/check_original_jspam.sh` on the host (Git Bash on Windows).
+
+## Acknowledgements
+This project uses data from the [IllustrisTNG](https://www.tng-project.org) project's TNG50 simulation
+(Nelson et al. 2019a, 2019b; Pillepich et al. 2019). No TNG data is in this repository. References:
+[docs/tng_physics.md](docs/tng_physics.md#acknowledgement).
 
 ## License
 Licensed under the Academic Free License version 3.0. See [LICENSE](LICENSE). This project's use of

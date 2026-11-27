@@ -6,8 +6,7 @@ for generating many relevant metrics; "fitness" keeps its meaning as what's opti
 composite of metrics: a weighted mean of the scalar metrics, one per model (`metrics.composite`,
 below; `simr` returns it when the config has a `composite` section).
 
-Only what exists today is described here. Decisions behind it are in
-`Experiments/MDRN-4` (the vault) and [PLAN.md](../../PLAN.md).
+Only what exists today is described here. Decisions behind it are in [PLAN.md](../../PLAN.md).
 
 ## Metric or derived?
 A metric deliberately reduces its inputs to something small. The size of what a function returns

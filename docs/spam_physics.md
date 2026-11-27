@@ -360,8 +360,8 @@ option, with Wallin's behavior kept (`PLAN.md`, Physics fixes).
   table. Details: [The extended potential](#the-extended-potential-what-we-run).
 - **Should `r_scale` change only the size?** It stretches the whole galaxy and also multiplies the
   force outside the core by (10 / `r_scale`)², so it works partly as a strength knob. That matters
-  wherever `r_scale` is read as "halo size": an optimizer exploring it, or bounds taken from TNG50 halos
-  (TNG-7). An option would rescale the force so `r_scale` changes only the shape. Details:
+  wherever `r_scale` is read as "halo size": an optimizer exploring it, or bounds taken from TNG50
+  halos. An option would rescale the force so `r_scale` changes only the shape. Details:
   [`r_scale`](#r_scale-the-halos-core-radius-and-the-size-of-everything).
 
 Decided (2026-11-12): dynamical friction keeps its enclosed-mass density (`new_rho`, see
