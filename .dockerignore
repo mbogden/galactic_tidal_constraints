@@ -1,0 +1,5 @@
+# The image's build context is the repo's root, but the build reads only these.
+*
+!pyproject.toml
+!uv.lock
+!docker/checks

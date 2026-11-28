@@ -124,9 +124,10 @@ Limits that come from the clusters (`PLAN.md`, Environment): Ubuntu 24.04, OpenM
 cluster's (4.1.6 on Babbage), and CUDA 12.x at most if a GPU image is ever made.
 
 1. **Edit** `docker/Dockerfile`, and say what the new tag adds in its header comment (as `v2` adds git).
-2. **Build** from the repo's root:
+2. **Build** from the repo's root, with the changes committed (the image records the commit, and the
+   build reads `pyproject.toml` and `uv.lock`; `.dockerignore` keeps everything else out):
    ```bash
-   docker build -t gtc-base-image:v3 docker
+   docker build -f docker/Dockerfile --build-arg GTC_COMMIT=$(git rev-parse HEAD) -t gtc-base-image:v3 .
    ```
 3. **Check** it: the image checks above (`ALL PASS`), then the repo's tests in it (the README's Tests
    command with the new tag).
