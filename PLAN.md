@@ -173,6 +173,9 @@ One Docker image, run with Apptainer on the cluster.
 - Built locally, pushed to Docker Hub, pulled on the cluster with `apptainer pull`
 - **Tags:** a tag names one exact image, and a pushed tag is never overwritten. Which changes need a
   new tag, and the steps: [docs/guides/docker_image.md](docs/guides/docker_image.md).
+- **The image holds `uv.lock`'s libraries, not this package** (decided 2026-11-28, from `v3`): a run's
+  image records the libraries it used, and the package is read from a clone, so a code change needs
+  no new image. A change to `uv.lock` gets a new tag.
 
 ### Packaging and install
 - **Packaging:** `pyproject.toml` + `uv`. The lockfile is part of reproducibility.

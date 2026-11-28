@@ -1,7 +1,8 @@
 #!/bin/bash
 # Build the repo's venv (.venv, with the mpi group) inside the Apptainer image, on a compute node.
-# Rerun it after a pull that changes dependencies (pyproject.toml / uv.lock, e.g. a new jspam pin),
-# for a new image, or in a new clone. Code changes alone need only a pull (the package is editable).
+# Only needed when the clone's uv.lock differs from the one the image was built from (image v3 on
+# holds uv.lock's libraries; run_node.slurm's log header says when they differ), e.g. after a pull
+# with a new jspam pin and before a new image tag. Code changes alone need only a pull.
 # The venv's python points at the image's /usr/bin/python3.12, so it only works inside the image:
 #   SIF=<this image> sbatch run_node.slurm <repo>/.venv/bin/python ...
 #
@@ -13,7 +14,7 @@
 #SBATCH --time=00:30:00
 #SBATCH --output=/home/%u/galStuff/logs/%x-%j.log
 
-SIF=${SIF:-$HOME/galStuff/images/gtc-base-image-v2.sif}
+SIF=${SIF:-$HOME/galStuff/images/gtc-base-image-v3.sif}
 REPO=${REPO:-$HOME/galStuff/galactic_tidal_constraints}
 
 module load apptainer || exit 1

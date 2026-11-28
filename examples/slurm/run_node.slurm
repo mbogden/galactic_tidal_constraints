@@ -7,6 +7,12 @@
 #        sbatch --nodes=2 run_node.slurm <command> [args...]           (64 ranks)
 #        SIF=~/galStuff/images/<image>-<tag>.sif sbatch run_node.slurm ...
 # Example: sbatch run_node.slurm python /opt/gtc/checks/mpi_check.py
+#          sbatch run_node.slurm python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi ...
+#
+# `python` is the image's: it has every library uv.lock pins (image v3 on). This package isn't in the
+# image; it is read from the clone at REPO, so a code change needs only a git pull. If the clone's
+# uv.lock differs from the image's, the log header says so: use a newer image, or build a .venv with
+# uv_sync.slurm and give <repo>/.venv/bin/python as the command.
 #
 # Why host mpirun and not srun: host mpirun works on Babbage and srun can't start this image's
 # MPI (ENV-1, 2026-10-28). The image's OpenMPI (4.1.6) must match the host's.
@@ -18,7 +24,7 @@
 #SBATCH --time=04:00:00
 #SBATCH --output=/home/%u/galStuff/logs/%x-%j.log
 
-SIF=${SIF:-$HOME/galStuff/images/gtc-base-image-v2.sif}
+SIF=${SIF:-$HOME/galStuff/images/gtc-base-image-v3.sif}
 REPO=${REPO:-$HOME/galStuff/galactic_tidal_constraints}
 MODULES="apptainer gnu12/12.4.0 openmpi4/4.1.6"
 
@@ -59,6 +65,15 @@ quote_args() {
 # The .sif header's ID is unique to each build of the image.
 sif_id=$(apptainer sif header "$SIF" 2>/dev/null | awk '/^ID:/ {sub(/^ID: */, ""); id=$0} /^Created At:/ {sub(/^Created At: */, ""); at=$0} END {print id " (built " at ")"}')
 
+# The image's libraries against the clone's uv.lock (the image keeps the lockfile it was built from).
+if ! apptainer exec "$SIF" test -f /opt/gtc/project/uv.lock 2>/dev/null; then
+    libraries="none in this image (tools only): the command needs <repo>/.venv/bin/python"
+elif apptainer exec "$SIF" cmp -s /opt/gtc/project/uv.lock "$REPO/uv.lock"; then
+    libraries="the image's, built from commit $(apptainer exec "$SIF" cut -c1-7 /opt/gtc/commit.txt); same uv.lock as the clone"
+else
+    libraries="WARNING: the image's uv.lock differs from the clone's (see this script's header)"
+fi
+
 # Array tasks are named <array id>_<task>, as in squeue and the log file name.
 job=${SLURM_ARRAY_TASK_ID:+${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}}
 echo "=== gtc job ${job:-$SLURM_JOB_ID} · $(date '+%Y-%m-%d %H:%M:%S %Z')"
@@ -68,13 +83,15 @@ echo "image:     $SIF"
 echo "image id:  $sif_id"
 echo "apptainer: $(apptainer --version | cut -d' ' -f3)    modules: $MODULES"
 echo "git:       $(git_info)"
+echo "libraries: $libraries"
 # run_array.slurm sets GTC_COMMANDS_FILE and GTC_COMMAND (the line as written in the file).
 [ -n "$GTC_COMMANDS_FILE" ] && echo "commands:  $GTC_COMMANDS_FILE, line $SLURM_ARRAY_TASK_ID"
 echo "command:   ${GTC_COMMAND:-$(quote_args "$@")}"
 echo "==="
 
 start=$(date +%s)
-mpirun apptainer exec "$SIF" "$@"
+# PYTHONPATH makes this package importable from the clone, for the image's python.
+mpirun apptainer exec --env PYTHONPATH="$REPO/src" "$SIF" "$@"
 status=$?
 
 echo "=== exit $status after $(( $(date +%s) - start )) s"

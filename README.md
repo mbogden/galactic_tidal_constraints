@@ -36,20 +36,19 @@ original code:
   package at the commit pinned in `pyproject.toml`
 
 ## Install
-The project runs inside its image, [`ogdenm12/gtc-base-image:v2`](https://hub.docker.com/r/ogdenm12/gtc-base-image)
-(recipe: [docker/Dockerfile](docker/Dockerfile)). It has Python, uv, gfortran and OpenMPI 4.1.6.
-Use Docker on your own machine and Apptainer on clusters
+The project runs inside its image, [`ogdenm12/gtc-base-image:v3`](https://hub.docker.com/r/ogdenm12/gtc-base-image)
+(recipe: [docker/Dockerfile](docker/Dockerfile)). It has Python, uv, gfortran, OpenMPI 4.1.6 and
+every library `uv.lock` pins (`jspam` included), so nothing is installed: the image's `python` runs
+this package straight from your checkout. Use Docker on your own machine and Apptainer on clusters
 ([docs/guides/running_on_babbage.md](docs/guides/running_on_babbage.md)). From the repo's root:
 ```bash
-docker run --rm -it -v "$PWD:/src:ro" -v gtc-uv-cache:/root/.cache/uv ogdenm12/gtc-base-image:v2 bash -lc \
-  "cp -r /src /work && cd /work && uv sync --locked --group mpi && bash"
+docker run --rm -it -v "$PWD:/src:ro" ogdenm12/gtc-base-image:v3 bash -lc \
+  "cp -r /src /work && cd /work && export PYTHONPATH=/work/src && bash"
 ```
-The repo is mounted read-only and copied into the container, so the container's `.venv` stays out
-of your checkout. `-v gtc-uv-cache:/root/.cache/uv` keeps uv's cache in a Docker volume: without it,
-every container starts with an empty cache and `uv sync` re-downloads everything and rebuilds `jspam`
-from source (about 3 minutes); with it, repeat installs take about a second. In Git Bash on Windows,
-put `MSYS_NO_PATHCONV=1` before `docker run`, or Git Bash
-rewrites the `/src` path. To work on the repo in place, run notebooks or save data, see
+The repo is mounted read-only and copied into the container, so nothing is written to your checkout.
+In Git Bash on Windows, put `MSYS_NO_PATHCONV=1` before `docker run`, or Git Bash rewrites the `/src`
+path. If your `uv.lock` has changed since the image was built, use `uv sync` inside the image
+instead; for that, and to work on the repo in place, run notebooks or save data, see
 [docs/guides/docker_image.md](docs/guides/docker_image.md).
 
 Without the image: Python 3.12 or newer, git, `gfortran` and a C compiler (Linux, macOS or WSL).
@@ -59,6 +58,7 @@ uv sync                       # the package, jspam (compiled on install), pytest
 uv sync --group notebook      # also JupyterLab and matplotlib, for the notebooks
 uv sync --group mpi           # also mpi4py, for --mode mpi (needs an MPI library)
 uv sync --group tng           # h5py, for the TNG readers (already in a plain uv sync, for the tests)
+uv sync --group analysis      # also scipy, for analysis outside the package
 ```
 
 ## Quick start
@@ -125,14 +125,15 @@ tests/               pytest tests
 ## Tests
 In the image, from the repo's root:
 ```bash
-docker run --rm -v "$PWD:/src:ro" -v gtc-uv-cache:/root/.cache/uv ogdenm12/gtc-base-image:v2 bash -lc \
-  "cp -r /src /work && cd /work && uv sync --locked --group mpi && uv run pytest"
+docker run --rm -v "$PWD:/src:ro" ogdenm12/gtc-base-image:v3 bash -lc \
+  "cp -r /src /work && cd /work && PYTHONPATH=src python -m pytest"
 ```
-Inside a running container (or without the image):
+Inside a running container:
 ```bash
-uv run pytest                  # everything
-uv run pytest -m "not slow"    # skip the long tests
+python -m pytest                  # everything
+python -m pytest -m "not slow"    # skip the long tests
 ```
+Without the image (or in a `uv sync` environment), the same with `uv run pytest`.
 `test_original_jspam` needs Docker on the host, so it skips inside the container. To run that check,
 run `bash examples/spam/check_original_jspam.sh` on the host (Git Bash on Windows).
 

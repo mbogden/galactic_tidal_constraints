@@ -19,7 +19,7 @@ The fork's [README](https://github.com/mbogden/JSPAM/tree/simr-branch#use) has a
 
 This project's base image has everything needed, so you can use it instead:
 ```bash
-docker run --rm -it ogdenm12/gtc-base-image:v2 bash
+docker run --rm -it ogdenm12/gtc-base-image:v3 bash
 uv pip install git+https://github.com/mbogden/JSPAM.git@simr-branch
 ```
 The second command runs inside the container.
@@ -51,7 +51,7 @@ git clone https://github.com/mbogden/JSPAM.git
 ### 2. Start the container
 From the folder that contains `JSPAM/` (this command works in bash and PowerShell):
 ```bash
-docker run --rm -it -v "${PWD}/JSPAM:/src:ro" ogdenm12/gtc-base-image:v2 bash
+docker run --rm -it -v "${PWD}/JSPAM:/src:ro" ogdenm12/gtc-base-image:v3 bash
 ```
 `JSPAM/` is mounted read-only, so the build stays out of your clone. Anything in `/tmp/spam` is
 lost when you exit the container.

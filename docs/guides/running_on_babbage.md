@@ -6,15 +6,18 @@ image. Other Slurm clusters with Apptainer work the same way, with their own mod
 What `simr` does with its inputs, and what it writes, is in [modules/simr.md](../modules/simr.md).
 
 ## How it fits together
-- **The image** (`gtc-base-image:v2`, pulled as an Apptainer `.sif`) has the tools: Python 3.12,
-  gfortran, OpenMPI 4.1.6 (the same version as Babbage's), `uv` and git.
-- **The repo's `.venv`**, built inside the image, has this package, `jspam` (at the commit pinned in
-  `pyproject.toml`) and `mpi4py`. The venv uses the image's Python, so it only works inside the image.
+- **The image** (`gtc-base-image:v3`, pulled as an Apptainer `.sif`) has the tools (Python 3.12,
+  gfortran, OpenMPI 4.1.6, the same version as Babbage's, `uv` and git) and every library `uv.lock`
+  pins: `jspam` (at the commit pinned in `pyproject.toml`), `mpi4py`, numpy and the rest.
+- **This package** is read from the clone. The job scripts put the clone's `src/` on `PYTHONPATH`, so
+  the image's `python` runs it, and a code change needs only a `git pull`.
 - **The job scripts** in [`examples/slurm/`](../../examples/slurm/) load Babbage's modules, start the
   command inside the image with the host's `mpirun`, and begin each log with a header: node, image
-  build, modules, branch and commit, and the command.
+  build, modules, branch and commit, whether the image's libraries match the clone's `uv.lock`, and
+  the command.
 
-Later, the package may be built into the image itself; then the venv steps go away.
+No `.venv` is needed while the clone's `uv.lock` is the one the image was built from. When it isn't
+(the log header warns), see [If `uv.lock` has changed](#if-uvlock-has-changed).
 
 ## One-time setup
 Everything lives in one folder in your home directory, which every node shares:
@@ -34,17 +37,24 @@ git clone https://github.com/mbogden/galactic_tidal_constraints.git
 
 **2. Pull the image** as a small job, not on the login node:
 ```bash
-cd ~/galStuff/images && sbatch -p interactive-cpu -c 4 -t 30 -J gtc-v2-pull -o pull-%j.log \
-  --wrap 'module load apptainer; apptainer pull gtc-base-image-v2.sif docker://ogdenm12/gtc-base-image:v2'
+cd ~/galStuff/images && sbatch -p interactive-cpu -c 4 -t 30 -J gtc-v3-pull -o pull-%j.log \
+  --wrap 'module load apptainer; apptainer pull gtc-base-image-v3.sif docker://ogdenm12/gtc-base-image:v3'
 ```
 
-**3. Build the venv**, from the repo (takes about 3 minutes):
+That's all: the image has the libraries, and changes to this package's own code need only a
+`git pull`.
+
+### If `uv.lock` has changed
+A pull that changes dependencies (`pyproject.toml` or `uv.lock`, such as a new `jspam` commit) leaves
+the image's libraries behind the clone's, and every job's log header then starts its `libraries:`
+line with `WARNING`. Either pull an image tag built from the new `uv.lock`
+([docker_image.md](docker_image.md#change-the-image)), or build a `.venv` from the clone inside the
+image (takes about 3 minutes):
 ```bash
 cd ~/galStuff/galactic_tidal_constraints && sbatch examples/slurm/uv_sync.slurm
 ```
-The log ends with `imports ok` and `=== exit 0`. Run it again after a pull that changes
-dependencies (`pyproject.toml` or `uv.lock`, such as a new `jspam` commit), with a new image, or in a
-new clone. Changes to this package's own code need only a `git pull`.
+The log ends with `imports ok` and `=== exit 0`. Then give `$REPO/.venv/bin/python` in place of
+`python` in the commands below. The venv uses the image's Python, so it only works inside the image.
 
 ## Set up an experiment
 Make a folder for it outside the repo, so its inputs and outputs stay out of git and don't depend
@@ -66,14 +76,14 @@ Run these from the experiment's folder, so relative paths (`models.txt`, `runs`)
 two variables first:
 ```bash
 REPO=~/galStuff/galactic_tidal_constraints
-export SIF=~/galStuff/images/gtc-base-image-v2.sif
+export SIF=~/galStuff/images/gtc-base-image-v3.sif
 ```
 `sbatch` passes your environment into the job, so `run_node.slurm` uses this image.
 
 **On one whole node, with MPI** (32 ranks: rank 0 hands out models, 31 workers run them):
 ```bash
 sbatch -J my-exp -t 02:00:00 $REPO/examples/slurm/run_node.slurm \
-  $REPO/.venv/bin/python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi \
+  python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi \
   --models models.txt --config config.json --output runs
 ```
 
@@ -81,7 +91,7 @@ sbatch -J my-exp -t 02:00:00 $REPO/examples/slurm/run_node.slurm \
 ```bash
 OMPI_MCA_hwloc_base_binding_policy=none sbatch -J my-exp -t 02:00:00 --ntasks-per-node=1 \
   $REPO/examples/slurm/run_node.slurm \
-  $REPO/.venv/bin/python -m galactic_tidal_constraints.simr --mode local \
+  python -m galactic_tidal_constraints.simr --mode local \
   --models models.txt --config config.json --output runs
 ```
 `--ntasks-per-node=1` starts one process instead of 32. `run_node.slurm` still starts it through
@@ -99,7 +109,7 @@ how long it would take on that node's workers, measured at that node's speed
 ([modules/simr.md](../modules/simr.md#planning-a-run-simrplan)):
 ```bash
 sbatch -J my-exp-plan -t 5 $REPO/examples/slurm/run_node.slurm \
-  $REPO/.venv/bin/python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi \
+  python -m mpi4py.futures -m galactic_tidal_constraints.simr --mode mpi \
   --models models.txt --config config.json --output runs --dry-run
 ```
 ```
